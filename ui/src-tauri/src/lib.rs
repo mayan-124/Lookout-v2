@@ -800,9 +800,9 @@ fn bar_resize(wide: bool, tall: Option<bool>, huge: Option<bool>, app: AppHandle
     } else if wide {
         (1180.0, 700.0)
     } else if tall == Some(true) {
-        (1000.0, 720.0)
+        (940.0, 720.0)
     } else {
-        (1000.0, 640.0)
+        (940.0, 640.0)
     };
     // Never larger than the screen the bar is on.
     let (w, h) = match window.current_monitor() {

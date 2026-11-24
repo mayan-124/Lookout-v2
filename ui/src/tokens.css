@@ -1,6 +1,5 @@
 /* Design tokens: the one place for colors, radii, spacing, type, motion and
-   shadows. The window carries its own aurora backdrop and glass panels, so it is
-   always dark. look.svelte.ts sets --accent-pick, data-glass and data-motion on
+   shadows. The window is transparent; floating glass panels are the only visible pieces. Always dark. look.svelte.ts sets --accent-pick, data-glass and data-motion on
    <html>. No web fonts, no network. */
 :root {
   color-scheme: dark;
@@ -28,8 +27,7 @@
   --r-sm: 6px;
   --r-md: 10px;
   --r-lg: 14px;
-  --r-window: 28px;
-  --r-tile: 24px;
+  --r-tile: 28px;
   --r-pill: 999px;
 
   /* motion: nothing longer than --dur-slow */
@@ -48,20 +46,20 @@
   --match-text: var(--accent-pick);
   --match-bg: color-mix(in srgb, var(--accent-pick) 22%, transparent);
 
-  /* the window's own backdrop, independent of the desktop */
-  --aurora:
-    radial-gradient(ellipse at 16% 16%, #3b5bdb 0%, transparent 46%),
-    radial-gradient(ellipse at 90% 74%, #c2417a 0%, transparent 50%), #0d1020;
-  --window-bg: var(--aurora);
+  /* No outer card: the window is transparent and only floating glass pieces draw. */
   --solid-bg: #161b24;
-  --shadow-window: inset 0 0 0 1px rgba(255, 255, 255, 0.06); /* inside the card only */
 
-  /* glass panel */
-  --glass-bg: rgba(16, 20, 44, 0.55);
-  --glass-blur: blur(30px) saturate(160%);
+  /* glass panel: the shadow stays inside the window bounds */
+  --glass-bg: linear-gradient(
+    135deg,
+    rgba(59, 91, 219, 0.34),
+    rgba(16, 20, 44, 0.62) 55%,
+    rgba(194, 65, 122, 0.3)
+  );
+  --glass-blur: blur(24px) saturate(160%);
   --glass-border: rgba(255, 255, 255, 0.22);
   --glass-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 20px 60px rgba(0, 0, 0, 0.3);
+    inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 4px 14px rgba(0, 0, 0, 0.28);
 
   /* text */
   --text: #ffffff;
@@ -98,7 +96,6 @@
 /* Glass effect off, or backdrop-filter unsupported: flat solid panels, no
    gradient, no blur. */
 :root[data-glass="solid"] {
-  --window-bg: #0d1020;
   --glass-bg: var(--solid-bg);
   --glass-blur: none;
   --glass-border: rgba(255, 255, 255, 0.14);

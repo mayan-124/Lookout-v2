@@ -14,7 +14,7 @@
       {
         "label": "bar",
         "title": "Lookout",
-        "width": 1000,
+        "width": 940,
         "height": 640,
         "visible": false,
         "focus": false,

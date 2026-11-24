@@ -723,7 +723,15 @@
 />
 <svelte:document onvisibilitychange={() => (visible = document.visibilityState === "visible")} />
 
-<main class="bar">
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<main
+  class="bar"
+  onmousedown={(e) => {
+    // Clicking the transparent gaps must not take focus from the search box.
+    const t = e.target as HTMLElement;
+    if (t === e.currentTarget || t.classList.contains("col") || t.classList.contains("stage")) e.preventDefault();
+  }}
+>
   <div class="col" class:wide={disk}>
     <div class="searchrow glass" data-tauri-drag-region>
       <Orb mode={orbMode} active={visible && !look.reduced} />
@@ -780,9 +788,9 @@
 
     <div class="stage">
       {#if disk}
-        <Disk onclose={closeDisk} />
+        <div class="page glass"><Disk onclose={closeDisk} /></div>
       {:else if panel}
-        <Privacy bind:this={privacy} onclose={closePanel} />
+        <div class="page glass"><Privacy bind:this={privacy} onclose={closePanel} /></div>
       {:else if card?.phase === "confirm"}
         {@const p = card.prepared}
         <div
@@ -932,7 +940,15 @@
                       {#if top && thumbSrc}
                         <img class="thumb" src={thumbSrc} alt="" />
                       {:else}
-                        <span class="icon code">{badgeOf(item)}</span>
+                        {#if kindName(item.kind) === "app"}
+                          <span class="icon" aria-hidden="true"
+                            ><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"
+                              ><rect x="2" y="2" width="5" height="5" rx="1.2" /><rect x="9" y="2" width="5" height="5" rx="1.2" /><rect x="2" y="9" width="5" height="5" rx="1.2" /><rect x="9" y="9" width="5" height="5" rx="1.2" /></svg
+                            ></span
+                          >
+                        {:else}
+                          <span class="icon code">{badgeOf(item)}</span>
+                        {/if}
                       {/if}
                       <span class="text">
                         <span class="l1">
@@ -1035,18 +1051,13 @@
 </main>
 
 <style>
+  /* No outer card: no background, border, radius or shadow on the wrapper. */
   .bar {
     width: 100%;
     height: 100%;
-    box-sizing: border-box;
     display: flex;
     justify-content: center;
-    background: var(--window-bg);
     color: var(--text);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--r-window);
-    box-shadow: var(--shadow-window);
-    overflow: hidden;
   }
   .col {
     width: 900px;
@@ -1054,7 +1065,7 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
-    padding: 20px 0 12px;
+    padding: 20px 0 24px;
     min-height: 0;
   }
   .col.wide {
@@ -1157,6 +1168,13 @@
     outline-offset: 2px;
   }
 
+  .page {
+    border-radius: var(--r-tile);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+  }
   .stage {
     flex: 1;
     min-height: 0;
@@ -1214,7 +1232,7 @@
     cursor: pointer;
   }
   .rrow:hover {
-    background: var(--raised);
+    background: var(--accent-soft);
   }
   .rrow:focus-visible {
     outline: 2px solid var(--accent);
@@ -1224,7 +1242,6 @@
     border-radius: 18px;
     border-color: var(--accent-line);
     box-shadow: 0 0 24px var(--accent-soft);
-    background: var(--raised);
   }
   .rrow .icon,
   .rrow .thumb {
@@ -1373,6 +1390,7 @@
     padding: 6px 12px;
     border: 1px solid transparent;
     border-radius: var(--r-lg);
+    background: transparent;
     cursor: default;
     transition: background-color var(--dur-fast) var(--ease);
   }
@@ -1386,7 +1404,6 @@
     border-radius: 18px;
     border-color: var(--accent-line);
     box-shadow: 0 0 24px var(--accent-soft);
-    background: var(--raised);
   }
   .row.top.selected {
     background: var(--accent-soft);
