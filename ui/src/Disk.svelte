@@ -131,8 +131,8 @@
   let cancelButton: HTMLButtonElement | undefined = $state();
   let listEl: HTMLElement | undefined = $state();
   let timer: ReturnType<typeof setInterval> | undefined;
-  // Expand: the window grows to the screen and the content gets bigger type and rows.
-  let big = $state(false);
+  // Per-chart expand: one pane at a time grows in place over the content area.
+  let exp = $state<null | "tree" | "chart">(null);
   let chartW = $state(330);
   const basePath = $derived.by(() => {
     const names = (view?.crumbs ?? []).map((c) => c.name);
@@ -148,10 +148,9 @@
     return f ? { hit: f.idx } : null;
   });
 
-  function setBig(v: boolean) {
-    big = v;
-    chartW = v ? Math.round(window.innerWidth * 0.5) : 330;
-    onbig(v);
+  function setExp(v: null | "tree" | "chart") {
+    exp = v;
+    onbig(v !== null);
   }
   // Drag the divider between the tree and the chart.
   function dragSplit(e: PointerEvent) {
@@ -249,6 +248,7 @@
   function setTab(t: Tab) {
     tab = t;
     menu = null;
+    if (exp) setExp(null);
     loadFiles();
   }
 
@@ -501,7 +501,7 @@
       e.preventDefault();
       if (pv.overlay) pv.overlay = false;
       else if (menu) menu = null;
-      else if (big) setBig(false);
+      else if (exp) setExp(null);
       else if (scanning) cancel();
       else onclose();
       return;
@@ -587,6 +587,7 @@
   // Closing the view frees the scan; nothing is kept unless it was saved.
   onDestroy(() => {
     stopTimer();
+    onbig(false);
     invoke("disk_close").catch(() => {});
   });
 
@@ -595,11 +596,25 @@
 
 <svelte:window onkeydown={onKeydown} onclick={() => (menu = null)} />
 
-<section class="disk" class:big aria-label="Disk usage">
+{#snippet expandBtn(which: "tree" | "chart")}
+  <button
+    class="xbtn"
+    type="button"
+    data-no-drag
+    aria-label={exp === which ? "Collapse" : "Expand"}
+    title={exp === which ? "Collapse (Esc)" : "Expand"}
+    onclick={(e) => { e.stopPropagation(); setExp(exp === which ? null : which); }}
+  >
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      {#if exp === which}<path d="M6 2v4H2M10 14v-4h4M14 6h-4V2M2 10h4v4" />{:else}<path d="M2 6V2h4M14 10v4h-4M10 2h4v4M6 14H2v-4" />{/if}
+    </svg>
+  </button>
+{/snippet}
+
+<section class="disk" aria-label="Disk usage">
   <header>
     <h2>Disk usage</h2>
     <span class="hint">Scans only when you press Scan. Closing this view frees the data.</span>
-    {#if page === "disk"}<button class="btn" onclick={() => setBig(!big)} aria-pressed={big}>{big ? "Collapse" : "Expand"}</button>{/if}
     <button class="btn" onclick={onclose}>Close <kbd>Esc</kbd></button>
   </header>
 
@@ -740,7 +755,8 @@
       <p class="keys"><kbd>Space</kbd> preview · <kbd>↑↓</kbd> move · <kbd>Enter</kbd> open · <kbd>Ctrl+E</kbd> show in folder · <kbd>Ctrl+C</kbd> copy path · <kbd>Del</kbd> Recycle Bin · right-click for a menu</p>
     {:else}
     <div class="split" style:grid-template-columns={`minmax(0, 1fr) 6px ${chartW}px`}>
-    <div class="left">
+    <div class="left" class:exp={exp === "tree"} class:dim={exp === "chart"} inert={exp === "chart"}>
+    <div class="pbar" data-tauri-drag-region>{@render expandBtn("tree")}</div>
     <div class="head" role="row">
       <button class="c-name" onclick={() => setSort("name")}>Name{arrow("name")}</button>
       <span class="c-bar">Share of folder</span>
@@ -788,22 +804,28 @@
     </ul>
     </div>
     <div class="grip" role="separator" aria-orientation="vertical" onpointerdown={dragSplit}></div>
-    <aside class="chartpane" aria-label="Chart">
-      <div class="toggle" role="group" aria-label="Chart type">
-        <button class:on={chartMode === "ring"} aria-pressed={chartMode === "ring"} onclick={() => { chartMode = "ring"; loadChart(); }}>Ring</button>
-        <button class:on={chartMode === "treemap"} aria-pressed={chartMode === "treemap"} onclick={() => { chartMode = "treemap"; loadChart(); }}>Treemap</button>
+    <aside class="chartpane" class:exp={exp === "chart"} class:dim={exp === "tree"} inert={exp === "tree"} aria-label="Chart">
+      <div class="pbar" data-tauri-drag-region>
+        <div class="toggle" role="group" aria-label="Chart type">
+          <button class:on={chartMode === "ring"} aria-pressed={chartMode === "ring"} onclick={() => { chartMode = "ring"; loadChart(); }}>Ring</button>
+          <button class:on={chartMode === "treemap"} aria-pressed={chartMode === "treemap"} onclick={() => { chartMode = "treemap"; loadChart(); }}>Treemap</button>
+        </div>
+        {@render expandBtn("chart")}
       </div>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="chartbox" ondblclick={() => setExp(exp === "chart" ? null : "chart")}>
       <Chart
         data={chart}
         mode={chartMode}
         title={crumbTitle}
         highlightId={current()?.id ?? null}
         {basePath}
-        {big}
+        big={exp === "chart"}
         ondrill={(id) => show(id)}
         onup={up}
         onselect={(id) => { const i = flat.findIndex((f) => f.row.id === id); if (i >= 0) selected = i; }}
       />
+      </div>
       <p class="keys">Click a folder to go into it (or scroll the wheel forward); scroll back or click the centre to go up.</p>
       <Preview source={previewSource} />
     </aside>
@@ -950,27 +972,74 @@
     background: var(--accent);
     opacity: 1;
   }
-  .disk.big {
-    font-size: 17px;
-    padding: 8px 12px;
+  .split {
+    position: relative;
+    overflow: hidden;
   }
-  .disk.big li[role="treeitem"],
-  .disk.big li.filerow {
-    padding: 8px;
+  .disk > .keys {
+    flex: none;
+    padding-top: 4px;
   }
-  .disk.big .c-size,
-  .disk.big .c-items,
-  .disk.big .c-mod {
-    font-size: 15px;
+  .left { grid-column: 1; }
+  .grip { grid-column: 2; }
+  .chartpane { grid-column: 3; }
+  .pbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 30px;
+    flex: none;
   }
-  .disk.big .crumb {
-    font-size: 15px;
+  .xbtn {
+    all: unset;
+    box-sizing: border-box;
+    margin-left: auto;
+    width: 26px;
+    height: 26px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    cursor: pointer;
+    color: var(--text-soft);
+    border: 1px solid var(--glass-border);
+    background: rgba(13, 16, 34, 0.7);
   }
-  .disk.big .head {
-    font-size: 13px;
+  .xbtn:hover {
+    color: var(--text);
+    border-color: rgba(255, 255, 255, 0.4);
   }
-  .disk.big .bar {
-    height: 10px;
+  .xbtn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .chartbox {
+    flex: none;
+  }
+  .dim {
+    opacity: 0.3;
+    pointer-events: none;
+  }
+  .left.exp,
+  .chartpane.exp {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    padding: 8px 10px;
+    border-radius: 12px;
+    border: 1px solid var(--glass-border);
+    background: rgba(13, 16, 34, 0.96);
+    animation: pop 160ms ease-out;
+  }
+  .chartpane.exp {
+    overflow-y: auto;
+  }
+  @keyframes pop {
+    from { opacity: 0; transform: scale(0.97); }
+    to { opacity: 1; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .left.exp,
+    .chartpane.exp { animation: none; }
   }
   .chartpane {
     display: flex;

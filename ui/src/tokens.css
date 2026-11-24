@@ -58,7 +58,7 @@
       rgba(16, 20, 44, 0.3) 55%,
       rgba(194, 65, 122, 0.32)
     ),
-    rgba(13, 16, 34, 0.9);
+    rgba(13, 16, 34, 0.96);
   /* dock and hints: a touch more opaque */
   --glass-bg-dock:
     linear-gradient(
@@ -67,7 +67,7 @@
       rgba(16, 20, 44, 0.3) 55%,
       rgba(194, 65, 122, 0.32)
     ),
-    rgba(13, 16, 34, 0.92);
+    rgba(13, 16, 34, 0.96);
   --glass-blur: blur(24px) saturate(160%);
   --glass-border: rgba(255, 255, 255, 0.22);
   --glass-shadow:

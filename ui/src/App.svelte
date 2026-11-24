@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import Privacy from "./Privacy.svelte";
   import Disk from "./Disk.svelte";
   import { flip } from "svelte/animate";
@@ -222,6 +223,25 @@
   // Settings and Disk fill a fixed window; everything else sizes the window to
   // its content so the dock sits right under the panels.
   let diskBig = $state(false);
+
+  // Window drag from any non-interactive area. Interactive controls, lists, charts,
+  // previews and scrollbars (data-no-drag, or the selector below) stay clickable.
+  const NO_DRAG =
+    'button, input, select, textarea, a, label, canvas, svg, li, [role="option"], [role="listbox"], [role="tree"], [role="treeitem"], [role="tab"], [role="menu"], [role="separator"], .rows, .chartbox, .grip, .menu, .prevcard, .results, [data-no-drag]';
+  const DRAG_TEXT = "h1, h2, h3, h4, header, footer, .label-caps, .hint, .keys, .status, kbd, .total, .crumbs";
+  function dragFrom(e: MouseEvent) {
+    if (e.button !== 0) return;
+    const t = e.target as HTMLElement;
+    if (!(t instanceof HTMLElement) || t.hasAttribute("data-tauri-drag-region")) return;
+    if (t.closest(NO_DRAG)) return;
+    // Scrollbar of a scroll container: the target is the container itself.
+    if (t.scrollHeight > t.clientHeight && e.offsetX >= t.clientWidth) return;
+    if (t.scrollWidth > t.clientWidth && e.offsetY >= t.clientHeight) return;
+    // Plain text stays selectable unless it is a title, header or hint line.
+    const own = Array.from(t.childNodes).some((n) => n.nodeType === 3 && (n.textContent ?? "").trim() !== "");
+    if (own && !t.closest(DRAG_TEXT)) return;
+    getCurrentWindow().startDragging().catch(() => {});
+  }
   // Expanded Disk: as tall as the screen allows, minus the bar's own chrome.
   const bigH = $derived(Math.max(500, Math.floor(window.screen.availHeight) - 80 - 260));
   let colEl: HTMLDivElement | undefined = $state();
@@ -689,13 +709,16 @@
   const previewable = (i: Item | undefined) =>
     !!pathOf(i) && ["file", "folder", "screenshot", "project"].includes(kindName(i!.kind));
   // One simple icon per kind; kinds without one (answers, ports) keep their short text badge.
-  function iconKind(i: Item): "app" | "folder" | "image" | "clipboard" | "file" | null {
+  function iconKind(i: Item): "app" | "folder" | "image" | "clipboard" | "file" | "rec" | "gif" | "scan" | null {
     const k = kindName(i.kind);
     if (k === "app") return "app";
     if (k === "folder") return "folder";
     if (k === "clipboard") return "clipboard";
     if (k === "screenshot" || IMAGE_EXT.test(i.title)) return "image";
     if (k === "file") return "file";
+    if (/^record.*gif/i.test(i.title)) return "gif";
+    if (/^record/i.test(i.title)) return "rec";
+    if (/^extract text/i.test(i.title)) return "scan";
     return null;
   }
   const home = $derived(query.trim() === "" && !panel && !disk && !card);
@@ -766,6 +789,12 @@
           <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6l1.4 1.5h5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" />
         {:else if k === "image"}
           <rect x="2" y="3" width="12" height="10" rx="1.6" /><circle cx="5.7" cy="6.5" r="1.1" /><path d="M2.5 12l3.6-3.4 2.6 2.4 2-1.8 3.3 2.8" />
+        {:else if k === "rec"}
+          <circle cx="8" cy="8" r="5.5" /><circle cx="8" cy="8" r="2.4" fill="currentColor" />
+        {:else if k === "gif"}
+          <rect x="1.8" y="3.5" width="12.4" height="9" rx="1.8" /><path d="M6.6 6.6a1.6 1.6 0 1 0 0 2.8V8.2H5.8M8.8 6.4v3.2M10.4 9.6V6.4h1.7M10.4 8h1.3" />
+        {:else if k === "scan"}
+          <path d="M2 5.5V3.5A1.5 1.5 0 0 1 3.5 2h2M10 2h2.5A1.5 1.5 0 0 1 14 3.5v2M14 10.5v2a1.5 1.5 0 0 1-1.5 1.5H10M6 14H3.5A1.5 1.5 0 0 1 2 12.5v-2M5.5 6h5M8 6v4.5" />
         {:else if k === "clipboard"}
           <rect x="3.5" y="3" width="9" height="10.5" rx="1.5" /><path d="M6 3V2h4v1M5.8 7h4.4M5.8 9.5h4.4" />
         {:else}
@@ -785,6 +814,7 @@
     // Clicking the transparent gaps must not take focus from the search box.
     const t = e.target as HTMLElement;
     if (t === e.currentTarget || t.classList.contains("col") || t.classList.contains("stage")) e.preventDefault();
+    dragFrom(e);
   }}
 >
   <div class="col" class:wide={disk} bind:this={colEl}>
@@ -1524,6 +1554,7 @@
     gap: 2px;
   }
   .l1 {
+    overflow: hidden;
     display: flex;
     align-items: baseline;
     gap: var(--sp-3);
@@ -1539,6 +1570,8 @@
     font-weight: 500;
   }
   .row.top .title {
+    flex: 0 1 auto;
+    min-width: 0;
     max-width: 100%;
     font-size: var(--fs-hit);
   }
