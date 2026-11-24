@@ -37,6 +37,9 @@ try {
     foreach ($d in "plugins", "helpers") {
         Copy-Item (Join-Path $rel $d) $installDir -Recurse -Force
     }
+    foreach ($f in "LICENSE", "THIRD_PARTY_NOTICES.md") {
+        Copy-Item (Join-Path $root $f) $installDir -Force
+    }
 
     $step = "restart Lookout"
     Start-Process (Join-Path $installDir "lookout.exe")

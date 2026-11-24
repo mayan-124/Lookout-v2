@@ -6,7 +6,9 @@
       "../../target/release/plugins/semantic/*": "plugins/semantic/",
       "../../target/release/plugins/office-text/*": "plugins/office-text/",
       "../../target/release/plugins/screenshot/*": "plugins/screenshot/",
-      "../../target/release/helpers/fastscan/*": "helpers/fastscan/"
+      "../../target/release/helpers/fastscan/*": "helpers/fastscan/",
+      "../../LICENSE": "LICENSE",
+      "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     }
   }
 }
