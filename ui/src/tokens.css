@@ -28,7 +28,7 @@
   --r-sm: 6px;
   --r-md: 10px;
   --r-lg: 14px;
-  --r-window: 24px;
+  --r-window: 28px;
   --r-tile: 24px;
   --r-pill: 999px;
 
@@ -54,7 +54,7 @@
     radial-gradient(ellipse at 90% 74%, #c2417a 0%, transparent 50%), #0d1020;
   --window-bg: var(--aurora);
   --solid-bg: #161b24;
-  --shadow-window: 0 20px 60px rgba(0, 0, 0, 0.3);
+  --shadow-window: inset 0 0 0 1px rgba(255, 255, 255, 0.06); /* inside the card only */
 
   /* glass panel */
   --glass-bg: rgba(16, 20, 44, 0.55);
