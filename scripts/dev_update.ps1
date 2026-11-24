@@ -19,6 +19,10 @@ try {
     $env:CARGO_INCREMENTAL = "1"
     cargo build --release -p lookout-clipboard -p lookout-files-tools -p lookout-semantic -p lookout-office-text -p lookout-screenshot -p lookout-fastscan
     Run-Native "cargo build plugins"
+    if (-not (Test-Path (Join-Path $root "ui\node_modules"))) {
+        npm --prefix ui ci
+        Run-Native "npm ci"
+    }
     npm --prefix ui run tauri build -- --no-bundle
     Run-Native "tauri build"
 
