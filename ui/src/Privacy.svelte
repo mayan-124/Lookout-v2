@@ -4,6 +4,7 @@
   import Plugins from "./Plugins.svelte";
   import Health from "./Health.svelte";
   import { applyTheme, type ThemePref } from "./theme";
+  import { ACCENTS, look, setAccent, setGlass, setReduceMotion } from "./look.svelte";
   import { getVersion } from "@tauri-apps/api/app";
   import { check, type Update } from "@tauri-apps/plugin-updater";
 
@@ -347,6 +348,37 @@
             </select>
           </label>
           <div class="field">
+            {@render field("Accent color", "The one highlight color. Applies as you pick it.")}
+            <div class="swatches" role="radiogroup" aria-label="Accent color">
+              {#each ACCENTS as a}
+                <button
+                  type="button"
+                  class="swatch"
+                  role="radio"
+                  aria-checked={look.accent === a.value}
+                  aria-label={a.name}
+                  title={a.name}
+                  style:background={a.value}
+                  onclick={() => setAccent(a.value)}
+                ></button>
+              {/each}
+            </div>
+          </div>
+          <div class="field">
+            {@render field("Glass effect", "Frosted window on Windows 11. Off, or on Windows 10, gives a solid panel.")}
+            <label class="switch">
+              <input type="checkbox" role="switch" checked={look.glass} onchange={(e) => setGlass(e.currentTarget.checked)} />
+              <span class="track"></span>
+            </label>
+          </div>
+          <div class="field">
+            {@render field("Reduce motion", "Stops the orb and result animations. On by default when Windows animations are off.")}
+            <label class="switch">
+              <input type="checkbox" role="switch" checked={look.reduced} onchange={(e) => setReduceMotion(e.currentTarget.checked)} />
+              <span class="track"></span>
+            </label>
+          </div>
+          <div class="field">
             {@render field("Updates", `Version ${appVersion}. Connects to the internet only when you click a button here, and only receives files.`)}
             <button class="btn" disabled={updBusy} onclick={checkUpdates}>Check for updates</button>
           </div>
@@ -595,6 +627,27 @@
     gap: 20px;
     padding: 10px 0;
     border-bottom: 1px solid var(--border);
+  }
+  .swatches {
+    display: flex;
+    gap: 10px;
+  }
+  .swatch {
+    all: unset;
+    box-sizing: border-box;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid transparent;
+  }
+  .swatch[aria-checked="true"] {
+    border-color: var(--text);
+    box-shadow: 0 0 0 2px var(--solid-bg) inset;
+  }
+  .swatch:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .fl {
     display: flex;

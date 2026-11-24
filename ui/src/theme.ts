@@ -9,6 +9,7 @@ let pref: ThemePref = "auto";
 function resolve() {
   const light = pref === "light" || (pref === "auto" && windowsLight.matches);
   document.documentElement.dataset.theme = light ? "light" : "dark";
+  document.documentElement.dataset.themePref = pref;
 }
 
 export function applyTheme(next: ThemePref) {

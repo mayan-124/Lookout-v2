@@ -1,75 +1,4 @@
-/* Design tokens and shared components. See docs/ui-style.md. Dark is the
-   default; light applies when theme.ts sets data-theme="light". */
-:root {
-  color-scheme: dark light;
-  --font-ui: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-  --font-code: "Cascadia Code", "Cascadia Mono", Consolas, monospace;
-  font-family: var(--font-ui);
-  font-size: 14px;
-
-  --bg: #0e1013;
-  --panel: #14171c;
-  --raised: #1b1f26;
-  --border: #262b33;
-  --border-strong: #3a4150;
-  --text: #e6e9ee;
-  --text-soft: #c3c9d3;
-  --muted: #8b93a1;
-  --accent: #f5a524;
-  --accent-bg: #f5a524;
-  --accent-on: #1a1204;
-  --match-text: #ffd28a;
-  --match-bg: rgba(245, 165, 36, 0.22);
-  --success: #3fb950;
-  --danger: #f85149;
-  --toggle-off: #2f3541;
-  --scrim: rgba(0, 0, 0, 0.55);
-
-  /* Disk chart: color-blind-safe hues, none close to the amber accent. */
-  --c0: #56b4e9;
-  --c1: #2fcf9f;
-  --c2: #e58fc3;
-  --c3: #9d9dff;
-  --c4: #b4cf3a;
-  --c5: #e0787a;
-  --c6: #38c7d8;
-  --c7: #b9a2d8;
-  --c-grey: #7c8494;
-  --chart-label: #ffffff;
-  --chart-halo: rgba(0, 0, 0, 0.6);
-}
-
-:root[data-theme="light"] {
-  color-scheme: light;
-  --bg: #fbf8f3;
-  --panel: #ffffff;
-  --raised: #f3eee5;
-  --border: #e7e0d4;
-  --border-strong: #d9cfbe;
-  --text: #1f1a14;
-  --text-soft: #3d362c;
-  --muted: #6b6358;
-  --accent: #a34a08; /* text, icons, focus; was #b45309, 4.35:1 on raised */
-  --accent-bg: #f5a524; /* button background, always with --accent-on text */
-  --accent-on: #1a1204;
-  --match-text: #7a3d05;
-  --match-bg: rgba(245, 165, 36, 0.28);
-  --success: #17722f; /* was #1a7f37, 4.39:1 on raised */
-  --danger: #cf222e;
-  --toggle-off: #181410; /* track and muted thumb both reach 3:1 (WCAG 1.4.11) */
-  --scrim: rgba(31, 26, 20, 0.4);
-
-  --c0: #0072b2;
-  --c1: #00805c;
-  --c2: #a8447f;
-  --c3: #4a4ab5;
-  --c4: #5b6f00;
-  --c5: #b8363a;
-  --c6: #007f8f;
-  --c7: #6b5a8a;
-  --c-grey: #8a8a96;
-}
-
+/* Design tokens live in tokens.css. Shared components below. See docs/ui-style.md. */
 html,
 body {
   margin: 0;
@@ -83,6 +12,11 @@ body {
   height: 100%;
   padding: 8px;
   box-sizing: border-box;
+}
+/* A native Mica backdrop fills the whole window rectangle, so the panel then
+   fills it too (no transparent margin, square corners). */
+:root[data-glass="on"] #app {
+  padding: 0;
 }
 
 /* One focus style for everything that can take focus. */

@@ -4,7 +4,10 @@
   import { invoke } from "@tauri-apps/api/core";
   import Privacy from "./Privacy.svelte";
   import Disk from "./Disk.svelte";
+  import { flip } from "svelte/animate";
   import { applyTheme, type ThemePref } from "./theme";
+  import Orb from "./Orb.svelte";
+  import { look } from "./look.svelte";
 
   type Kind = string | { custom: string };
   interface Item {
@@ -59,6 +62,12 @@
     ocr_total: number;
   }
 
+  // The orb animates only while the window is on screen.
+  let visible = $state(document.visibilityState === "visible");
+  function hideBar() {
+    visible = false;
+    invoke("hide_bar");
+  }
   let input: HTMLInputElement | undefined = $state();
   let list: HTMLElement | undefined = $state();
   let query = $state("");
@@ -89,6 +98,14 @@
     }
   }
   let items: Item[] = $state([]);
+  // The orb mirrors existing status: error, results just arrived, paused, indexing, idle.
+  let foundFlash = $state(false);
+  let foundTimer: ReturnType<typeof setTimeout> | undefined;
+  function flashFound() {
+    foundFlash = true;
+    clearTimeout(foundTimer);
+    foundTimer = setTimeout(() => (foundFlash = false), 700);
+  }
   // Matched words in a content snippet sit between  and .
   function snippetParts(snippet: string): { text: string; hit: boolean }[] {
     return snippet
@@ -171,14 +188,58 @@
     calculator: "Answer",
     units: "Answer",
     apps: "Apps",
-    files: "Files and folders",
+    files: "Files",
     content: "Inside files",
-    semantic: "Similar meaning",
+    semantic: "By meaning",
     ports: "Ports",
   };
   // Plugin results carry messages (a rename preview, an error): wrap, never cut off.
   const isPlugin = (i: Item) => !(i.source in GROUPS);
-  const groupOf = (i: Item) => GROUPS[i.source] ?? "More";
+  const groupOf = (i: Item) => {
+    const kind = kindName(i.kind);
+    if (kind === "clipboard") return "Clipboard";
+    if (kind === "screenshot") return "Seen on screen";
+    return GROUPS[i.source] ?? "More";
+  };
+  // Bold the typed words inside a title or path. Operators like kind:folder are skipped.
+  const BACKSLASH = String.fromCharCode(92);
+  const escapeRe = (t: string) => t.replace(/\W/g, (c) => BACKSLASH + c);
+  function highlight(text: string): { text: string; hit: boolean }[] {
+    const terms = query
+      .trim()
+      .split(/\s+/)
+      .filter((t) => t.length > 0 && !t.includes(":"))
+      .slice(0, 6)
+      .map(escapeRe);
+    if (terms.length === 0 || !text) return [{ text, hit: false }];
+    return text
+      .split(new RegExp(`(${terms.join("|")})`, "i"))
+      .map((chunk, n) => ({ text: chunk, hit: n % 2 === 1 }))
+      .filter((p) => p.text !== "");
+  }
+
+  // The four sections. Clipboard and Screenshots are the existing "clip" and
+  // "shot" searches; Disk is the disk view. The current one follows the query.
+  const SECTIONS = ["Search", "Disk", "Clipboard", "Screenshots"] as const;
+  const section = $derived(
+    disk
+      ? 1
+      : /^\s*(clip|clipboard|clips)(\s|$)/i.test(query)
+        ? 2
+        : /^\s*(shot|screenshot)(\s|$)/i.test(query)
+          ? 3
+          : 0,
+  );
+  function gotoSection(n: number) {
+    if (panel || card) return;
+    if (n === 1) {
+      openDisk();
+      return;
+    }
+    query = n === 2 ? "clip " : n === 3 ? "shot " : "";
+    run(query);
+    input?.focus();
+  }
   // The empty-bar welcome: what to type and what it does.
   const TRY: [string, string][] = [
     ["budget", "Find files and apps by name"],
@@ -257,6 +318,7 @@
       ...u.items.filter((i) => i.source === "semantic"),
     ];
     done = u.done;
+    if (u.done && items.length > 0) flashFound();
     const at = keep ? items.findIndex((i) => i.id === keep) : -1;
     selected = at >= 0 ? at : 0;
   }
@@ -314,7 +376,7 @@
   function finish(done: Done) {
     if (done.action_id === "open" && !done.was_undo) {
       cleared = true;
-      invoke("hide_bar"); // opened: get out of the way
+      hideBar(); // opened: get out of the way
       return;
     }
     card = { phase: "result", ok: true, message: done.message, undoable: done.undoable };
@@ -365,6 +427,7 @@
         hidden_secs < RESTORE_SECS &&
         (query.trim() !== "" || panel || disk);
       notice = "";
+      visible = true;
       // A confirm card is never brought back: its preview must be seen fresh.
       if (card?.phase === "confirm") invoke("cancel_action", { ticket: card.prepared.ticket });
       card = null;
@@ -420,7 +483,7 @@
         e.preventDefault();
         if (status?.needs_setup) {
           cleared = true;
-          invoke("hide_bar");
+          hideBar();
         } else leavePanel();
       }
       return;
@@ -435,6 +498,11 @@
       }
       return;
     }
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && ["1", "2", "3", "4"].includes(e.key)) {
+      e.preventDefault();
+      gotoSection(Number(e.key) - 1);
+      return;
+    }
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && query === "") {
       // With text in the box, Ctrl+Z stays the text field's own undo.
       e.preventDefault();
@@ -446,6 +514,10 @@
         if (!e.shiftKey && PATHLIKE.test(query)) {
           e.preventDefault();
           completePath();
+        } else if (!e.shiftKey) {
+          // Tab moves to the next section; Shift+Tab still moves focus.
+          e.preventDefault();
+          gotoSection((section + 1) % SECTIONS.length);
         }
         break;
       case "Escape":
@@ -457,7 +529,7 @@
           break;
         }
         cleared = true;
-        invoke("hide_bar");
+        hideBar();
         break;
       case "ArrowDown":
         e.preventDefault();
@@ -476,13 +548,26 @@
   }
 
   const fmt = (n: number) => n.toLocaleString();
+  const orbMode = $derived.by(() => {
+    const s = status as Status | null;
+    if (notice) return "error";
+    if (foundFlash) return "found";
+    if (s?.paused) return "paused";
+    if (s?.indexing) return "indexing";
+    return "idle";
+  });
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window
+  onkeydown={onKeydown}
+  onblur={() => !pinned && (visible = false)}
+  onfocus={() => (visible = true)}
+/>
+<svelte:document onvisibilitychange={() => (visible = document.visibilityState === "visible")} />
 
 <main class="bar">
   <div class="searchrow" data-tauri-drag-region>
-    <span class="prompt code" aria-hidden="true" data-tauri-drag-region>›</span>
+    <Orb mode={orbMode} active={visible} />
     <input
       bind:this={input}
       bind:value={query}
@@ -566,50 +651,80 @@
     </section>
   {:else if isDiskCommand(query)}
     <ul class="results" role="listbox">
-      <li role="option" aria-selected="true" class="selected" onclick={openDisk} onkeydown={() => {}}>
-        <span class="badge code">disk</span>
-        <span class="text">
-          <span class="l1"><span class="title">Disk usage analyzer</span></span>
-          <span class="snippet">See what takes the space on a drive or folder. Scans only when you press Scan.</span>
-        </span>
-        <kbd>Enter</kbd>
+      <li role="presentation" class="entry">
+        <div role="option" tabindex="-1" aria-selected="true" class="row selected" onclick={openDisk} onkeydown={() => {}}>
+          <span class="icon code">disk</span>
+          <span class="text">
+            <span class="title">Disk usage analyzer</span>
+            <span class="snippet">See what takes the space on a drive or folder. Scans only when you press Scan.</span>
+          </span>
+          <span class="hint-enter"><kbd>Enter</kbd></span>
+        </div>
       </li>
     </ul>
   {:else if items.length > 0}
     {#if corrected}<p class="note">Showing results for <b>{corrected}</b></p>{/if}
     <ul id="results" class="results" role="listbox" bind:this={list}>
       {#each items as item, i (item.id)}
-        {#if i === 0 || groupOf(items[i - 1]) !== groupOf(item)}
-          <li role="presentation" class="group label-caps">{groupOf(item)}</li>
-        {/if}
+        {@const top = i === 0}
         <li
-          role="option"
-          id={`result-${i}`}
-          aria-selected={i === selected}
-          class:selected={i === selected}
-          data-index={i}
-          onmousemove={() => (selected = i)}
-          onclick={() => activate(item)}
-          onkeydown={() => {}}
+          role="presentation"
+          class="entry"
+          style:animation-delay="{Math.min(i, 5) * 10}ms"
+          animate:flip={{ duration: look.reduced ? 0 : 140 }}
         >
-          <span class="badge code">{badgeOf(item)}</span>
-          <span class="text">
-            <span class="l1">
-              <span class="title">{item.title}</span>
-              {#if typeof item.metadata?.snippet === "string" && item.uri}
-                <span class="path code">{item.uri}</span>
-              {:else if item.subtitle}
-                <span class="path" class:code={isPath(item)} class:wrap={isPlugin(item)}>{item.subtitle}</span>
+          {#if top}
+            <div class="group label-caps">Top hit</div>
+          {:else if i === 1 || groupOf(items[i - 1]) !== groupOf(item)}
+            <div class="group label-caps">{groupOf(item)}</div>
+          {/if}
+          <div
+            role="option"
+            tabindex="-1"
+            id={`result-${i}`}
+            aria-selected={i === selected}
+            class="row"
+            class:top
+            class:selected={i === selected}
+            data-index={i}
+            onmousemove={() => (selected = i)}
+            onclick={() => activate(item)}
+            onkeydown={() => {}}
+          >
+            <span class="icon code">{badgeOf(item)}</span>
+            <span class="text">
+              <span class="l1">
+                <span class="title"
+                  >{#each highlight(item.title) as part}{#if part.hit}<mark>{part.text}</mark
+                      >{:else}{part.text}{/if}{/each}</span
+                >
+                {#if !top && !isPlugin(item)}
+                  {#if typeof item.metadata?.snippet === "string" && item.uri}
+                    <span class="meta code">{item.uri}</span>
+                  {:else if item.subtitle}
+                    <span class="meta" class:code={isPath(item)}>{item.subtitle}</span>
+                  {/if}
+                {/if}
+              </span>
+              {#if top && item.subtitle}
+                <span class="sub" class:code={isPath(item)} class:wrap={isPlugin(item)}
+                  >{#each highlight(item.subtitle) as part}{#if part.hit}<mark>{part.text}</mark
+                      >{:else}{part.text}{/if}{/each}</span
+                >
+              {:else if !top && isPlugin(item) && item.subtitle}
+                <span class="sub wrap">{item.subtitle}</span>
+              {/if}
+              {#if typeof item.metadata?.snippet === "string"}
+                <span class="snippet"
+                  >{#each snippetParts(item.metadata.snippet) as part}{#if part.hit}<mark>{part.text}</mark
+                      >{:else}{part.text}{/if}{/each}</span
+                >
               {/if}
             </span>
-            {#if typeof item.metadata?.snippet === "string"}
-              <span class="snippet"
-                >{#each snippetParts(item.metadata.snippet) as part}{#if part.hit}<mark>{part.text}</mark
-                    >{:else}{part.text}{/if}{/each}</span
-              >
+            {#if i === selected && defaultAction(item)}
+              <span class="hint-enter"><kbd>Enter</kbd>{#if top}Open{/if}</span>
             {/if}
-          </span>
-          {#if i === selected && defaultAction(item)}<kbd>Enter</kbd>{/if}
+          </div>
         </li>
       {/each}
     </ul>
@@ -629,16 +744,30 @@
     </section>
   {/if}
 
+  {#if !panel && !disk && !card}
+    <nav class="pills" aria-label="Sections">
+      {#each SECTIONS as name, n}
+        <button
+          type="button"
+          class="pill"
+          class:on={section === n}
+          aria-current={section === n ? "true" : undefined}
+          title="Ctrl+{n + 1}"
+          onclick={() => gotoSection(n)}>{name}</button
+        >
+      {/each}
+    </nav>
+  {/if}
+
   {#if !panel}
-  <footer class="code">
+  <footer>
     {#if notice}
       <span class="warn">{notice}</span>
     {:else if status}
       <span class="local"><i class="dot"></i>local only</span>
-      {#if !panel && !disk && !card && items.length > 0}
-        <span><kbd>↑↓</kbd> move</span>
-        <span><kbd>Enter</kbd> open</span>
-        <span><kbd>Esc</kbd> close</span>
+      {#if !disk && !card && items.length > 0}
+        <span><kbd>Enter</kbd> Open</span>
+        <span><kbd>Esc</kbd> Back</span>
       {:else}
         <span>
           {fmt(status.files)} files · {fmt(status.folders)} folders · {fmt(status.apps)} apps
@@ -651,10 +780,7 @@
     {/if}
     <span class="spacer"></span>
     {#if openHotkey}<span class="hotkey">{openHotkey} open</span>{/if}
-    <span class="links">
-      <button class="btn text code" onclick={() => { if (!card && !disk) panel = true; }}>Ctrl+, settings</button>
-      <button class="btn text code" onclick={openDisk}>disk usage</button>
-    </span>
+    <button class="btn text" onclick={() => { if (!card && !disk) panel = true; }}>Ctrl+, settings</button>
   </footer>
   {/if}
 </main>
@@ -665,28 +791,33 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    background: var(--bg);
+    background: var(--glass-bg);
     color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 14px;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--r-window);
+    box-shadow: var(--shadow-window);
     overflow: hidden;
+  }
+  :global(:root[data-glass="on"]) .bar {
+    border-radius: 0;
+    box-shadow: none;
   }
 
   .searchrow {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 0 18px 0 20px;
-    border-bottom: 1px solid var(--border);
+    gap: var(--sp-3);
+    padding: 0 var(--sp-4) 0 var(--sp-5);
+    border-bottom: 1px solid var(--hairline);
   }
   .pin {
     all: unset;
     cursor: pointer;
-    font-size: 12px;
+    font-size: var(--fs-xs);
     padding: 3px 8px;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     color: var(--muted);
-    border: 1px solid var(--border);
+    border: 1px solid var(--hairline);
   }
   .pin:hover,
   .pin:focus-visible {
@@ -695,12 +826,7 @@
   }
   .pin.on {
     color: var(--accent);
-    border-color: var(--accent);
-  }
-  .prompt {
-    color: var(--accent);
-    font-size: 24px;
-    line-height: 1;
+    border-color: var(--accent-line);
   }
   .search {
     all: unset;
@@ -708,7 +834,7 @@
     flex: 1;
     min-width: 0;
     padding: 18px 0;
-    font-size: 20px;
+    font-size: var(--fs-xl);
     caret-color: var(--accent);
   }
   .search[readonly] {
@@ -717,7 +843,6 @@
   .search::placeholder {
     color: var(--muted);
   }
-  /* The caret and the prompt show the focus, so the field needs no extra outline. */
   .search:focus-visible {
     outline: none;
   }
@@ -730,37 +855,64 @@
     flex: 1;
     min-height: 0;
   }
-  .results li {
+  .entry {
+    animation: enter 90ms var(--ease) both;
+  }
+  @keyframes enter {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  .group {
+    padding: 10px 12px 4px;
+  }
+  .row {
     display: flex;
     align-items: center;
-    gap: 12px;
-    min-height: 48px;
-    padding: 6px 12px;
+    gap: var(--sp-3);
+    min-height: 40px;
+    padding: 5px 12px;
     border: 1px solid transparent;
-    border-radius: 10px;
+    border-radius: var(--r-md);
     cursor: default;
+    transition: background-color var(--dur-fast) var(--ease);
   }
-  .results li.group {
-    min-height: 0;
-    padding: 10px 12px 4px;
-    border: none;
+  .row.selected {
+    background: var(--accent-soft);
+    border-color: var(--accent-line);
   }
-  .results li.selected {
+  .row.top {
+    min-height: 64px;
+    padding: 10px 14px;
+    border-radius: var(--r-lg);
     background: var(--raised);
-    border-color: var(--accent);
+  }
+  .row.top.selected {
+    background: var(--accent-soft);
   }
 
-  .badge {
+  .icon {
     flex: none;
-    min-width: 52px;
+    min-width: 36px;
     box-sizing: border-box;
     text-align: center;
-    padding: 2px 6px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    padding: 5px 4px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-md);
     background: var(--panel);
     color: var(--text-soft);
-    font-size: 12px;
+    font-size: var(--fs-xs);
+  }
+  .row.top .icon {
+    min-width: 46px;
+    padding: 10px 4px;
+    border-radius: var(--r-lg);
+    color: var(--accent);
   }
 
   .text {
@@ -773,52 +925,105 @@
   .l1 {
     display: flex;
     align-items: baseline;
-    gap: 10px;
+    gap: var(--sp-3);
     min-width: 0;
   }
   .title {
     flex: none;
-    max-width: 55%;
+    max-width: 60%;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-    font-size: 15px;
+    font-size: var(--fs-md);
     font-weight: 600;
   }
-  .path {
+  .row.top .title {
+    max-width: 100%;
+    font-size: var(--fs-hit);
+  }
+  /* Path or meta, right-aligned in compact rows. */
+  .meta {
     flex: 1;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+    text-align: right;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--fs-xs);
   }
-  .path.wrap {
-    flex: 1 1 auto;
+  .meta:not(.code) {
+    font-size: var(--fs-sm);
+  }
+  .sub {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--text-soft);
+    font-size: var(--fs-sm);
+  }
+  .sub.code {
+    font-size: var(--fs-xs);
+  }
+  .sub.wrap {
     white-space: normal;
     overflow: visible;
-    text-overflow: clip;
     overflow-wrap: anywhere;
-  }
-  .l1:has(.path.wrap) {
-    flex-wrap: wrap;
-  }
-  .path:not(.code) {
-    font-size: 13px;
   }
   .snippet {
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
     color: var(--text-soft);
-    font-size: 13px;
+    font-size: var(--fs-sm);
   }
-  .snippet mark {
+  mark {
     padding: 0 2px;
     border-radius: 3px;
     background: var(--match-bg);
     color: var(--match-text);
+  }
+  .hint-enter {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-soft);
+    font-size: var(--fs-xs);
+  }
+
+  .pills {
+    display: flex;
+    gap: 6px;
+    padding: 8px 14px;
+    border-top: 1px solid var(--hairline);
+  }
+  .pill {
+    all: unset;
+    box-sizing: border-box;
+    cursor: pointer;
+    padding: 4px 14px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-pill);
+    color: var(--text-soft);
+    font-size: var(--fs-sm);
+    transition:
+      background-color var(--dur-fast) var(--ease),
+      color var(--dur-fast) var(--ease);
+  }
+  .pill:hover {
+    background: var(--raised);
+    color: var(--text);
+  }
+  .pill.on {
+    background: var(--accent-bg);
+    border-color: var(--accent-bg);
+    color: var(--accent-on);
+    font-weight: 600;
+  }
+  .pill:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 
   .note {
@@ -829,7 +1034,7 @@
   .empty {
     padding: 16px 20px;
     color: var(--muted);
-    font-size: 14px;
+    font-size: var(--fs-md);
     margin: 0;
     flex: 1;
     overflow-y: auto;
@@ -850,7 +1055,7 @@
   }
   .card h2 {
     margin: 0;
-    font-size: 20px;
+    font-size: var(--fs-xl);
     font-weight: 600;
     overflow-wrap: anywhere;
   }
@@ -858,9 +1063,9 @@
     align-self: flex-start;
     padding: 2px 8px;
     border: 1px solid var(--border-strong);
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     color: var(--text-soft);
-    font-size: 12px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -873,7 +1078,7 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    font-size: 14px;
+    font-size: var(--fs-md);
   }
   .line,
   .warning {
@@ -883,7 +1088,7 @@
   }
   .from {
     margin: 0 0 4px;
-    font-size: 13px;
+    font-size: var(--fs-sm);
     font-weight: 600;
     color: var(--muted);
   }
@@ -911,11 +1116,11 @@
     flex: none;
     width: 190px;
     color: var(--accent);
-    font-size: 14px;
+    font-size: var(--fs-md);
   }
   .what {
     color: var(--text-soft);
-    font-size: 14px;
+    font-size: var(--fs-md);
   }
 
   footer {
@@ -924,10 +1129,9 @@
     align-items: center;
     gap: 2px 14px;
     padding: 6px 14px 6px 20px;
-    border-top: 1px solid var(--border);
-    background: var(--panel);
+    border-top: 1px solid var(--hairline);
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--fs-xs);
   }
   footer .spacer {
     flex: 1;
@@ -936,24 +1140,18 @@
     color: var(--text-soft);
   }
   footer .btn.text {
-    font-size: 12px;
+    font-size: var(--fs-xs);
     white-space: nowrap;
     color: var(--accent);
   }
   footer .btn.text:hover {
     text-decoration: underline;
   }
-  footer .links {
-    display: inline-flex;
-    gap: 14px;
-  }
   footer > span {
     white-space: nowrap;
   }
   footer kbd {
-    padding: 0;
-    border: none;
-    background: none;
+    padding: 0 5px;
     color: var(--text-soft);
   }
   .local {
