@@ -14,7 +14,7 @@
     size: number;
     modified: number;
     kind: "text" | "image" | "folder" | "other";
-    state: "ok" | "hidden" | "too_large" | "missing" | "denied" | "locked" | "error";
+    state: "ok" | "hidden" | "online_only" | "too_large" | "missing" | "denied" | "locked" | "error";
     message: string;
     text: string | null;
     truncated: boolean;
@@ -78,8 +78,9 @@
 
   function onKey(e: KeyboardEvent) {
     if (e.key !== " " || !source || e.repeat) return;
-    const tag = (e.target as HTMLElement | null)?.tagName;
-    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "BUTTON") return;
+    const t = e.target as HTMLElement | null;
+    const tag = t?.tagName;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "BUTTON" || t?.isContentEditable) return;
     e.preventDefault();
     pv.overlay = !pv.overlay;
   }

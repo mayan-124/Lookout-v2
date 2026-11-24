@@ -32,7 +32,7 @@ pub struct Preview {
     pub modified: u64,
     /// "text", "image", "folder" or "other".
     pub kind: &'static str,
-    /// "ok", "hidden", "too_large", "missing", "denied", "locked" or "error".
+    /// "ok", "hidden", "online_only", "too_large", "missing", "denied", "locked" or "error".
     pub state: &'static str,
     pub message: String,
     pub text: Option<String>,
@@ -84,6 +84,12 @@ pub fn build(path: &Path, folder: Option<(u64, u64)>) -> Preview {
         p.message = "Preview hidden: sensitive file".into();
         return p;
     }
+    // Attributes come from the metadata above; the file itself is not opened.
+    if is_online_only(attributes(&meta)) {
+        p.state = "online_only";
+        p.message = "Online-only file: not previewed (avoids downloading it)".into();
+        return p;
+    }
     let ext = path
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
@@ -121,6 +127,26 @@ pub fn build(path: &Path, folder: Option<(u64, u64)>) -> Preview {
         }
     }
     p
+}
+
+const ATTR_OFFLINE: u32 = 0x1000;
+const ATTR_RECALL_ON_OPEN: u32 = 0x4_0000;
+const ATTR_RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+
+/// True for cloud placeholders: opening them would download the file.
+pub fn is_online_only(attrs: u32) -> bool {
+    attrs & (ATTR_OFFLINE | ATTR_RECALL_ON_OPEN | ATTR_RECALL_ON_DATA_ACCESS) != 0
+}
+
+#[cfg(windows)]
+fn attributes(meta: &std::fs::Metadata) -> u32 {
+    use std::os::windows::fs::MetadataExt;
+    meta.file_attributes()
+}
+
+#[cfg(not(windows))]
+fn attributes(_: &std::fs::Metadata) -> u32 {
+    0
 }
 
 fn fail(p: &mut Preview, e: &std::io::Error) {
@@ -232,6 +258,15 @@ mod tests {
         let ok = file(d.path(), "ok.png", &[1, 2, 3, 4]);
         let v = build(&ok, None);
         assert_eq!(v.image.as_deref(), Some("data:image/png;base64,AQIDBA=="));
+    }
+
+    #[test]
+    fn cloud_placeholders_are_recognised_by_attribute_bits() {
+        assert!(is_online_only(0x40_0000)); // recall on data access
+        assert!(is_online_only(0x4_0000 | 0x20)); // recall on open
+        assert!(is_online_only(0x1000)); // offline
+        assert!(!is_online_only(0x20 | 0x1)); // archive, read-only
+        assert!(!is_online_only(0));
     }
 
     #[test]
