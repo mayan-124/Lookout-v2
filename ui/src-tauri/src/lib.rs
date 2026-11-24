@@ -790,7 +790,13 @@ async fn preview_file(
 /// Makes the bar window wide enough for the disk view (or as large as the screen
 /// allows when `huge`), or puts it back.
 #[tauri::command]
-fn bar_resize(wide: bool, tall: Option<bool>, huge: Option<bool>, app: AppHandle) {
+fn bar_resize(
+    wide: bool,
+    tall: Option<bool>,
+    huge: Option<bool>,
+    height: Option<f64>,
+    app: AppHandle,
+) {
     let Ok(window) = bar_window(&app) else {
         return;
     };
@@ -799,6 +805,9 @@ fn bar_resize(wide: bool, tall: Option<bool>, huge: Option<bool>, app: AppHandle
         (100_000.0, 100_000.0)
     } else if wide {
         (1180.0, 700.0)
+    } else if let Some(h) = height {
+        // Fit to content; the screen clamp below caps it.
+        (940.0, h.max(120.0))
     } else if tall == Some(true) {
         (940.0, 720.0)
     } else {

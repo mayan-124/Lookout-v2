@@ -54,11 +54,20 @@
   --glass-bg:
     linear-gradient(
       135deg,
-      rgba(59, 91, 219, 0.3),
-      rgba(16, 20, 44, 0.55) 55%,
-      rgba(194, 65, 122, 0.26)
+      rgba(59, 91, 219, 0.38),
+      rgba(16, 20, 44, 0.3) 55%,
+      rgba(194, 65, 122, 0.32)
     ),
-    rgba(13, 16, 32, 0.5);
+    rgba(13, 16, 34, 0.9);
+  /* dock and hints: a touch more opaque */
+  --glass-bg-dock:
+    linear-gradient(
+      135deg,
+      rgba(59, 91, 219, 0.38),
+      rgba(16, 20, 44, 0.3) 55%,
+      rgba(194, 65, 122, 0.32)
+    ),
+    rgba(13, 16, 34, 0.92);
   --glass-blur: blur(24px) saturate(160%);
   --glass-border: rgba(255, 255, 255, 0.22);
   --glass-shadow:
@@ -100,6 +109,7 @@
    gradient, no blur. */
 :root[data-glass="solid"] {
   --glass-bg: var(--solid-bg);
+  --glass-bg-dock: var(--solid-bg);
   --glass-blur: none;
   --glass-border: rgba(255, 255, 255, 0.14);
   --glass-shadow: none;
