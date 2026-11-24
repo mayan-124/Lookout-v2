@@ -24,12 +24,14 @@ tauri-build = { version = "2", features = [] }
 lookout-core = { workspace = true, features = ["download"] }
 thiserror.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-dialog = "2"
 # ShellExecute instead of the default PowerShell launcher: same exact-path behaviour,
 # about 2.5x faster to the first open (see docs/decisions.md, Phase 2).
 open = { version = "5", features = ["shellexecute-on-windows"] }
+tauri-plugin-updater = "2"
 
 [lints]
 workspace = true

@@ -1663,6 +1663,8 @@ pub fn run() {
             move_gen: AtomicU64::new(0),
         })
         .plugin(tauri_plugin_dialog::init())
+        // Only used when the user clicks "Check for updates" in Settings.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {

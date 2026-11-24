@@ -7,3 +7,6 @@ latency.csv
 review/
 stderr.txt
 stdout.txt
+*.key
+*.key.*
+*.key.pub.bak

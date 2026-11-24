@@ -2,6 +2,13 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Permissions for the bar window",
-  "windows": ["bar"],
-  "permissions": ["core:default", "core:window:allow-start-dragging"]
+  "windows": [
+    "bar"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "updater:allow-check",
+    "updater:allow-download-and-install"
+  ]
 }

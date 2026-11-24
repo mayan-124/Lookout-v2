@@ -5,6 +5,9 @@ on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: write
+
 jobs:
   installer:
     runs-on: windows-latest
@@ -69,7 +72,17 @@ jobs:
           }
 
       - name: Build NSIS installer
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: npm run tauri build -- --config src-tauri/tauri.installer.conf.json
+        working-directory: ui
+
+      # Tag builds only: also sign the installer for the updater. The key comes from secrets only.
+      - name: Build and sign NSIS installer
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build -- --config src-tauri/tauri.installer.conf.json --config src-tauri/tauri.release.conf.json
         working-directory: ui
 
       - uses: actions/upload-artifact@v5
@@ -77,3 +90,33 @@ jobs:
           name: lookout-installer
           path: target/release/bundle/nsis/*.exe
           if-no-files-found: error
+
+      - name: Publish release with latest.json
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = $TAG.TrimStart("v")
+          $conf = Get-Content ui/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          if ($conf.version -ne $version) { throw "Tag $TAG does not match tauri.conf.json version $($conf.version)" }
+          $exe = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $sigFile = "$($exe.FullName).sig"
+          if (-not (Test-Path $sigFile)) { throw "Missing signature $sigFile" }
+          gh release create $TAG --generate-notes --title $TAG 2>$null
+          $notes = gh release view $TAG --json body --jq .body
+          $url = "https://github.com/${env:GITHUB_REPOSITORY}/releases/download/$TAG/$($exe.Name)"
+          $latest = [ordered]@{
+            version  = $version
+            notes    = $notes
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = (Get-Content $sigFile -Raw).Trim()
+                url       = $url
+              }
+            }
+          }
+          $latest | ConvertTo-Json -Depth 5 | Set-Content latest.json -Encoding utf8
+          gh release upload $TAG $exe.FullName $sigFile latest.json --clobber

@@ -15,7 +15,7 @@ Uninstall from Windows Settings. Your data (index, key, settings, clipboard hist
 
 ## What stays on the device
 
-Everything. Your files, searches and index never leave your PC. Lookout connects to the internet only when you click a download button, and it only receives files. There is no telemetry. The name index, text index, usage history, undo log, clipboard history and meaning vectors are encrypted with a key only your Windows account can unlock (DPAPI). `settings.json` (folder names, your choices) is not encrypted. Secrets such as API keys and card numbers are masked before text is indexed. Deleting your index removes the data and the key; your files are never touched.
+Everything. Your files, searches and index never leave your PC. Lookout connects to the internet only when you click a download button, "Check for updates" or "Download and install", and it only receives files. There is no telemetry. The name index, text index, usage history, undo log, clipboard history and meaning vectors are encrypted with a key only your Windows account can unlock (DPAPI). `settings.json` (folder names, your choices) is not encrypted. Secrets such as API keys and card numbers are masked before text is indexed. Deleting your index removes the data and the key; your files are never touched.
 
 ## Known limits
 

@@ -4,6 +4,8 @@
   import Plugins from "./Plugins.svelte";
   import Health from "./Health.svelte";
   import { applyTheme, type ThemePref } from "./theme";
+  import { getVersion } from "@tauri-apps/api/app";
+  import { check, type Update } from "@tauri-apps/plugin-updater";
 
   interface PrivacyState {
     roots: string[];
@@ -20,6 +22,38 @@
     index_speed: "gentle" | "balanced" | "fast";
     content_index_max_mb: number;
     theme: ThemePref;
+  }
+
+  // Manual update check: nothing runs until the user clicks; nothing downloads until the second click.
+  let appVersion = $state("");
+  let upd: Update | null = $state(null);
+  let updMsg = $state("");
+  let updBusy = $state(false);
+  getVersion().then((v: string) => (appVersion = v)).catch(() => {});
+  async function checkUpdates() {
+    updBusy = true;
+    updMsg = "";
+    upd = null;
+    try {
+      const u = await check();
+      if (u) upd = u;
+      else updMsg = "Lookout is up to date.";
+    } catch {
+      updMsg = "Could not check for updates. Check your internet connection and try again.";
+    }
+    updBusy = false;
+  }
+  async function installUpdate() {
+    if (!upd) return;
+    updBusy = true;
+    updMsg = "Downloading…";
+    try {
+      await upd.downloadAndInstall();
+      updMsg = "Installing. Lookout will restart.";
+    } catch {
+      updMsg = "The update could not be downloaded or verified. Nothing was changed.";
+      updBusy = false;
+    }
   }
 
   type Section = "general" | "folders" | "privacy" | "speed" | "addons" | "shortcuts" | "status" | "delete";
@@ -312,6 +346,17 @@
               <option value="dark">Dark</option>
             </select>
           </label>
+          <div class="field">
+            {@render field("Updates", `Version ${appVersion}. Connects to the internet only when you click a button here, and only receives files.`)}
+            <button class="btn" disabled={updBusy} onclick={checkUpdates}>Check for updates</button>
+          </div>
+          {#if upd}
+            <div class="field">
+              {@render field(`Version ${upd.version} is available`, upd.body ?? "")}
+              <button class="btn primary" disabled={updBusy} onclick={installUpdate}>Download and install</button>
+            </div>
+          {/if}
+          {#if updMsg}<p role="status">{updMsg}</p>{/if}
         {:else if section === "folders"}
           <h2 id="priv-title">Folders</h2>
           <h3 class="label-caps">Folders to search</h3>

@@ -8,14 +8,15 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 
 ## Rust crates
 
-314 crates (name and version). Grouped by license; each entry shows the copyright notice found in the crate's license files, or, where the crate source ships no license file, the `authors` field of its Cargo.toml.
+347 crates (name and version). Grouped by license; each entry shows the copyright notice found in the crate's license files, or, where the crate source ships no license file, the `authors` field of its Cargo.toml.
 
-### MIT OR Apache-2.0 (196)
+### MIT OR Apache-2.0 (209)
 
 - **aead** 0.6.1 — <https://github.com/RustCrypto/traits> — Copyright (c) 2019-2026 The RustCrypto Project Developers; Copyright (c) 2019 MobileCoin, LLC
 - **aes** 0.9.4 — <https://github.com/RustCrypto/block-ciphers> — Copyright (c) 2018-2024 The RustCrypto Project Developers; Copyright (c) 2018 Artyom Pavlov
 - **anyhow** 1.0.104 — <https://github.com/dtolnay/anyhow> — its license file has no copyright line; authors (Cargo.toml): David Tolnay
 - **arc-swap** 1.9.5 — <https://github.com/vorner/arc-swap> — Copyright (c) 2017 arc-swap developers
+- **atomic-waker** 1.1.2 — <https://github.com/smol-rs/atomic-waker> — authors (Cargo.toml): Stjepan Glavina, Contributors to futures-rs
 - **base64** 0.23.1 — <https://github.com/marshallpierce/rust-base64> — Copyright (c) 2025 Alice Maz, Marshall Pierce
 - **bit-set** 0.8.0 — <https://github.com/contain-rs/bit-set> — Copyright (c) 2023 The Rust Project Developers
 - **bit-vec** 0.8.0 — <https://github.com/contain-rs/bit-vec> — Copyright (c) 2023 The Rust Project Developers
@@ -68,9 +69,12 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **fnv** 1.0.7 — <https://github.com/servo/rust-fnv> — Copyright (c) 2017 Contributors
 - **form_urlencoded** 1.2.2 — <https://github.com/servo/rust-url> — Copyright (c) 2013-2016 The rust-url developers
 - **fs4** 0.13.1 — <https://github.com/al8n/fs4-rs> — Copyright (c) 2015 The Rust Project Developers
+- **futures-channel** 0.3.34 — <https://github.com/rust-lang/futures-rs> — authors (Cargo.toml): none listed
 - **futures-core** 0.3.34 — <https://github.com/rust-lang/futures-rs> — Copyright (c) 2016 Alex Crichton; Copyright (c) 2017 The Tokio Authors
+- **futures-sink** 0.3.34 — <https://github.com/rust-lang/futures-rs> — authors (Cargo.toml): none listed
 - **futures-task** 0.3.34 — <https://github.com/rust-lang/futures-rs> — Copyright (c) 2016 Alex Crichton; Copyright (c) 2017 The Tokio Authors
 - **futures-util** 0.3.34 — <https://github.com/rust-lang/futures-rs> — Copyright (c) 2016 Alex Crichton; Copyright (c) 2017 The Tokio Authors
+- **getrandom** 0.2.17 — <https://github.com/rust-random/getrandom> — authors (Cargo.toml): The Rand Project Developers
 - **getrandom** 0.3.4 — <https://github.com/rust-random/getrandom> — Copyright (c) 2018-2025 The rust-random Project Developers; Copyright (c) 2014 The Rust Project Developers
 - **getrandom** 0.4.3 — <https://github.com/rust-random/getrandom> — Copyright (c) 2018-2026 The rust-random Project Developers; Copyright (c) 2014 The Rust Project Developers
 - **glob** 0.3.4 — <https://github.com/rust-lang/glob> — Copyright (c) 2014 The Rust Project Developers
@@ -81,6 +85,7 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **heck** 0.5.0 — <https://github.com/withoutboats/heck> — Copyright (c) 2015 The Rust Project Developers
 - **html5ever** 0.39.0 — <https://github.com/servo/html5ever> — Copyright (c) 2014 The html5ever Project Developers
 - **http** 1.5.0 — <https://github.com/hyperium/http> — Copyright 2017 http-rs authors; Copyright (c) 2017 http-rs authors
+- **httparse** 1.10.1 — <https://github.com/seanmonstar/httparse> — authors (Cargo.toml): Sean McArthur
 - **hybrid-array** 0.4.15 — <https://github.com/RustCrypto/hybrid-array> — Copyright (c) 2022-2026 The RustCrypto Project Developers
 - **ident_case** 1.0.1 — <https://github.com/TedDriggs/ident_case> — its license file has no copyright line; authors (Cargo.toml): Ted Driggs
 - **idna** 1.1.0 — <https://github.com/servo/rust-url/> — Copyright (c) 2013-2025 The rust-url developers
@@ -89,6 +94,7 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **indexmap** 2.14.2 — <https://github.com/indexmap-rs/indexmap> — Copyright (c) 2016--2017
 - **inout** 0.2.6 — <https://github.com/RustCrypto/utils> — Copyright (c) 2022-2025 The RustCrypto Project Developers; Copyright (c) 2022 Artyom Pavlov
 - **inventory** 0.3.25 — <https://github.com/dtolnay/inventory> — its license file has no copyright line; authors (Cargo.toml): David Tolnay
+- **ipnet** 2.12.2 — <https://github.com/krisprice/ipnet> — authors (Cargo.toml): Kris Price
 - **itertools** 0.14.0 — <https://github.com/rust-itertools/itertools> — Copyright (c) 2015
 - **itoa** 1.0.19 — <https://github.com/dtolnay/itoa> — its license file has no copyright line; authors (Cargo.toml): David Tolnay
 - **json-patch** 4.2.0 — <https://github.com/idubrov/json-patch> — Copyright (c) 2017 Ivan Dubrov
@@ -134,7 +140,10 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **regex** 1.13.2 — <https://github.com/rust-lang/regex> — Copyright (c) 2014 The Rust Project Developers
 - **regex-automata** 0.4.19 — <https://github.com/rust-lang/regex> — Copyright (c) 2014 The Rust Project Developers
 - **regex-syntax** 0.8.12 — <https://github.com/rust-lang/regex> — Copyright (c) 2014 The Rust Project Developers
+- **reqwest** 0.13.5 — <https://github.com/seanmonstar/reqwest> — authors (Cargo.toml): Sean McArthur
 - **rustc-hash** 2.1.3 — <https://github.com/rust-lang/rustc-hash> — its license file has no copyright line; authors (Cargo.toml): The Rust Project Developers
+- **rustls-pki-types** 1.16.0 — <https://github.com/rustls/pki-types> — authors (Cargo.toml): none listed
+- **rustls-platform-verifier** 0.7.1 — <https://github.com/rustls/rustls-platform-verifier> — authors (Cargo.toml): none listed
 - **scopeguard** 1.2.0 — <https://github.com/bluss/scopeguard> — Copyright (c) 2016-2019 Ulrik Sverdrup "bluss" and scopeguard developers
 - **semver** 1.0.28 — <https://github.com/dtolnay/semver> — its license file has no copyright line; authors (Cargo.toml): David Tolnay
 - **serde** 1.0.229 — <https://github.com/serde-rs/serde> — its license file has no copyright line; authors (Cargo.toml): Erick Tryzelaar, David Tolnay
@@ -151,6 +160,7 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **simdutf8** 0.1.5 — <https://github.com/rusticstuff/simdutf8> — its license file has no copyright line; authors (Cargo.toml): Hans Kratz
 - **siphasher** 1.0.4 — <https://github.com/jedisct1/rust-siphash> — Copyright 2012-2016 The Rust Project Developers.; Copyright 2016-2026 Frank Denis.
 - **smallvec** 1.16.6 — <https://github.com/smallvec/smallvec> — Copyright (c) 2018 The Servo Project Developers
+- **socket2** 0.6.5 — <https://github.com/rust-lang/socket2> — authors (Cargo.toml): Alex Crichton, Thomas de Zeeuw
 - **softbuffer** 0.4.8 — <https://github.com/rust-windowing/softbuffer> — Copyright 2022 Kirill Chibisov
 - **stable_deref_trait** 1.2.1 — <https://github.com/storyyeller/stable_deref_trait> — Copyright (c) 2017 Robert Grosse
 - **string_cache** 0.9.0 — <https://github.com/servo/string-cache> — Copyright (c) 2012-2013 Mozilla Foundation
@@ -162,6 +172,7 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **tauri-plugin-dialog** 2.8.4 — <https://github.com/tauri-apps/plugins-workspace> — Copyright (c) 2017 - Present Tauri Apps Contributors
 - **tauri-plugin-fs** 2.7.1 — <https://github.com/tauri-apps/plugins-workspace> — Copyright (c) 2017 - Present Tauri Apps Contributors
 - **tauri-plugin-global-shortcut** 2.4.1 — <https://github.com/tauri-apps/plugins-workspace> — Copyright (c) 2017 - Present Tauri Apps Contributors
+- **tauri-plugin-updater** 2.14.1 — <https://github.com/tauri-apps/plugins-workspace> — authors (Cargo.toml): Tauri Programme within The Commons Conservancy
 - **tauri-runtime** 2.12.4 — <https://github.com/tauri-apps/tauri> — Copyright (c) 2017 - Present Tauri Apps Contributors
 - **tauri-runtime-wry** 2.12.5 — <https://github.com/tauri-apps/tauri> — Copyright (c) 2017 - Present Tauri Apps Contributors
 - **tauri-utils** 2.10.4 — <https://github.com/tauri-apps/tauri> — Copyright (c) 2017 - Present Tauri Apps Contributors
@@ -170,6 +181,7 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **thiserror** 2.0.21 — <https://github.com/dtolnay/thiserror> — its license file has no copyright line; authors (Cargo.toml): David Tolnay
 - **time** 0.3.55 — <https://github.com/time-rs/time> — Copyright (c) Jacob Pratt et al.
 - **time-core** 0.1.9 — <https://github.com/time-rs/time> — Copyright (c) Jacob Pratt et al.
+- **tokio-rustls** 0.26.6 — <https://github.com/rustls/tokio-rustls> — authors (Cargo.toml): none listed
 - **toml** 1.2.1+spec-1.1.0 — <https://github.com/toml-rs/toml> — Copyright Individual contributors; Copyright (c) Individual contributors
 - **toml_datetime** 1.1.3+spec-1.1.0 — <https://github.com/toml-rs/toml> — Copyright Individual contributors; Copyright (c) Individual contributors
 - **toml_parser** 1.1.5+spec-1.1.0 — <https://github.com/toml-rs/toml> — Copyright Individual contributors; Copyright (c) Individual contributors
@@ -198,6 +210,7 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **windows-future** 0.3.2 — <https://github.com/microsoft/windows-rs> — Copyright (c) Microsoft Corporation.
 - **windows-link** 0.2.1 — <https://github.com/microsoft/windows-rs> — Copyright (c) Microsoft Corporation.
 - **windows-numerics** 0.3.1 — <https://github.com/microsoft/windows-rs> — Copyright (c) Microsoft Corporation.
+- **windows-registry** 0.6.1 — <https://github.com/microsoft/windows-rs> — authors (Cargo.toml): none listed
 - **windows-result** 0.4.1 — <https://github.com/microsoft/windows-rs> — Copyright (c) Microsoft Corporation.
 - **windows-strings** 0.5.1 — <https://github.com/microsoft/windows-rs> — Copyright (c) Microsoft Corporation.
 - **windows-sys** 0.59.0 — <https://github.com/microsoft/windows-rs> — Copyright (c) Microsoft Corporation.
@@ -209,7 +222,7 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **wry** 0.57.3 — <https://github.com/tauri-apps/wry> — Copyright (c) 2020-2023 Ngo Iok Ui & Tauri Programme within The Commons Conservancy
 - **zeroize** 1.9.2 — <https://github.com/RustCrypto/utils> — Copyright (c) 2018-2026 The RustCrypto Project Developers
 
-### MIT (58)
+### MIT (71)
 
 - **bitpacking** 0.9.3 — <https://github.com/quickwit-oss/bitpacking> — Copyright (c) 2016 Paul Masurel
 - **bytes** 1.12.2 — <https://github.com/tokio-rs/bytes> — Copyright (c) 2018 Carl Lerche
@@ -222,6 +235,10 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **derive_more** 2.1.1 — <https://github.com/JelteF/derive_more> — Copyright (c) 2016 Jelte Fennema
 - **dom_query** 0.28.0 — <https://github.com/niklak/dom_query> — Copyright (c) 2023 Mykola Humanov
 - **generic-array** 0.14.7 — <https://github.com/fizyk20/generic-array.git> — Copyright (c) 2015 Bartłomiej Kamiński
+- **http-body** 1.1.0 — <https://github.com/hyperium/http-body> — authors (Cargo.toml): Carl Lerche, Lucio Franco, Sean McArthur
+- **http-body-util** 0.1.5 — <https://github.com/hyperium/http-body> — authors (Cargo.toml): Carl Lerche, Lucio Franco, Sean McArthur
+- **hyper** 1.12.0 — <https://github.com/hyperium/hyper> — authors (Cargo.toml): Sean McArthur
+- **hyper-util** 0.1.21 — <https://github.com/hyperium/hyper-util> — authors (Cargo.toml): Sean McArthur
 - **ico** 0.6.0 — <https://github.com/mdsteele/rust-ico> — Copyright (c) 2018 Matthew D. Steele
 - **infer** 0.22.0 — <https://github.com/bojand/infer> — Copyright (c) 2019 Bojan
 - **levenshtein_automata** 0.2.1 — <https://github.com/tantivy-search/levenshtein-automata> — Copyright (c) 2018 Paul Masurel
@@ -230,6 +247,8 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **lru** 0.18.5 — <https://github.com/jeromefroe/lru-rs.git> — Copyright (c) 2016 Jerome Froelich
 - **lz4_flex** 0.14.2 — <https://github.com/pseitz/lz4_flex> — Copyright (c) 2020 Pascal Seitz
 - **measure_time** 0.9.0 — <https://github.com/PSeitz/rust_measure_time> — Copyright (c) 2016 The humantime Developers
+- **minisign-verify** 0.3.0 — <https://github.com/jedisct1/rust-minisign-verify> — authors (Cargo.toml): Frank Denis
+- **mio** 1.2.5 — <https://github.com/tokio-rs/mio> — authors (Cargo.toml): Carl Lerche, Thomas de Zeeuw, Tokio Contributors
 - **murmurhash32** 0.4.0 — <https://github.com/quickwit-inc/murmurhash32> — Copyright (c) 2024 by Quickwit Inc.
 - **new_debug_unreachable** 1.0.6 — <https://github.com/mbrubeck/rust-debug-unreachable> — Copyright (c) 2015 Jonathan Reem
 - **nom** 7.1.3 — <https://github.com/Geal/nom> — Copyright (c) 2014-2019 Geoffroy Couprie
@@ -261,9 +280,16 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **tantivy-stacker** 0.27.0 — <https://github.com/quickwit-oss/tantivy> — no license file in crate source; no authors field
 - **tantivy-tokenizer-api** 0.7.0 — <https://github.com/quickwit-oss/tantivy> — no license file in crate source; no authors field
 - **tokio** 1.54.1 — <https://github.com/tokio-rs/tokio> — Copyright (c) Tokio Contributors
+- **tokio-util** 0.7.20 — <https://github.com/tokio-rs/tokio> — authors (Cargo.toml): Tokio Contributors
+- **tower** 0.5.3 — <https://github.com/tower-rs/tower> — authors (Cargo.toml): Tower Maintainers
+- **tower-http** 0.6.11 — <https://github.com/tower-rs/tower-http> — authors (Cargo.toml): Tower Maintainers
+- **tower-layer** 0.3.3 — <https://github.com/tower-rs/tower> — authors (Cargo.toml): Tower Maintainers
+- **tower-service** 0.3.3 — <https://github.com/tower-rs/tower> — authors (Cargo.toml): Tower Maintainers
 - **tracing** 0.1.44 — <https://github.com/tokio-rs/tracing> — Copyright (c) 2019 Tokio Contributors
 - **tracing-core** 0.1.36 — <https://github.com/tokio-rs/tracing> — Copyright (c) 2019 Tokio Contributors
+- **try-lock** 0.2.5 — <https://github.com/seanmonstar/try-lock> — authors (Cargo.toml): Sean McArthur
 - **urlpattern** 0.6.0 — <https://github.com/denoland/rust-urlpattern> — Copyright (c) 2021 the Deno authors
+- **want** 0.3.2 — <https://github.com/seanmonstar/want> — authors (Cargo.toml): Sean McArthur
 - **webview2-com** 0.39.1 — <https://github.com/wravery/webview2-rs> — no license file in crate source; no authors field
 - **webview2-com-sys** 0.39.1 — <https://github.com/wravery/webview2-rs> — no license file in crate source; no authors field
 - **winnow** 1.0.5 — <https://github.com/winnow-rs/winnow> — its license file has no copyright line; no authors field
@@ -299,13 +325,14 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **walkdir** 2.5.0 — <https://github.com/BurntSushi/walkdir> — Copyright (c) 2015 Andrew Gallant
 - **winapi-util** 0.1.11 — <https://github.com/BurntSushi/winapi-util> — Copyright (c) 2017 Andrew Gallant
 
-### BSD-3-Clause (7)
+### BSD-3-Clause (8)
 
 - **alloc-no-stdlib** 2.0.4 — <https://github.com/dropbox/rust-alloc-no-stdlib> — Copyright (c) 2016 Dropbox, Inc.
 - **alloc-no-stdlib** 3.0.0 — <https://github.com/dropbox/rust-alloc-no-stdlib> — Copyright (c) 2016 Dropbox, Inc.
 - **alloc-stdlib** 0.2.4 — <https://github.com/dropbox/rust-alloc-no-stdlib> — no license file in crate source; authors (Cargo.toml): Daniel Reiter Horn
 - **alloc-stdlib** 0.3.0 — <https://github.com/dropbox/rust-alloc-no-stdlib> — no license file in crate source; authors (Cargo.toml): Daniel Reiter Horn
 - **frostem** 1.20260821.8 — <https://github.com/Xuanwo/frostem> — Copyright (c) 2026, frostem contributors; Copyright (c) 2001, Dr Martin Porter; Copyright (c) 2004,2005, Richard Boulton; Copyright (c) 2013, Yoshiki Shibukawa
+- **subtle** 2.6.1 — <https://github.com/dalek-cryptography/subtle> — authors (Cargo.toml): Isis Lovecruft, Henry de Valence
 - **zstd** 0.14.4 — <https://github.com/gyscos/zstd-rs> — Copyright (c) 2026, Alexandre Bury
 - **zstd-safe** 8.3.0 — <https://github.com/gyscos/zstd-rs> — Copyright (c) 2026, Alexandre Bury
 
@@ -329,10 +356,11 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **unicode-normalization** 0.1.26 — <https://github.com/unicode-rs/unicode-normalization> — Copyright (c) 2015 The Rust Project Developers; COPYRIGHT AND PERMISSION NOTICE; Copyright © 1991-2023 Unicode, Inc.
 - **unicode-properties** 0.1.5 — <https://github.com/unicode-rs/unicode-properties> — Copyright (c) 2015 The Rust Project Developers; COPYRIGHT AND PERMISSION NOTICE; Copyright © 1991-2026 Unicode, Inc.
 
-### Apache-2.0 (3)
+### Apache-2.0 (4)
 
 - **datasketches** 0.5.0 — <https://github.com/apache/datasketches-rust> — its license file has no copyright line; no authors field
 - **sketches-ddsketch** 0.4.2 — <https://github.com/mheffner/rust-sketches-ddsketch> — Copyright [2019] [Mike Heffner]
+- **sync_wrapper** 1.0.2 — <https://github.com/Actyx/sync_wrapper> — authors (Cargo.toml): Actyx AG
 - **tao** 0.37.3 — <https://github.com/tauri-apps/tao> — its license file has no copyright line; authors (Cargo.toml): Tauri Programme within The Commons Conservancy, The winit contributors
 
 ### Apache-2.0 OR CC0-1.0 OR MIT-0 (2)
@@ -370,9 +398,11 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 
 - **notify** 8.2.2 — <https://github.com/notify-rs/notify.git> — its license file has no copyright line; authors (Cargo.toml): Félix Saparelli, Daniel Faust, Aron Heinecke
 
-### ISC (1)
+### ISC (3)
 
 - **libloading** 0.9.1 — <https://github.com/nagisa/rust_libloading/> — Copyright © 2015, Simonas Kazlauskas
+- **rustls-webpki** 0.103.17 — <https://github.com/rustls/webpki> — authors (Cargo.toml): none listed
+- **untrusted** 0.9.0 — <https://github.com/briansmith/untrusted> — authors (Cargo.toml): Brian Smith
 
 ### MIT OR Apache-2.0 OR 0BSD (1)
 
@@ -390,11 +420,21 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 
 - **fastdivide** 0.4.2 — <https://github.com/fulmicoton/fastdivide> — Copyright (C) 2024-Present Paul Masurel
 
+### Apache-2.0 OR ISC OR MIT (2)
+
+- **hyper-rustls** 0.27.10 — <https://github.com/rustls/hyper-rustls> — authors (Cargo.toml): none listed
+- **rustls** 0.23.46 — <https://github.com/rustls/rustls> — authors (Cargo.toml): none listed
+
+### Apache-2.0 AND ISC (1)
+
+- **ring** 0.17.14 — <https://github.com/briansmith/ring> — authors (Cargo.toml): none listed
+
 ## npm packages bundled into the user interface
 
-Only `@tauri-apps/api` is a production dependency (`npm ls --omit=dev --all`). The Svelte runtime and its two runtime dependencies are compiled into the shipped `ui/dist` bundle even though they are listed as development dependencies, so they are listed here too. Svelte's compiler-only dependencies are not part of the bundle and are not listed.
+`@tauri-apps/api` and `@tauri-apps/plugin-updater` are the production dependencies (`npm ls --omit=dev --all`). The Svelte runtime and its two runtime dependencies are compiled into the shipped `ui/dist` bundle even though they are listed as development dependencies, so they are listed here too. Svelte's compiler-only dependencies are not part of the bundle and are not listed.
 
 - **@tauri-apps/api** 2.12.5 — Apache-2.0 OR MIT — <https://github.com/tauri-apps/tauri> — Copyright (c) 2017 - Present Tauri Apps Contributors
+- **@tauri-apps/plugin-updater** 2.14.1 — MIT OR Apache-2.0 — <https://github.com/tauri-apps/plugins-workspace> — 2019-2022, The Tauri Programme in the Commons Conservancy
 - **svelte** 5.58.0 — MIT — <https://github.com/sveltejs/svelte> — Copyright (c) 2016-2025 [Svelte Contributors](https://github.com/sveltejs/svelte/graphs/contributors)
 - **clsx** 2.1.1 — MIT — <https://github.com/lukeed/clsx> — Copyright (c) Luke Edwards <luke.edwards05@gmail.com> (lukeed.com)
 - **esm-env** 1.2.2 — MIT — <https://github.com/benmccann/esm-env> — Copyright 2022 Benjamin McCann
@@ -1419,3 +1459,9 @@ These items are not Rust crates or npm packages. License not verified for any of
 - **fastdivide** 0.4.2 — offered as `zlib-acknowledgement OR MIT`; the `zlib-acknowledgement` alternative is not a common license, use it under MIT unless its text is checked
 - **zstd-sys** 2.1.3+zstd.1.5.7 — its bundled C sources ship a GNU GPL text (`zstd\COPYING`) next to a BSD license file (zstd is offered under BSD or GPL-2.0). The GPL text is not reproduced here. Lookout relies on the BSD license; confirm this choice before release
 - License text for `zlib-acknowledgement` was not found in any package source in the dependency set
+
+## Added with the update check
+
+The "Check for updates" feature added one direct dependency in each ecosystem: the Rust crate `tauri-plugin-updater` and the npm package `@tauri-apps/plugin-updater`. The Rust crate count above went from 314 to 347 (33 new transitive crates, e.g. reqwest, hyper, rustls, ring); the npm production dependencies went from 1 to 2. Procedural-macro crates it also pulls in are not listed, as above.
+
+`ring` 0.17.14 is "Apache-2.0 AND ISC": its own new code is under the ISC license (text above); some code sourced from BoringSSL is under Apache-2.0 or ISC, and some from the once_cell project under Apache-2.0 or MIT. Each file carries its license at the top; see the `LICENSE`, `LICENSE-BoringSSL` and `LICENSE-other-bits` files in the ring source package.
