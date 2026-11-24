@@ -21,6 +21,7 @@
     source: string;
     score: number;
     metadata?: Record<string, unknown>;
+    modified_at?: number | null;
   }
   interface Update {
     generation: number;
@@ -116,37 +117,57 @@
     const g = LANES[lane].groups;
     return g ? all.filter((i) => (g as readonly string[]).includes(groupOf(i))) : all;
   });
-  // Home tiles: the latest clips and capture requests use their own query numbers.
+  // Home list: the latest clips, then recently modified indexed files. Both come
+  // from ordinary queries ("clip " and "past week"); nothing is stored.
   let homeGen = 0;
+  let homeGen2 = 0;
   let homeClips: Item[] = $state([]);
-  let captureGen = 0;
-  let captureAction = "";
-  const mask = (t: string) => t.replaceAll("[masked]", "••••");
+  let homeFiles: Item[] = $state([]);
+  const mask = (t: string) => t.replaceAll("[masked]", "\u2022\u2022\u2022\u2022");
   function loadHome() {
     generation += 1;
     homeGen = generation;
+    homeGen2 = 0;
     invoke("query", { generation, text: "clip " }).catch(() => {});
   }
-  // A capture button needs the plugin's result id, so it asks for the capture
-  // results, then runs the same prepare/run steps Enter would.
-  function startCapture(action: string) {
-    if (card) return;
-    notice = "";
-    generation += 1;
-    captureGen = generation;
-    captureAction = action;
-    invoke("query", { generation, text: "shot " }).catch(() => {});
+  const AGE = /(\d+)\s*(min|h|days?)\s+ago$/;
+  // A clip's age is the last part of its subtitle ("5 min ago", "just now").
+  function clipTime(i: Item): number {
+    const now = Math.floor(Date.now() / 1000);
+    const last = (i.subtitle ?? "").split(" \u00b7 ").pop() ?? "";
+    const m = AGE.exec(last);
+    if (!m) return now;
+    const n = Number(m[1]);
+    return now - n * (m[2] === "min" ? 60 : m[2] === "h" ? 3600 : 86400);
   }
-  function finishCapture(list: Item[]) {
-    const action = captureAction;
-    captureAction = "";
-    captureGen = 0;
-    const hit = list.find((i) => i.id === action || i.id.endsWith(":" + action));
-    if (!hit) {
-      notice = "That capture is not available.";
-      return;
-    }
-    begin(() => invoke<Prepared>("prepare_action", { action, id: hit.id }));
+  const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  function dayLabel(ts: number): string {
+    const d = new Date(ts * 1000);
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const days = Math.floor((start.getTime() - new Date(d).setHours(0, 0, 0, 0)) / 86400000);
+    if (days <= 0) return "Today";
+    if (days === 1) return "Yesterday";
+    if (days < 7) return WEEKDAYS[d.getDay()];
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+  interface Recent {
+    item: Item;
+    ts: number;
+    clip: boolean;
+  }
+  const recent = $derived.by<Recent[]>(() => {
+    const rows: Recent[] = [
+      ...homeClips.slice(0, 3).map((item) => ({ item, ts: clipTime(item), clip: true })),
+      ...homeFiles
+        .filter((i) => i.modified_at)
+        .map((item) => ({ item, ts: item.modified_at as number, clip: false })),
+    ];
+    return rows.sort((a, b) => b.ts - a.ts).slice(0, 6);
+  });
+  function openRecent(r: Recent) {
+    if (r.clip) gotoSection(2);
+    else activate(r.item);
   }
   // Matched words in a content snippet sit between  and .
   function snippetParts(snippet: string): { text: string; hit: boolean }[] {
@@ -298,7 +319,7 @@
   }
   // The empty-bar welcome: what to type and what it does.
   const TRY: [string, string][] = [
-    ["renovation invoice", "words inside your files"],
+    ["renovation invoice", "find words inside files"],
     ["kill port 3000", "see what uses a port"],
     ["10 km to miles", "convert and calculate"],
   ];
@@ -369,12 +390,20 @@
 
   function onUpdate(u: Update) {
     if (u.generation !== generation) return;
-    if (u.generation === captureGen) {
-      if (u.done) finishCapture(u.items);
-      return;
-    }
     if (u.generation === homeGen) {
       homeClips = u.items.filter((i) => kindName(i.kind) === "clipboard").slice(0, 3);
+      if (u.done) {
+        generation += 1;
+        homeGen2 = generation;
+        invoke("query", { generation, text: "past week" }).catch(() => {});
+      }
+      return;
+    }
+    if (u.generation === homeGen2) {
+      homeFiles = u.items
+        .filter((i) => ["file", "screenshot"].includes(kindName(i.kind)) && i.modified_at)
+        .sort((a, b) => (b.modified_at ?? 0) - (a.modified_at ?? 0))
+        .slice(0, 6);
       return;
     }
     const keep = items[selected]?.id;
@@ -637,13 +666,15 @@
   // backend's preview_file keeps hiding sensitive files and never reads cloud placeholders.
   const previewable = (i: Item | undefined) =>
     !!pathOf(i) && ["file", "folder", "screenshot", "project"].includes(kindName(i!.kind));
+  const home = $derived(query.trim() === "" && !panel && !disk && !card);
   const cur = $derived(items[selected] as Item | undefined);
   const previewSource = $derived(previewable(cur) ? { path: pathOf(cur)! } : null);
 
   // Thumbnail of the top hit, through the same safe preview command.
+  const thumbItem = $derived(home ? recent[0]?.item : items[0]);
   let thumb = $state<{ path: string; src: string } | null>(null);
   $effect(() => {
-    const p = isImage(items[0]) ? pathOf(items[0]) : null;
+    const p = isImage(thumbItem) ? pathOf(thumbItem) : null;
     if (!p) {
       thumb = null;
       return;
@@ -663,7 +694,7 @@
   });
   const thumbSrc = $derived.by(() => {
     const t = thumb as { path: string; src: string } | null;
-    return t && t.path === pathOf(items[0]) ? t.src : null;
+    return t && t.path === pathOf(thumbItem) ? t.src : null;
   });
 
   const ACTION_LABEL: Record<string, string> = {
@@ -683,7 +714,6 @@
     document.documentElement.dataset.shown = visible ? "true" : "false";
   });
   const dur = (n: number) => (look.reduced ? 0 : n);
-  const home = $derived(query.trim() === "" && !panel && !disk && !card);
 </script>
 
 <svelte:window
@@ -803,84 +833,56 @@
         </section>
       {:else if home}
         <div class="home" out:fade={{ duration: dur(70) }}>
-          <section class="tile t-index glass" aria-label="Index">
-            <h3 class="label-caps">Index</h3>
-            <p class="big">{status ? fmt(status.apps) : "…"} <span>apps</span></p>
-            <p class="big">{status ? fmt(status.files) : "…"} <span>files so far</span></p>
-            {#if status?.paused}<p class="sub">Paused</p>
-            {:else if status?.indexing}<p class="sub">Preparing files…</p>{/if}
-            <button class="btn small" onclick={() => (panel = true)}>Choose folders</button>
-          </section>
-
-          <section class="tile t-disk glass" aria-label="Disk">
-            <h3 class="label-caps">Disk</h3>
-            <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
-              <circle cx="60" cy="60" r="46" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="14" />
-              <circle
-                cx="60"
-                cy="60"
-                r="46"
-                fill="none"
-                stroke="var(--accent)"
-                stroke-width="14"
-                stroke-linecap="round"
-                stroke-dasharray="170 289"
-                transform="rotate(-90 60 60)"
-              />
-              <circle
-                cx="60"
-                cy="60"
-                r="46"
-                fill="none"
-                stroke="#c2417a"
-                stroke-width="14"
-                stroke-linecap="round"
-                stroke-dasharray="52 289"
-                stroke-dashoffset="-190"
-                transform="rotate(-90 60 60)"
-              />
-            </svg>
-            <p class="sub center">See what takes space</p>
-            <button class="btn small primary" onclick={openDisk}>Scan</button>
-          </section>
-
-          <section class="tile t-clip glass" aria-label="Clipboard">
-            <h3 class="label-caps">Clipboard</h3>
-            {#if homeClips.length === 0}
-              <p class="sub">Nothing copied yet.</p>
+          <section class="card glass pick" aria-label="Pick up where you left off">
+            <h3 class="label-caps">Pick up where you left off</h3>
+            {#if recent.length === 0}
+              <p class="empty">Nothing here yet. Search, or add folders.</p>
             {:else}
-              <ul class="clips">
-                {#each homeClips as c (c.id)}
-                  <li class="code">{mask(c.title)}</li>
+              <ul class="recent">
+                {#each recent as r, n (r.item.id)}
+                  <li>
+                    <button class="row rrow" class:top={n === 0} onclick={() => openRecent(r)}>
+                      {#if n === 0 && thumbSrc}
+                        <img class="thumb" src={thumbSrc} alt="" />
+                      {:else}
+                        <span class="icon code">{r.clip ? "clip" : badgeOf(r.item)}</span>
+                      {/if}
+                      <span class="text">
+                        <span class="title">{r.clip ? mask(r.item.title) : r.item.title}</span>
+                        <span class="sub" class:code={!r.clip}
+                          >{r.clip ? "Copied" : (r.item.uri ?? r.item.subtitle ?? "")}</span
+                        >
+                      </span>
+                      <span class="when">{dayLabel(r.ts)}</span>
+                    </button>
+                  </li>
                 {/each}
               </ul>
             {/if}
           </section>
 
-          <section class="tile t-cap glass" aria-label="Capture">
-            <h3 class="label-caps">Capture</h3>
-            <div class="capgrid">
-              <button class="btn small" onclick={() => startCapture("take_screenshot")}>Shot</button>
-              <button class="btn small" onclick={() => startCapture("record_screen")}>Record</button>
-              <button class="btn small" onclick={() => startCapture("take_scrolling_screenshot")}>Scroll</button>
-              <button class="btn small" onclick={() => startCapture("extract_text")}>Text</button>
-            </div>
-          </section>
-
-          <section class="tile t-try glass" aria-label="Tips">
-            <h3 class="label-caps">Try typing</h3>
-            <ul class="tips">
-              {#each TRY as [example, what]}
-                <li>
-                  <button class="ex code" onclick={() => tryExample(example)}>{example}</button>
-                  <span class="what">{what}</span>
-                </li>
-              {/each}
-            </ul>
-            {#if status && status.roots === 0 && status.files === 0}
-              <p class="warning">No folders are chosen yet. Press <kbd>Ctrl+,</kbd> to choose some.</p>
-            {/if}
-          </section>
+          <div class="side">
+            <section class="card glass trycard" aria-label="Tips">
+              <h3 class="label-caps">Try typing</h3>
+              <ul class="tips">
+                {#each TRY as [example, what]}
+                  <li>
+                    <button class="ex" onclick={() => tryExample(example)}>{example}</button>
+                    <span class="what">{what}</span>
+                  </li>
+                {/each}
+              </ul>
+            </section>
+            <section class="card glass idx" aria-label="Index">
+              <div>
+                <strong>{status ? fmt(status.apps) : "…"} apps · {status ? fmt(status.files) : "…"} files</strong>
+                <span class="sub"
+                  >{#if status?.paused}Paused{:else if status?.indexing}Preparing files…{:else}Add folders to search files{/if}</span
+                >
+              </div>
+              <button class="btn small primary" onclick={() => (panel = true)}>Choose</button>
+            </section>
+          </div>
         </div>
       {:else if isDiskCommand(query)}
         <div class="res one" in:fly={{ x: 16, duration: dur(120), delay: dur(50) }}>
@@ -1165,104 +1167,102 @@
     min-height: 0;
   }
 
-  /* ---- home tiles ---- */
+  /* ---- home ---- */
   .home {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    grid-template-rows: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr) 300px;
     gap: 12px;
+    max-height: 400px;
   }
-  .tile {
-    border-radius: var(--r-tile);
-    padding: 16px 18px;
+  .home .card {
+    border-radius: 28px;
+  }
+  .pick {
+    padding: 18px 20px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
     min-height: 0;
     overflow: hidden;
   }
-  .tile h3 {
+  .pick h3,
+  .trycard h3 {
     margin: 0;
   }
-  .t-index {
-    grid-column: 1;
-    grid-row: 1;
-  }
-  .t-disk {
-    grid-column: 2;
-    grid-row: 1 / 3;
-    align-items: center;
-    text-align: center;
-  }
-  .t-disk h3 {
-    align-self: flex-start;
-  }
-  .t-clip {
-    grid-column: 3 / 5;
-    grid-row: 1;
-  }
-  .t-cap {
-    grid-column: 1;
-    grid-row: 2;
-  }
-  .t-try {
-    grid-column: 3 / 5;
-    grid-row: 2;
-  }
-  .big {
-    margin: 0;
-    font-size: var(--fs-xl);
-    font-weight: 600;
-    color: var(--text);
-  }
-  .big span {
-    font-size: var(--fs-sm);
-    font-weight: 400;
-    color: var(--text-soft);
-  }
-  .tile .btn {
-    align-self: flex-start;
-    margin-top: auto;
-  }
-  .t-disk .btn {
-    align-self: center;
-    margin-top: 0;
-  }
-  .ring {
-    width: 120px;
-    height: 120px;
-    margin: auto 0 0;
-  }
-  .t-disk .sub {
-    margin-bottom: auto;
-  }
-  .clips {
+  .recent {
     list-style: none;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 2px;
+    overflow-y: auto;
+    min-height: 0;
   }
-  .clips li {
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    padding: 5px 10px;
-    border-radius: var(--r-md);
-    background: var(--panel);
+  .rrow {
+    all: unset;
+    box-sizing: border-box;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    height: 58px;
+    padding: 0 12px;
+    border: 1px solid transparent;
+    border-radius: var(--r-lg);
+    cursor: pointer;
+  }
+  .rrow:hover {
+    background: var(--raised);
+  }
+  .rrow:focus-visible {
+    outline: 2px solid var(--accent);
+  }
+  .rrow.top {
+    height: 62px;
+    border-radius: 18px;
+    border-color: var(--accent-line);
+    box-shadow: 0 0 24px var(--accent-soft);
+    background: var(--raised);
+  }
+  .rrow .icon,
+  .rrow .thumb {
+    width: 56px;
+    height: 42px;
+  }
+  .rrow .title {
+    max-width: 100%;
+  }
+  .when {
+    flex: none;
+    color: var(--muted);
     font-size: var(--fs-sm);
-    color: var(--text-soft);
   }
-  .capgrid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px;
-    margin-top: auto;
+  .side {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
   }
-  .capgrid .btn {
-    margin-top: 0;
-    justify-content: center;
+  .trycard {
+    flex: 1;
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .idx {
+    flex: none;
+    padding: 14px 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .idx div {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
   }
   .tips {
     list-style: none;
@@ -1270,24 +1270,21 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 10px;
   }
   .tips li {
     display: flex;
-    align-items: baseline;
-    gap: 12px;
+    flex-direction: column;
   }
   .ex {
     all: unset;
     cursor: pointer;
-    flex: none;
-    width: 160px;
-    color: var(--accent);
-    font-size: var(--fs-md);
-    font-family: var(--font-code);
+    color: var(--text);
+    font-size: var(--fs-lg);
+    font-weight: 500;
   }
   .ex:hover {
-    text-decoration: underline;
+    color: var(--accent);
   }
   .ex:focus-visible {
     outline: 2px solid var(--accent);
@@ -1480,9 +1477,6 @@
     text-overflow: ellipsis;
     color: var(--text-soft);
     font-size: var(--fs-sm);
-  }
-  .sub.center {
-    text-align: center;
   }
   .sub.code {
     font-size: var(--fs-xs);
