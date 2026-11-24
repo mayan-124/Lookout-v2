@@ -800,19 +800,27 @@ fn bar_resize(
     let Ok(window) = bar_window(&app) else {
         return;
     };
-    let (w, h): (f64, f64) = if huge == Some(true) {
-        // The clamp below makes this as large as the screen allows.
-        (100_000.0, 100_000.0)
+    // The clamp below makes huge as large as the screen allows.
+    let w = if huge == Some(true) {
+        100_000.0
     } else if wide {
-        (1180.0, 700.0)
-    } else if let Some(h) = height {
-        // Fit to content; the screen clamp below caps it.
-        (940.0, h.max(120.0))
-    } else if tall == Some(true) {
-        (940.0, 720.0)
+        1180.0
     } else {
-        (940.0, 640.0)
+        940.0
     };
+    let h = if let Some(h) = height {
+        // Fit to content; the screen clamp below caps it.
+        h.max(120.0)
+    } else if huge == Some(true) {
+        100_000.0
+    } else if wide {
+        700.0
+    } else if tall == Some(true) {
+        720.0
+    } else {
+        640.0
+    };
+    let (w, h): (f64, f64) = (w, h);
     // Never larger than the screen the bar is on.
     let (w, h) = match window.current_monitor() {
         Ok(Some(m)) => {

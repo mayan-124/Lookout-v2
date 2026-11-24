@@ -221,23 +221,23 @@
   });
   // Settings and Disk fill a fixed window; everything else sizes the window to
   // its content so the dock sits right under the panels.
+  let diskBig = $state(false);
+  // Expanded Disk: as tall as the screen allows, minus the bar's own chrome.
+  const bigH = $derived(Math.max(500, Math.floor(window.screen.availHeight) - 80 - 260));
   let colEl: HTMLDivElement | undefined = $state();
   let fitH = $state(0);
   $effect(() => {
     if (!colEl) return;
     const el = colEl;
     const ro = new ResizeObserver(() => {
-      if (!el.classList.contains("fill")) fitH = Math.ceil(el.offsetHeight);
+      fitH = Math.ceil(el.offsetHeight);
     });
     ro.observe(el);
     return () => ro.disconnect();
   });
   $effect(() => {
-    if (disk) return;
-    if (panel) {
-      invoke("bar_resize", { wide: false, tall: true }).catch(() => {});
-    } else if (fitH > 0) {
-      invoke("bar_resize", { wide: false, height: fitH }).catch(() => {});
+    if (fitH > 0) {
+      invoke("bar_resize", { wide: disk, huge: disk && diskBig, height: fitH }).catch(() => {});
     }
   });
   let confirmButton: HTMLButtonElement | undefined = $state();
@@ -787,7 +787,7 @@
     if (t === e.currentTarget || t.classList.contains("col") || t.classList.contains("stage")) e.preventDefault();
   }}
 >
-  <div class="col" class:wide={disk} class:fill={disk || panel} bind:this={colEl}>
+  <div class="col" class:wide={disk} bind:this={colEl}>
     <div class="head">
     <div class="searchrow glass" data-tauri-drag-region>
       <Orb mode={orbMode} active={visible && !look.reduced} />
@@ -845,7 +845,7 @@
 
     <div class="stage">
       {#if disk}
-        <div class="page glass"><Disk onclose={closeDisk} /></div>
+        <div class="page glass diskpage" style:height={diskBig ? `${bigH}px` : null}><Disk onclose={closeDisk} onbig={(v) => (diskBig = v)} /></div>
       {:else if panel}
         <div class="page glass"><Privacy bind:this={privacy} onclose={closePanel} /></div>
       {:else if card?.phase === "confirm"}
@@ -1084,15 +1084,13 @@
       </nav>
     {/if}
 
-    {#if !panel && !disk}
-      <footer>
-        {#if notice}
-          <span class="warn">{notice}</span>
-        {:else}
-          Enter open · Space preview · Tab next lane · Ctrl+1–5 sections · Esc back{#if openHotkey} · {openHotkey} opens Lookout{/if}
-        {/if}
-      </footer>
-    {/if}
+    <footer>
+      {#if notice}
+        <span class="warn">{notice}</span>
+      {:else}
+        Enter open · Space preview · Tab next lane · Ctrl+1–5 sections · Esc back{#if openHotkey} · {openHotkey} opens Lookout{/if}
+      {/if}
+    </footer>
     </div>
   </div>
 </main>
@@ -1126,13 +1124,7 @@
     padding: 20px 0 24px;
     min-height: 0;
   }
-  .col.fill {
-    height: 100%;
-  }
-  .col.fill .stage {
-    flex: 1;
-    grid-template-rows: minmax(0, 1fr);
-  }
+
   .col.wide {
     width: 100%;
     padding-left: 12px;
@@ -1236,6 +1228,8 @@
   }
 
   .page {
+    height: 500px;
+    background: var(--glass-bg);
     border-radius: var(--r-tile);
     display: flex;
     flex-direction: column;
@@ -1390,6 +1384,7 @@
     max-height: 440px;
   }
   .res.one {
+    min-height: 0;
     grid-template-columns: minmax(0, 1fr);
   }
   .card {
@@ -1603,7 +1598,7 @@
     padding: 8px 20px 0;
   }
   .empty {
-    padding: 18px 22px;
+    padding: 20px 22px;
     color: var(--muted);
     font-size: var(--fs-md);
     margin: 0;

@@ -85,7 +85,7 @@
     depth: number;
   }
 
-  let { onclose }: { onclose: () => void } = $props();
+  let { onclose, onbig }: { onclose: () => void; onbig: (v: boolean) => void } = $props();
 
   let locations: Location[] = $state([]);
   let chosen = $state("");
@@ -151,7 +151,7 @@
   function setBig(v: boolean) {
     big = v;
     chartW = v ? Math.round(window.innerWidth * 0.5) : 330;
-    invoke("bar_resize", { wide: true, huge: v }).catch(() => {});
+    onbig(v);
   }
   // Drag the divider between the tree and the chart.
   function dragSplit(e: PointerEvent) {
@@ -574,7 +574,6 @@
   }
 
   onMount(async () => {
-    invoke("bar_resize", { wide: true }).catch(() => {});
     try {
       locations = await invoke<Location[]>("disk_locations");
       chosen = locations[0]?.path ?? "";
@@ -588,7 +587,6 @@
   // Closing the view frees the scan; nothing is kept unless it was saved.
   onDestroy(() => {
     stopTimer();
-    invoke("bar_resize", { wide: false }).catch(() => {});
     invoke("disk_close").catch(() => {});
   });
 
