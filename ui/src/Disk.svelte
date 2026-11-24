@@ -617,9 +617,13 @@
       {#if chosen && !locations.some((l) => l.path === chosen)}<option value={chosen}>{chosen}</option>{/if}
     </select>
     <button class="btn" onclick={pickFolder} disabled={scanning}>Choose folder…</button>
-    <label class="low" title="Slower, but lighter on your PC">
-      <input type="checkbox" bind:checked={lowImpact} disabled={scanning} /> Gentle
-    </label>
+    <span class="low" title="Slower, but lighter on your PC">
+      <label class="switch">
+        <input type="checkbox" role="switch" aria-label="Gentle" bind:checked={lowImpact} disabled={scanning} />
+        <span class="track"></span>
+      </label>
+      Gentle
+    </span>
     {#if scanning}
       <button class="btn" onclick={cancel}>Cancel</button>
     {:else}
@@ -886,7 +890,7 @@
   .low {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     color: var(--text-soft);
   }
   .tabs,
@@ -899,21 +903,23 @@
     all: unset;
     box-sizing: border-box;
     cursor: pointer;
-    padding: 4px 12px;
-    border-radius: 8px;
-    border: 1px solid var(--border-strong);
+    padding: 5px 16px;
+    border-radius: 999px;
+    border: 1px solid var(--glass-border);
+    background: rgba(13, 16, 34, 0.7);
     color: var(--text-soft);
     font-size: 13px;
   }
   .tabs button:hover,
   .toggle button:hover {
-    background: var(--raised);
+    color: var(--text);
+    border-color: rgba(255, 255, 255, 0.4);
   }
   .tabs button.on,
   .toggle button.on {
-    background: var(--raised);
-    border-color: var(--accent);
-    color: var(--text);
+    background: var(--accent-bg);
+    border-color: var(--accent-bg);
+    color: var(--accent-on);
     font-weight: 600;
   }
   .tabs button:focus-visible,

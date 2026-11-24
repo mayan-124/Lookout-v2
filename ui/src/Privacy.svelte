@@ -339,6 +339,8 @@
       <div class="body">
         {#if section === "general"}
           <h2 id="priv-title">General</h2>
+          <div class="scard">
+          <h3 class="stitle">Appearance</h3>
           <label class="field">
             {@render field("Appearance", "Auto follows Windows light or dark mode. The choice applies as you pick it.")}
             <select bind:value={theme}>
@@ -378,6 +380,9 @@
               <span class="track"></span>
             </label>
           </div>
+          </div>
+          <div class="scard">
+          <h3 class="stitle">Updates</h3>
           <div class="field">
             {@render field("Updates", `Version ${appVersion}. Connects to the internet only when you click a button here, and only receives files.`)}
             <button class="btn" disabled={updBusy} onclick={checkUpdates}>Check for updates</button>
@@ -389,6 +394,7 @@
             </div>
           {/if}
           {#if updMsg}<p role="status">{updMsg}</p>{/if}
+          </div>
         {:else if section === "folders"}
           <h2 id="priv-title">Folders</h2>
           <h3 class="label-caps">Folders to search</h3>
@@ -540,27 +546,25 @@
     display: flex;
     flex-direction: column;
     gap: 0;
-    padding: 8px;
-    border-right: 1px solid var(--border);
-    background: var(--panel);
+    padding: 12px 8px 12px 12px;
+    gap: 4px;
     overflow-y: auto;
   }
   .item {
     all: unset;
     box-sizing: border-box;
-    padding: 5px 12px;
-    border-radius: 8px;
-    border-left: 2px solid transparent;
+    padding: 6px 16px;
+    border-radius: 999px;
     color: var(--text-soft);
     cursor: pointer;
   }
   .item:hover {
     background: var(--raised);
+    color: var(--text);
   }
   .item.on {
-    background: var(--raised);
-    border-left-color: var(--accent);
-    color: var(--text);
+    background: var(--accent-bg);
+    color: var(--accent-on);
     font-weight: 600;
   }
   .item.danger {
@@ -575,7 +579,29 @@
     min-width: 0;
     min-height: 0;
     overflow-y: auto;
-    padding: 14px 22px 18px;
+    margin: 12px 12px 12px 4px;
+    padding: 16px 22px 18px;
+    border: 1px solid var(--hairline);
+    border-radius: 20px;
+    background: var(--panel);
+  }
+  .scard {
+    margin: 0 0 12px;
+    padding: 4px 16px 6px;
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    background: var(--panel);
+  }
+  .stitle {
+    margin: 10px 0 0;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .scard .field:last-child {
+    border-bottom: 0;
   }
   .body.setup {
     padding-top: 16px;
