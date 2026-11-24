@@ -750,13 +750,54 @@ async fn disk_prepare_file(
         .map_err(|e| e.to_string())
 }
 
-/// Makes the bar window wide enough for the disk view, or puts it back.
+/// Read-only preview of one file for the disk pages. Exactly one of `node`
+/// (a scan row), `hit` (a large-file row) or `path` (a clean-up / duplicate row)
+/// names the file. Capped and masked in `lookout_core::preview`; nothing is kept.
 #[tauri::command]
-fn bar_resize(wide: bool, tall: Option<bool>, app: AppHandle) {
+async fn preview_file(
+    node: Option<u32>,
+    hit: Option<u32>,
+    path: Option<String>,
+    services: State<'_, Services>,
+) -> Result<lookout_core::preview::Preview, String> {
+    let (path, folder) = if let Some(id) = node {
+        let tree = services_of(&services)?
+            .disk()
+            .tree()
+            .ok_or_else(|| "there is no finished scan".to_owned())?;
+        let p = tree.path(id).ok_or("that row is not in the scan")?;
+        let totals = tree.totals_of(id).map(|(i, s)| (u64::from(i), s));
+        (p, totals)
+    } else if let Some(idx) = hit {
+        let tree = services_of(&services)?
+            .disk()
+            .tree()
+            .ok_or_else(|| "there is no finished scan".to_owned())?;
+        let f = tree
+            .big_file(idx)
+            .ok_or("that file is no longer in the scan")?;
+        (f.path.clone(), None)
+    } else if let Some(p) = path {
+        (std::path::PathBuf::from(p), None)
+    } else {
+        return Err("nothing to preview".into());
+    };
+    tauri::async_runtime::spawn_blocking(move || lookout_core::preview::build(&path, folder))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Makes the bar window wide enough for the disk view (or as large as the screen
+/// allows when `huge`), or puts it back.
+#[tauri::command]
+fn bar_resize(wide: bool, tall: Option<bool>, huge: Option<bool>, app: AppHandle) {
     let Ok(window) = bar_window(&app) else {
         return;
     };
-    let (w, h): (f64, f64) = if wide {
+    let (w, h): (f64, f64) = if huge == Some(true) {
+        // The clamp below makes this as large as the screen allows.
+        (100_000.0, 100_000.0)
+    } else if wide {
         (1180.0, 700.0)
     } else if tall == Some(true) {
         (760.0, 620.0)
@@ -1690,6 +1731,7 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             hide_bar,
+            preview_file,
             frontend_ready,
             bar_painted,
             query,

@@ -42,21 +42,31 @@ const SENSITIVE_NAMES: &[&str] = &[
     "secret.json",
 ];
 
-pub fn classify(path: &Path) -> FileClass {
+/// Files that commonly hold secrets: never opened, indexed or previewed.
+pub fn is_sensitive(path: &Path) -> bool {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     if SENSITIVE_NAMES.contains(&name.as_str()) || name.starts_with(".env") {
+        return true;
+    }
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    SENSITIVE_EXT.contains(&ext.as_str())
+}
+
+pub fn classify(path: &Path) -> FileClass {
+    if is_sensitive(path) {
         return FileClass::Skip;
     }
     let ext = path
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    if SENSITIVE_EXT.contains(&ext.as_str()) {
-        FileClass::Skip
-    } else if TEXT_EXT.contains(&ext.as_str()) {
+    if TEXT_EXT.contains(&ext.as_str()) {
         FileClass::Text
     } else if IMAGE_EXT.contains(&ext.as_str()) {
         FileClass::Image

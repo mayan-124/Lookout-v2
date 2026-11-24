@@ -6,6 +6,8 @@
     mode,
     title,
     highlightId,
+    basePath = "",
+    big = false,
     ondrill,
     onup,
     onselect,
@@ -14,16 +16,23 @@
     mode: "ring" | "treemap";
     title: string;
     highlightId: number | null;
+    basePath?: string;
+    big?: boolean;
     ondrill: (id: number) => void;
     onup: () => void;
     onselect: (id: number) => void;
   } = $props();
 
-  let hover: { node: CNode; x: number; y: number } | null = $state(null);
+  let hover: { node: CNode; trail: string[]; x: number; y: number } | null = $state(null);
   let box: HTMLElement | undefined = $state();
+  let bw = $state(400);
+  let bh = $state(400);
+  const font = $derived(big ? 18 : 14);
+  const head = $derived(font + 6);
+  let lastWheel = 0;
 
   const arcs = $derived(data && mode === "ring" ? ringArcs(data) : []);
-  const blocks = $derived(data && mode === "treemap" ? treemapBlocks(data) : []);
+  const blocks = $derived(data && mode === "treemap" ? treemapBlocks(data, Math.max(bw, 50), Math.max(bh, 50), head) : []);
 
   function human(n: number): string {
     const u = ["B", "KB", "MB", "GB", "TB"];
@@ -38,9 +47,25 @@
   const pct = (n: CNode) => (data && data.size > 0 ? (n.size / data.size) * 100 : 0);
   const label = (n: CNode) => `${n.name}, ${human(n.size)}, ${pct(n).toFixed(1)}% of ${title}`;
 
-  function move(e: MouseEvent, node: CNode) {
+  function move(e: MouseEvent, node: CNode, trail: string[]) {
     const r = box?.getBoundingClientRect();
-    if (r) hover = { node, x: e.clientX - r.left, y: e.clientY - r.top };
+    if (r) hover = { node, trail, x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+  const fullPath = (trail: string[]) => [basePath, ...trail].filter(Boolean).reduce((a, b) => a.replace(/\\$/, "") + "\\" + b);
+  // Wheel forward goes into the folder under the pointer, wheel back goes up one.
+  function wheel(e: WheelEvent) {
+    const now = Date.now();
+    if (now - lastWheel < 300) return;
+    if (e.deltaY < 0 && hover && hover.node.kind === "folder" && hover.node.id !== null) {
+      lastWheel = now;
+      const id = hover.node.id;
+      hover = null;
+      ondrill(id);
+    } else if (e.deltaY > 0) {
+      lastWheel = now;
+      hover = null;
+      onup();
+    }
   }
   function pick(node: CNode) {
     if (node.id === null) return;
@@ -54,12 +79,12 @@
       pick(node);
     }
   }
-  const fits = (b: { w: number; h: number }, name: string) => b.w > 10 + name.length * 8.2 && b.h > 22;
+  const fits = (b: { w: number; h: number }, name: string, f = font) => b.w > 10 + name.length * f * 0.6 && b.h > f + 8;
 </script>
 
-<div class="chart" bind:this={box} role="group" aria-label="Chart of {title}">
+<div class="chart" bind:this={box} bind:clientWidth={bw} bind:clientHeight={bh} onwheel={wheel} role="group" aria-label="Chart of {title}">
   {#if data}
-    <svg viewBox="0 0 {VIEW} {VIEW}" role="img" aria-label="{mode === 'ring' ? 'Ring chart' : 'Treemap'} of {title}">
+    <svg viewBox={mode === "ring" ? `0 0 ${VIEW} ${VIEW}` : `0 0 ${Math.max(bw, 50)} ${Math.max(bh, 50)}`} role="img" aria-label="{mode === 'ring' ? 'Ring chart' : 'Treemap'} of {title}">
       {#if mode === "ring"}
         {#each arcs as a}
           <path
@@ -70,7 +95,7 @@
             tabindex="0"
             role="button"
             aria-label={label(a.node)}
-            onmousemove={(e) => move(e, a.node)}
+            onmousemove={(e) => move(e, a.node, a.trail)}
             onmouseleave={() => (hover = null)}
             onclick={() => pick(a.node)}
             onkeydown={(e) => key(e, a.node)}
@@ -97,7 +122,7 @@
             tabindex="0"
             role="button"
             aria-label={label(b.node)}
-            onmousemove={(e) => move(e, b.node)}
+            onmousemove={(e) => move(e, b.node, b.trail)}
             onmouseleave={() => (hover = null)}
             onclick={() => pick(b.node)}
             onkeydown={(e) => key(e, b.node)}
@@ -112,15 +137,23 @@
               class:sel={b.node.id !== null && b.node.id === highlightId}
             />
             {#if b.depth === 0 && fits(b, b.node.name)}
-              <text x={b.x + 5} y={b.y + 17} class="bt">{b.node.name}</text>
+              <text x={b.x + 5} y={b.y + font + 2} class="bt" style:font-size={`${font}px`}>{b.node.name}</text>
+              {#if b.h > font * 2 + 14 && b.node.children.length === 0}
+                <text x={b.x + 5} y={b.y + font * 2 + 6} class="bt sz" style:font-size={`${font - 2}px`}>{human(b.node.size)}</text>
+              {:else if b.w > 10 + (b.node.name.length + human(b.node.size).length + 3) * font * 0.6}
+                <text x={b.x + 5 + (b.node.name.length + 2) * font * 0.62} y={b.y + font + 2} class="bt sz" style:font-size={`${font - 2}px`}>{human(b.node.size)}</text>
+              {/if}
+            {:else if b.depth === 1 && fits(b, b.node.name, font - 3) && b.h > font + 14}
+              <text x={b.x + 4} y={b.y + font} class="bt sm" style:font-size={`${font - 3}px`}>{b.node.name} · {human(b.node.size)}</text>
             {/if}
           </g>
         {/each}
       {/if}
     </svg>
     {#if hover}
-      <div class="tip" style:left={`${Math.min(hover.x + 12, (box?.clientWidth ?? 300) - 170)}px`} style:top={`${hover.y + 12}px`}>
+      <div class="tip" style:left={`${Math.min(hover.x + 12, (box?.clientWidth ?? 300) - 300)}px`} style:top={`${hover.y + 12}px`}>
         <strong>{hover.node.name}</strong>
+        {#if hover.node.id !== null}<span class="pth">{fullPath(hover.trail)}</span>{/if}
         <span>{human(hover.node.size)} · {pct(hover.node).toFixed(1)}%</span>
       </div>
     {/if}
@@ -226,12 +259,20 @@
     font-size: 13px;
     display: flex;
     flex-direction: column;
-    max-width: 220px;
+    max-width: 360px;
+  }
+  .pth {
+    color: var(--muted);
+    font-family: var(--font-code);
+    font-size: 12px;
+    overflow-wrap: anywhere;
   }
   .tip strong {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+  }
+  .bt.sz,
+  .bt.sm {
+    font-weight: 400;
   }
   .none {
     color: var(--muted);

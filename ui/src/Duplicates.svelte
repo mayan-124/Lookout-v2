@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onDestroy } from "svelte";
   import Confirm, { type Prepared } from "./Confirm.svelte";
+  import Preview from "./Preview.svelte";
 
   interface Location {
     label: string;
@@ -42,6 +43,7 @@
   let picked = $state(new Set<number>());
   let open = $state(new Set<number>());
   let card = $state<Prepared | null>(null);
+  let selPath = $state("");
   let timer: ReturnType<typeof setInterval> | undefined;
 
   const running = $derived(progress?.state === "running");
@@ -210,7 +212,7 @@
             </div>
             {#if open.has(g.id)}
               {#each g.files as f, i}
-                <label class="file" class:keep={i === k}>
+                <label class="file" class:keep={i === k} class:sel={selPath === f.path} onfocusin={() => (selPath = f.path)}>
                   <input type="radio" name={"g" + g.id} checked={i === k} onchange={() => choose(g, i)} />
                   <span class="p">{f.path}</span>
                   <span class="m">{when(f.mtime)}</span>
@@ -223,6 +225,8 @@
       </ul>
     {/if}
   {/if}
+
+  {#if selPath}<Preview source={{ path: selPath }} />{/if}
 
   {#if card}
     <Confirm
@@ -313,6 +317,9 @@
     font-size: 12px;
     font-family: var(--font-code);
     color: var(--text-soft);
+  }
+  .file.sel {
+    background: var(--raised);
   }
   .file.keep {
     color: var(--text);

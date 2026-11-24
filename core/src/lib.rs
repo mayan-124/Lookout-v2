@@ -34,6 +34,7 @@ pub mod names_store;
 pub mod pathquery;
 pub mod pause;
 pub mod plugins;
+pub mod preview;
 pub mod query;
 pub mod ranking;
 #[cfg(windows)]

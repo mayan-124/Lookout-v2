@@ -13,12 +13,14 @@ export interface Arc {
   depth: number; // 0 = innermost ring
   branch: number; // colour group: index of the top-level segment it belongs to
   path: string;
+  trail: string[]; // names from the chart's folder down to this segment
 }
 
 export interface Block {
   node: CNode;
   depth: number;
   branch: number;
+  trail: string[];
   x: number;
   y: number;
   w: number;
@@ -51,7 +53,7 @@ export function arcPath(cx: number, cy: number, r0: number, r1: number, a0: numb
 export function ringArcs(root: CNode, hole = 62, ringWidth = 34): Arc[] {
   const out: Arc[] = [];
   const c = VIEW / 2;
-  const walk = (node: CNode, a0: number, a1: number, depth: number, branch: number) => {
+  const walk = (node: CNode, a0: number, a1: number, depth: number, branch: number, trail: string[]) => {
     const total = node.children.reduce((s, k) => s + k.size, 0);
     if (total <= 0) return;
     let a = a0;
@@ -61,13 +63,14 @@ export function ringArcs(root: CNode, hole = 62, ringWidth = 34): Arc[] {
       // Slivers narrower than half a pixel are not drawn.
       if (span * (hole + depth * ringWidth) >= 0.5) {
         const r0 = hole + depth * ringWidth;
-        out.push({ node: k, depth, branch: b, path: arcPath(c, c, r0 + 1, r0 + ringWidth - 1, a, a + span) });
-        walk(k, a, a + span, depth + 1, b);
+        const t = [...trail, k.name];
+        out.push({ node: k, depth, branch: b, trail: t, path: arcPath(c, c, r0 + 1, r0 + ringWidth - 1, a, a + span) });
+        walk(k, a, a + span, depth + 1, b, t);
       }
       a += span;
     });
   };
-  walk(root, 0, TAU, 0, 0);
+  walk(root, 0, TAU, 0, 0, []);
   return out;
 }
 
@@ -121,10 +124,10 @@ export function squarify(sizes: number[], x: number, y: number, w: number, h: nu
   return out;
 }
 
-/** Blocks for the children of `root` and, inside each, their children. */
-export function treemapBlocks(root: CNode, size = VIEW): Block[] {
+/** Blocks for the children of `root` and, inside each, their children. `head` is the height kept for a folder's name. */
+export function treemapBlocks(root: CNode, width = VIEW, height = width, head = 16): Block[] {
   const out: Block[] = [];
-  const place = (node: CNode, x: number, y: number, w: number, h: number, depth: number, branch: number) => {
+  const place = (node: CNode, x: number, y: number, w: number, h: number, depth: number, branch: number, trail: string[]) => {
     const kids = [...node.children].sort((a, b) => b.size - a.size);
     if (!kids.length) return;
     const rects = squarify(
@@ -138,10 +141,11 @@ export function treemapBlocks(root: CNode, size = VIEW): Block[] {
       const r = rects[i];
       if (r.w < 1 || r.h < 1) return;
       const b = depth === 0 ? i : branch;
-      out.push({ node: k, depth, branch: b, x: r.x, y: r.y, w: r.w, h: r.h });
-      if (depth === 0 && r.w > 28 && r.h > 28) place(k, r.x + 2, r.y + 14, r.w - 4, r.h - 16, 1, b);
+      const t = [...trail, k.name];
+      out.push({ node: k, depth, branch: b, trail: t, x: r.x, y: r.y, w: r.w, h: r.h });
+      if (depth === 0 && r.w > 28 && r.h > head + 14) place(k, r.x + 2, r.y + head, r.w - 4, r.h - head - 2, 1, b, t);
     });
   };
-  place(root, 0, 0, size, size, 0, 0);
+  place(root, 0, 0, width, height, 0, 0, []);
   return out;
 }

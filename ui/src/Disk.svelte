@@ -4,6 +4,8 @@
   import Chart from "./Chart.svelte";
   import Cleanup from "./Cleanup.svelte";
   import Duplicates from "./Duplicates.svelte";
+  import Preview, { type Source } from "./Preview.svelte";
+  import { pv } from "./previewui.svelte";
   import type { CNode } from "./chartlayout";
 
   interface Location {
@@ -129,6 +131,43 @@
   let cancelButton: HTMLButtonElement | undefined = $state();
   let listEl: HTMLElement | undefined = $state();
   let timer: ReturnType<typeof setInterval> | undefined;
+  // Expand: the window grows to the screen and the content gets bigger type and rows.
+  let big = $state(false);
+  let chartW = $state(330);
+  const basePath = $derived.by(() => {
+    const names = (view?.crumbs ?? []).map((c) => c.name);
+    return names.reduce((a, n) => (a ? a.replace(/\\$/, "") + "\\" + n : n), "");
+  });
+  const previewSource = $derived.by<Source | null>(() => {
+    if (!finished) return null;
+    if (tab === "tree") {
+      const r = current();
+      return r && r.kind !== "others" ? { node: r.id } : null;
+    }
+    const f = shownFiles[fileSel];
+    return f ? { hit: f.idx } : null;
+  });
+
+  function setBig(v: boolean) {
+    big = v;
+    chartW = v ? Math.round(window.innerWidth * 0.5) : 330;
+    invoke("bar_resize", { wide: true, huge: v }).catch(() => {});
+  }
+  // Drag the divider between the tree and the chart.
+  function dragSplit(e: PointerEvent) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const start = chartW;
+    const move = (m: PointerEvent) => {
+      chartW = Math.min(window.innerWidth - 360, Math.max(240, start - (m.clientX - startX)));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
 
   const scanning = $derived(progress?.state === "scanning");
   const finished = $derived(progress?.state === "done" && view !== null);
@@ -460,7 +499,9 @@
     if (tag === "SELECT" || tag === "INPUT") return;
     if (e.key === "Escape") {
       e.preventDefault();
-      if (menu) menu = null;
+      if (pv.overlay) pv.overlay = false;
+      else if (menu) menu = null;
+      else if (big) setBig(false);
       else if (scanning) cancel();
       else onclose();
       return;
@@ -556,10 +597,11 @@
 
 <svelte:window onkeydown={onKeydown} onclick={() => (menu = null)} />
 
-<section class="disk" aria-label="Disk usage">
+<section class="disk" class:big aria-label="Disk usage">
   <header>
     <h2>Disk usage</h2>
     <span class="hint">Scans only when you press Scan. Closing this view frees the data.</span>
+    {#if page === "disk"}<button class="btn" onclick={() => setBig(!big)} aria-pressed={big}>{big ? "Collapse" : "Expand"}</button>{/if}
     <button class="btn" onclick={onclose}>Close <kbd>Esc</kbd></button>
   </header>
 
@@ -664,6 +706,8 @@
 
     {#if tab !== "tree"}
       {#if files.note}<p class="warning" role="note">{files.note}</p>{/if}
+      <div class="split" style:grid-template-columns={`minmax(0, 1fr) 6px ${chartW}px`}>
+      <div class="left">
       <div class="head files" role="row">
         <span>Name</span><span>Folder</span><span class="c-size">Space used</span><span class="c-mod">Modified</span>
       </div>
@@ -687,9 +731,13 @@
         {/each}
         {#if shownFiles.length === 0}<li class="none">No files match.</li>{/if}
       </ul>
-      <p class="keys"><kbd>↑↓</kbd> move · <kbd>Enter</kbd> open · <kbd>Ctrl+E</kbd> show in folder · <kbd>Ctrl+C</kbd> copy path · <kbd>Del</kbd> Recycle Bin · right-click for a menu</p>
+      </div>
+      <div class="grip" role="separator" aria-orientation="vertical" onpointerdown={dragSplit}></div>
+      <aside class="chartpane"><Preview source={previewSource} /></aside>
+      </div>
+      <p class="keys"><kbd>Space</kbd> preview · <kbd>↑↓</kbd> move · <kbd>Enter</kbd> open · <kbd>Ctrl+E</kbd> show in folder · <kbd>Ctrl+C</kbd> copy path · <kbd>Del</kbd> Recycle Bin · right-click for a menu</p>
     {:else}
-    <div class="split">
+    <div class="split" style:grid-template-columns={`minmax(0, 1fr) 6px ${chartW}px`}>
     <div class="left">
     <div class="head" role="row">
       <button class="c-name" onclick={() => setSort("name")}>Name{arrow("name")}</button>
@@ -737,6 +785,7 @@
       {#if flat.length === 0}<li class="none">This folder is empty.</li>{/if}
     </ul>
     </div>
+    <div class="grip" role="separator" aria-orientation="vertical" onpointerdown={dragSplit}></div>
     <aside class="chartpane" aria-label="Chart">
       <div class="toggle" role="group" aria-label="Chart type">
         <button class:on={chartMode === "ring"} aria-pressed={chartMode === "ring"} onclick={() => { chartMode = "ring"; loadChart(); }}>Ring</button>
@@ -747,15 +796,18 @@
         mode={chartMode}
         title={crumbTitle}
         highlightId={current()?.id ?? null}
+        {basePath}
+        {big}
         ondrill={(id) => show(id)}
         onup={up}
         onselect={(id) => { const i = flat.findIndex((f) => f.row.id === id); if (i >= 0) selected = i; }}
       />
-      <p class="keys">Click a segment to go into that folder; click the centre to go up.</p>
+      <p class="keys">Click a folder to go into it (or scroll the wheel forward); scroll back or click the centre to go up.</p>
+      <Preview source={previewSource} />
     </aside>
     </div>
     <p class="keys">
-      <kbd>↑↓</kbd> move · <kbd>→←</kbd> expand · <kbd>Enter</kbd> open · <kbd>Ctrl+Enter</kbd> go into ·
+      <kbd>Space</kbd> preview · <kbd>↑↓</kbd> move · <kbd>→←</kbd> expand · <kbd>Enter</kbd> open · <kbd>Ctrl+Enter</kbd> go into ·
       <kbd>Backspace</kbd> up · <kbd>Ctrl+E</kbd> show in folder · <kbd>Ctrl+C</kbd> copy path ·
       <kbd>Del</kbd> Recycle Bin · right-click for a menu
     </p>
@@ -873,7 +925,6 @@
   }
   .split {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 330px;
     grid-template-rows: minmax(0, 1fr);
     gap: 14px;
     flex: 1;
@@ -884,6 +935,38 @@
     flex-direction: column;
     min-height: 0;
     min-width: 0;
+  }
+  .grip {
+    cursor: col-resize;
+    border-radius: 3px;
+    background: var(--border);
+    opacity: 0.5;
+  }
+  .grip:hover {
+    background: var(--accent);
+    opacity: 1;
+  }
+  .disk.big {
+    font-size: 17px;
+    padding: 8px 12px;
+  }
+  .disk.big li[role="treeitem"],
+  .disk.big li.filerow {
+    padding: 8px;
+  }
+  .disk.big .c-size,
+  .disk.big .c-items,
+  .disk.big .c-mod {
+    font-size: 15px;
+  }
+  .disk.big .crumb {
+    font-size: 15px;
+  }
+  .disk.big .head {
+    font-size: 13px;
+  }
+  .disk.big .bar {
+    height: 10px;
   }
   .chartpane {
     display: flex;

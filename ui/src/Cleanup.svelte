@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onDestroy } from "svelte";
   import Confirm, { type Prepared } from "./Confirm.svelte";
+  import PreviewPanel from "./Preview.svelte";
 
   interface TaskView {
     state: "idle" | "running" | "done" | "cancelled" | "failed";
@@ -32,6 +33,7 @@
   let notice = $state("");
   let preview = $state<{ id: string; data: Preview } | null>(null);
   let card = $state<Prepared | null>(null);
+  let selPath = $state("");
   let timer: ReturnType<typeof setInterval> | undefined;
 
   const running = $derived(progress?.state === "running");
@@ -168,7 +170,7 @@
         {#if preview?.id === it.id}
           <div class="plist" role="region" aria-label="What would be removed">
             {#each preview.data.rows as r}
-              <p class="line"><span>{r.path}</span><span>{human(r.size)}</span></p>
+              <div class="line" class:sel={selPath === r.path} role="button" tabindex="0" onclick={() => (selPath = r.path)} onkeydown={(e) => { if (e.key === "Enter") selPath = r.path; }}><span>{r.path}</span><span>{human(r.size)}</span></div>
             {/each}
             {#if preview.data.total > preview.data.rows.length}
               <p class="status">…and {(preview.data.total - preview.data.rows.length).toLocaleString()} more</p>
@@ -178,6 +180,8 @@
       </li>
     {/each}
   </ul>
+
+  {#if selPath}<PreviewPanel source={{ path: selPath }} />{/if}
 
   {#if card}
     <Confirm
@@ -277,6 +281,12 @@
     font-family: var(--font-code);
     font-size: 12px;
     color: var(--text-soft);
+  }
+  .line {
+    cursor: pointer;
+  }
+  .line.sel {
+    background: var(--raised);
   }
   .line span:first-child {
     word-break: break-all;
