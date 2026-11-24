@@ -22,7 +22,7 @@
     items: number | null;
   }
 
-  let { source }: { source: Source | null } = $props();
+  let { source, embedded = false }: { source: Source | null; embedded?: boolean } = $props();
 
   let data = $state<PV | null>(null);
   let loading = $state(false);
@@ -118,7 +118,7 @@
 {/snippet}
 
 {#if source}
-  <aside class="panel" aria-label="File preview" aria-busy={loading}>
+  <aside class="panel" class:embedded aria-label="File preview" aria-busy={loading}>
     {@render body(false)}
     {#if data}<p class="hintline"><kbd>Space</kbd> larger preview</p>{/if}
   </aside>
@@ -142,6 +142,12 @@
     border-top: 1px solid var(--border);
     padding-top: 8px;
     max-height: 48%;
+  }
+  .panel.embedded {
+    border-top: none;
+    padding-top: 0;
+    max-height: none;
+    flex: 1;
   }
   .info {
     display: flex;
@@ -192,7 +198,7 @@
     font-size: 12px;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    background: var(--bg);
+    background: rgba(0, 0, 0, 0.25);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 8px;

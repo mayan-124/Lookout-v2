@@ -365,7 +365,7 @@
             </div>
           </div>
           <div class="field">
-            {@render field("Glass effect", "Frosted window on Windows 11. Off, or on Windows 10, gives a solid panel.")}
+            {@render field("Glass effect", "Frosted glass panels. Off gives flat solid panels with no blur.")}
             <label class="switch">
               <input type="checkbox" role="switch" checked={look.glass} onchange={(e) => setGlass(e.currentTarget.checked)} />
               <span class="track"></span>

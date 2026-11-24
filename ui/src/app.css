@@ -13,11 +13,6 @@ body {
   padding: 8px;
   box-sizing: border-box;
 }
-/* A native Mica backdrop fills the whole window rectangle, so the panel then
-   fills it too (no transparent margin, square corners). */
-:root[data-glass="on"] #app {
-  padding: 0;
-}
 
 /* One focus style for everything that can take focus. */
 :focus-visible {

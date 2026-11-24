@@ -2,13 +2,11 @@
 // Stored only in this window's localStorage; they are not part of the saved
 // settings file. Applied to <html> as a CSS variable and data attributes that
 // tokens.css reads.
-import { getCurrentWindow, Effect } from "@tauri-apps/api/window";
-
 export const ACCENTS = [
-  { name: "Mint", value: "#6EE7C8" },
-  { name: "Blue", value: "#8AB4FF" },
-  { name: "Amber", value: "#FFB86B" },
-  { name: "Violet", value: "#C792FF" },
+  { name: "Mint", value: "#7FE9D0" },
+  { name: "Blue", value: "#9DB8FF" },
+  { name: "Amber", value: "#FFC27A" },
+  { name: "Violet", value: "#D2A8FF" },
 ] as const;
 
 const KEY = "lookout.look";
@@ -62,29 +60,12 @@ function applyMotion() {
   document.documentElement.dataset.motion = look.reduced ? "reduced" : "full";
 }
 
-let seq = 0;
-/** Mica on Windows 11. Anything else (Windows 10, transparency off, error) is a solid panel. */
-async function applyGlass() {
-  const mine = ++seq;
-  const want = look.glass && !transparencyQuery.matches;
-  let on = false;
-  try {
-    const win = getCurrentWindow();
-    if (want) {
-      const light = document.documentElement.dataset.theme === "light";
-      // Mica follows the window theme. An explicit Light/Dark choice is passed on;
-      // Auto hands control back to Windows so prefers-color-scheme stays truthful.
-      const auto = document.documentElement.dataset.themePref !== "light" && document.documentElement.dataset.themePref !== "dark";
-      await win.setTheme(auto ? null : light ? "light" : "dark");
-      await win.setEffects({ effects: [Effect.Mica] });
-      on = true;
-    } else {
-      await win.clearEffects();
-    }
-  } catch {
-    on = false;
-  }
-  if (mine !== seq) return;
+/** The glass look is CSS only. Off, or backdrop-filter unsupported, gives flat solid panels. */
+const blurSupported =
+  typeof CSS !== "undefined" &&
+  (CSS.supports("backdrop-filter", "blur(1px)") || CSS.supports("-webkit-backdrop-filter", "blur(1px)"));
+function applyGlass() {
+  const on = look.glass && blurSupported && !transparencyQuery.matches;
   look.glassActive = on;
   document.documentElement.dataset.glass = on ? "on" : "solid";
 }
@@ -109,14 +90,8 @@ export function setReduceMotion(on: boolean) {
   applyMotion();
 }
 
-document.documentElement.dataset.glass = "solid";
 applyAccent();
 applyMotion();
 applyGlass();
 motionQuery.addEventListener("change", applyMotion);
 transparencyQuery.addEventListener("change", applyGlass);
-// The Mica variant follows the light/dark theme.
-new MutationObserver(applyGlass).observe(document.documentElement, {
-  attributes: true,
-  attributeFilter: ["data-theme", "data-theme-pref"],
-});

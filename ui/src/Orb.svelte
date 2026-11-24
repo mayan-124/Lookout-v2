@@ -14,8 +14,8 @@
   .orb {
     position: relative;
     flex: none;
-    width: 22px;
-    height: 22px;
+    width: 28px;
+    height: 28px;
     display: grid;
     place-items: center;
   }
@@ -26,8 +26,8 @@
     will-change: transform, opacity;
   }
   .core {
-    width: 12px;
-    height: 12px;
+    width: 16px;
+    height: 16px;
     background: radial-gradient(circle at 35% 30%, #fff 0, var(--accent) 45%, var(--accent) 100%);
     box-shadow: 0 0 10px var(--accent-line);
     animation: breathe 4s ease-in-out infinite;
@@ -44,8 +44,12 @@
   [data-mode="indexing"] .ring {
     animation-duration: 2.4s;
   }
+  /* Results are on screen: the core pops once and an extra ring keeps pulsing. */
   [data-mode="found"] .core {
     animation: found 450ms var(--ease) 1;
+  }
+  [data-mode="found"] .ring {
+    animation: ring 1.6s ease-out infinite;
   }
   [data-mode="error"] .core {
     background: var(--danger);

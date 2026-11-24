@@ -5,6 +5,8 @@
   import Privacy from "./Privacy.svelte";
   import Disk from "./Disk.svelte";
   import { flip } from "svelte/animate";
+  import { fade, fly } from "svelte/transition";
+  import PreviewPanel from "./Preview.svelte";
   import { applyTheme, type ThemePref } from "./theme";
   import Orb from "./Orb.svelte";
   import { look } from "./look.svelte";
@@ -97,14 +99,54 @@
       run(next);
     }
   }
-  let items: Item[] = $state([]);
-  // The orb mirrors existing status: error, results just arrived, paused, indexing, idle.
-  let foundFlash = $state(false);
-  let foundTimer: ReturnType<typeof setTimeout> | undefined;
-  function flashFound() {
-    foundFlash = true;
-    clearTimeout(foundTimer);
-    foundTimer = setTimeout(() => (foundFlash = false), 700);
+  // Every result of the latest query, grouped. `items` is what the active
+  // filter chip shows; selection and Enter work on `items`.
+  let all: Item[] = $state([]);
+  // The filter chips. They only narrow the existing groups; "More" (answers,
+  // ports, plugin results) shows under All.
+  const LANES = [
+    { name: "All", groups: null },
+    { name: "Files", groups: ["Files", "Inside files", "Apps"] },
+    { name: "Screens", groups: ["Seen on screen"] },
+    { name: "Clipboard", groups: ["Clipboard"] },
+    { name: "By meaning", groups: ["By meaning"] },
+  ] as const;
+  let lane = $state(0);
+  const items = $derived.by(() => {
+    const g = LANES[lane].groups;
+    return g ? all.filter((i) => (g as readonly string[]).includes(groupOf(i))) : all;
+  });
+  // Home tiles: the latest clips and capture requests use their own query numbers.
+  let homeGen = 0;
+  let homeClips: Item[] = $state([]);
+  let captureGen = 0;
+  let captureAction = "";
+  const mask = (t: string) => t.replaceAll("[masked]", "••••");
+  function loadHome() {
+    generation += 1;
+    homeGen = generation;
+    invoke("query", { generation, text: "clip " }).catch(() => {});
+  }
+  // A capture button needs the plugin's result id, so it asks for the capture
+  // results, then runs the same prepare/run steps Enter would.
+  function startCapture(action: string) {
+    if (card) return;
+    notice = "";
+    generation += 1;
+    captureGen = generation;
+    captureAction = action;
+    invoke("query", { generation, text: "shot " }).catch(() => {});
+  }
+  function finishCapture(list: Item[]) {
+    const action = captureAction;
+    captureAction = "";
+    captureGen = 0;
+    const hit = list.find((i) => i.id === action || i.id.endsWith(":" + action));
+    if (!hit) {
+      notice = "That capture is not available.";
+      return;
+    }
+    begin(() => invoke<Prepared>("prepare_action", { action, id: hit.id }));
   }
   // Matched words in a content snippet sit between  and .
   function snippetParts(snippet: string): { text: string; hit: boolean }[] {
@@ -148,7 +190,7 @@
   $effect(() => {
     if (panel) {
       query = "";
-      items = [];
+      all = [];
     }
   });
   $effect(() => {
@@ -218,37 +260,53 @@
       .filter((p) => p.text !== "");
   }
 
-  // The four sections. Clipboard and Screenshots are the existing "clip" and
-  // "shot" searches; Disk is the disk view. The current one follows the query.
-  const SECTIONS = ["Search", "Disk", "Clipboard", "Screenshots"] as const;
+  // The five dock sections. Clipboard and Capture are the existing "clip" and
+  // "shot" searches; Disk and Settings are their own pages.
+  const SECTIONS = ["Search", "Disk", "Clipboard", "Capture", "Settings"] as const;
   const section = $derived(
-    disk
-      ? 1
-      : /^\s*(clip|clipboard|clips)(\s|$)/i.test(query)
-        ? 2
-        : /^\s*(shot|screenshot)(\s|$)/i.test(query)
-          ? 3
-          : 0,
+    panel
+      ? 4
+      : disk
+        ? 1
+        : /^\s*(clip|clipboard|clips)(\s|$)/i.test(query)
+          ? 2
+          : /^\s*(shot|screenshot)(\s|$)/i.test(query)
+            ? 3
+            : 0,
   );
   function gotoSection(n: number) {
-    if (panel || card) return;
+    if (card) return;
+    if (panel) {
+      if (n !== 4) leavePanel();
+      return;
+    }
+    if (disk) {
+      if (n === 1) return;
+      disk = false;
+    }
     if (n === 1) {
       openDisk();
       return;
     }
+    if (n === 4) {
+      panel = true;
+      return;
+    }
     query = n === 2 ? "clip " : n === 3 ? "shot " : "";
     run(query);
-    input?.focus();
+    tick().then(() => input?.focus());
   }
   // The empty-bar welcome: what to type and what it does.
   const TRY: [string, string][] = [
-    ["budget", "Find files and apps by name"],
-    ["renovation invoice", "Find words inside your files"],
-    ["kind:folder photos", "Only folders"],
-    ["kill port 3000", "See what uses a port, then stop it; you confirm"],
-    ["disk", "See what is using space on a drive or folder"],
-    ["10 km to miles", "Convert units and calculate"],
+    ["renovation invoice", "words inside your files"],
+    ["kill port 3000", "see what uses a port"],
+    ["10 km to miles", "convert and calculate"],
   ];
+  function tryExample(text: string) {
+    query = text;
+    run(text);
+    input?.focus();
+  }
   // Which action Enter starts for a result. The backend decides what is allowed;
   // this only names the action.
   const defaultAction = (i: Item | undefined): string | null => {
@@ -298,27 +356,36 @@
     generation += 1;
     notice = "";
     if (text.trim() === "") {
-      items = [];
+      all = [];
       done = true;
       selected = 0;
-    } else {
-      done = false;
+      lane = 0;
+      loadHome();
+      return;
     }
+    done = false;
     invoke("query", { generation, text }).catch(() => {});
   }
 
   function onUpdate(u: Update) {
     if (u.generation !== generation) return;
+    if (u.generation === captureGen) {
+      if (u.done) finishCapture(u.items);
+      return;
+    }
+    if (u.generation === homeGen) {
+      homeClips = u.items.filter((i) => kindName(i.kind) === "clipboard").slice(0, 3);
+      return;
+    }
     const keep = items[selected]?.id;
     // One block per group, in the order each group first appears; similar-meaning matches go last.
     const rest = u.items.filter((i) => i.source !== "semantic");
     const order = [...new Set(rest.map(groupOf))];
-    items = [
+    all = [
       ...order.flatMap((g) => rest.filter((i) => groupOf(i) === g)),
       ...u.items.filter((i) => i.source === "semantic"),
     ];
     done = u.done;
-    if (u.done && items.length > 0) flashFound();
     const at = keep ? items.findIndex((i) => i.id === keep) : -1;
     selected = at >= 0 ? at : 0;
   }
@@ -434,14 +501,16 @@
       if (restore) {
         // Same page, same text; the results are asked for again so they are current.
         if (query.trim() !== "" && !panel && !disk) run(query);
+        else if (query.trim() === "" && !panel && !disk) loadHome();
       } else {
         query = "";
-        items = [];
+        all = [];
         done = true;
         selected = 0;
-        generation += 1; // invalidate anything still in flight
+        lane = 0;
         panel = false;
         disk = false;
+        loadHome(); // also invalidates anything still in flight
       }
       cleared = false;
       input?.focus();
@@ -470,6 +539,11 @@
   });
 
   function onKeydown(e: KeyboardEvent) {
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && ["1", "2", "3", "4", "5"].includes(e.key)) {
+      e.preventDefault();
+      gotoSection(Number(e.key) - 1);
+      return;
+    }
     // The disk view handles its own keys.
     if (disk) return;
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === ",") {
@@ -498,11 +572,6 @@
       }
       return;
     }
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && ["1", "2", "3", "4"].includes(e.key)) {
-      e.preventDefault();
-      gotoSection(Number(e.key) - 1);
-      return;
-    }
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && query === "") {
       // With text in the box, Ctrl+Z stays the text field's own undo.
       e.preventDefault();
@@ -515,9 +584,10 @@
           e.preventDefault();
           completePath();
         } else if (!e.shiftKey) {
-          // Tab moves to the next section; Shift+Tab still moves focus.
+          // Tab moves to the next filter chip; Shift+Tab still moves focus.
           e.preventDefault();
-          gotoSection((section + 1) % SECTIONS.length);
+          lane = (lane + 1) % LANES.length;
+          selected = 0;
         }
         break;
       case "Escape":
@@ -551,11 +621,69 @@
   const orbMode = $derived.by(() => {
     const s = status as Status | null;
     if (notice) return "error";
-    if (foundFlash) return "found";
+    if (query.trim() !== "" && items.length > 0) return "found";
     if (s?.paused) return "paused";
     if (s?.indexing) return "indexing";
     return "idle";
   });
+
+  // ---- results view helpers ----
+  const WINPATH = /^([a-z]:[\\/]|\\\\)/i;
+  const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
+  const pathOf = (i: Item | undefined) => (i?.uri && WINPATH.test(i.uri) ? i.uri : null);
+  const isImage = (i: Item | undefined) =>
+    !!i && !!pathOf(i) && (kindName(i.kind) === "screenshot" || IMAGE_EXT.test(i.uri ?? ""));
+  // Only files, folders, screenshots and projects can be previewed from disk; the
+  // backend's preview_file keeps hiding sensitive files and never reads cloud placeholders.
+  const previewable = (i: Item | undefined) =>
+    !!pathOf(i) && ["file", "folder", "screenshot", "project"].includes(kindName(i!.kind));
+  const cur = $derived(items[selected] as Item | undefined);
+  const previewSource = $derived(previewable(cur) ? { path: pathOf(cur)! } : null);
+
+  // Thumbnail of the top hit, through the same safe preview command.
+  let thumb = $state<{ path: string; src: string } | null>(null);
+  $effect(() => {
+    const p = isImage(items[0]) ? pathOf(items[0]) : null;
+    if (!p) {
+      thumb = null;
+      return;
+    }
+    let dead = false;
+    const t = setTimeout(() => {
+      invoke<{ state: string; image: string | null }>("preview_file", { node: null, hit: null, path: p })
+        .then((r) => {
+          if (!dead && r.state === "ok" && r.image) thumb = { path: p, src: r.image };
+        })
+        .catch(() => {});
+    }, 120);
+    return () => {
+      dead = true;
+      clearTimeout(t);
+    };
+  });
+  const thumbSrc = $derived.by(() => {
+    const t = thumb as { path: string; src: string } | null;
+    return t && t.path === pathOf(items[0]) ? t.src : null;
+  });
+
+  const ACTION_LABEL: Record<string, string> = {
+    open: "Open",
+    paste_clip: "Paste",
+    copy_clip: "Copy",
+    kill_port: "Stop…",
+  };
+  const openLabel = (i: Item | undefined) => ACTION_LABEL[defaultAction(i) ?? ""] ?? "Run";
+  function copyText(i: Item | undefined) {
+    if (!i || card) return;
+    begin(() => invoke<Prepared>("prepare_action", { action: "copy_clip", id: i.id }));
+  }
+
+  // Blurred layers are only composited while the window is on screen.
+  $effect(() => {
+    document.documentElement.dataset.shown = visible ? "true" : "false";
+  });
+  const dur = (n: number) => (look.reduced ? 0 : n);
+  const home = $derived(query.trim() === "" && !panel && !disk && !card);
 </script>
 
 <svelte:window
@@ -566,223 +694,342 @@
 <svelte:document onvisibilitychange={() => (visible = document.visibilityState === "visible")} />
 
 <main class="bar">
-  <div class="searchrow" data-tauri-drag-region>
-    <Orb mode={orbMode} active={visible} />
-    <input
-      bind:this={input}
-      bind:value={query}
-      oninput={() => run(query)}
-      class="search"
-      type="text"
-      placeholder={panel ? "settings" : "Search files and apps, or calculate: 2+2, 10 km to miles"}
-      readonly={panel}
-      autocomplete="off"
-      spellcheck="false"
-      role="combobox"
-      aria-expanded={items.length > 0}
-      aria-controls="results"
-      aria-autocomplete="list"
-      aria-activedescendant={items.length > 0 && items[selected] ? `result-${selected}` : undefined}
-      aria-label="Search"
-    />
-    <button
-      class="pin"
-      class:on={pinned}
-      type="button"
-      aria-pressed={pinned}
-      aria-label="Pin window"
-      title={pinned ? "Pinned: stays on top and does not hide when you click away" : "Pin window on top"}
-      onclick={togglePin}>{pinned ? "Pinned" : "Pin"}</button
-    >
-    <kbd aria-hidden="true" data-tauri-drag-region>Esc</kbd>
-  </div>
-
-  {#if disk}
-    <Disk onclose={closeDisk} />
-  {:else if panel}
-    <Privacy bind:this={privacy} onclose={closePanel} />
-  {:else if card?.phase === "confirm"}
-    {@const p = card.prepared}
-    <div
-      class="card"
-      class:danger={p.risk === "dangerous"}
-      role="alertdialog"
-      aria-labelledby="card-title"
-      aria-describedby="card-body"
-    >
-      <div class="card-head">
-        <span class="risk" class:danger={p.risk === "dangerous"}>
-          {p.risk === "dangerous" ? "Dangerous" : "Needs confirmation"}
-        </span>
-        {#if p.preview.from}<p class="from">{p.preview.from}</p>{/if}
-        <h2 id="card-title">{p.preview.title}</h2>
-      </div>
-      <div id="card-body" class="card-body">
-        {#each p.preview.lines as line}<p class="line">{line}</p>{/each}
-        {#each p.preview.warnings as w}<p class="warning">{w}</p>{/each}
-        {#if card.error}<p class="warning" role="alert">{card.error}</p>{/if}
-      </div>
-      <div class="card-actions">
-        <button bind:this={cancelButton} class="btn" onclick={dismissCard}>Cancel <kbd>Esc</kbd></button>
-        <button
-          bind:this={confirmButton}
-          class="btn"
-          class:primary={p.risk !== "dangerous"}
-          class:danger={p.risk === "dangerous"}
-          disabled={!card.presented || card.busy}
-          onclick={confirm}
-        >
-          {p.is_undo ? "Undo" : "Confirm"}
-        </button>
-      </div>
+  <div class="col" class:wide={disk}>
+    <div class="searchrow glass" data-tauri-drag-region>
+      <Orb mode={orbMode} active={visible && !look.reduced} />
+      <input
+        bind:this={input}
+        bind:value={query}
+        oninput={() => run(query)}
+        class="search"
+        type="text"
+        placeholder={panel ? "settings" : "Search files and apps, or calculate: 2+2, 10 km to miles"}
+        readonly={panel}
+        autocomplete="off"
+        spellcheck="false"
+        role="combobox"
+        aria-expanded={items.length > 0}
+        aria-controls="results"
+        aria-autocomplete="list"
+        aria-activedescendant={items.length > 0 && items[selected] ? `result-${selected}` : undefined}
+        aria-label="Search"
+      />
+      {#if query.trim() !== "" && !panel && !disk && !card}
+        <span class="count" aria-live="polite">{items.length} {items.length === 1 ? "result" : "results"}</span>
+      {/if}
+      <button
+        class="pin"
+        class:on={pinned}
+        type="button"
+        aria-pressed={pinned}
+        aria-label="Pin window"
+        title={pinned ? "Pinned: stays on top and does not hide when you click away" : "Pin window on top"}
+        onclick={togglePin}>{pinned ? "Pinned" : "Pin"}</button
+      >
+      <kbd aria-hidden="true" data-tauri-drag-region>Esc</kbd>
     </div>
-  {:else if card?.phase === "result"}
-    <section class="card" role="status">
-      <div class="card-head">
-        <span class="risk" class:danger={!card.ok}>{card.ok ? "Done" : "Not done"}</span>
-        <h2 id="card-title">{card.message}</h2>
-      </div>
-      <div class="card-actions">
-        <button class="btn" onclick={dismissCard}>Close <kbd>Esc</kbd></button>
-        {#if card.ok && card.undoable}
-          <button class="btn primary" onclick={startUndo}>Undo</button>
-        {/if}
-      </div>
-    </section>
-  {:else if isDiskCommand(query)}
-    <ul class="results" role="listbox">
-      <li role="presentation" class="entry">
-        <div role="option" tabindex="-1" aria-selected="true" class="row selected" onclick={openDisk} onkeydown={() => {}}>
-          <span class="icon code">disk</span>
-          <span class="text">
-            <span class="title">Disk usage analyzer</span>
-            <span class="snippet">See what takes the space on a drive or folder. Scans only when you press Scan.</span>
-          </span>
-          <span class="hint-enter"><kbd>Enter</kbd></span>
-        </div>
-      </li>
-    </ul>
-  {:else if items.length > 0}
-    {#if corrected}<p class="note">Showing results for <b>{corrected}</b></p>{/if}
-    <ul id="results" class="results" role="listbox" bind:this={list}>
-      {#each items as item, i (item.id)}
-        {@const top = i === 0}
-        <li
-          role="presentation"
-          class="entry"
-          style:animation-delay="{Math.min(i, 5) * 10}ms"
-          animate:flip={{ duration: look.reduced ? 0 : 140 }}
-        >
-          {#if top}
-            <div class="group label-caps">Top hit</div>
-          {:else if i === 1 || groupOf(items[i - 1]) !== groupOf(item)}
-            <div class="group label-caps">{groupOf(item)}</div>
-          {/if}
-          <div
-            role="option"
-            tabindex="-1"
-            id={`result-${i}`}
-            aria-selected={i === selected}
-            class="row"
-            class:top
-            class:selected={i === selected}
-            data-index={i}
-            onmousemove={() => (selected = i)}
-            onclick={() => activate(item)}
-            onkeydown={() => {}}
+
+    {#if !panel && !disk && !card}
+      <div class="chips" role="tablist" aria-label="Filter results">
+        {#each LANES as l, n}
+          <button
+            type="button"
+            class="chip"
+            class:on={lane === n}
+            role="tab"
+            aria-selected={lane === n}
+            onclick={() => {
+              lane = n;
+              selected = 0;
+              input?.focus();
+            }}>{l.name}</button
           >
-            <span class="icon code">{badgeOf(item)}</span>
-            <span class="text">
-              <span class="l1">
-                <span class="title"
-                  >{#each highlight(item.title) as part}{#if part.hit}<mark>{part.text}</mark
-                      >{:else}{part.text}{/if}{/each}</span
-                >
-                {#if !top && !isPlugin(item)}
-                  {#if typeof item.metadata?.snippet === "string" && item.uri}
-                    <span class="meta code">{item.uri}</span>
-                  {:else if item.subtitle}
-                    <span class="meta" class:code={isPath(item)}>{item.subtitle}</span>
-                  {/if}
-                {/if}
-              </span>
-              {#if top && item.subtitle}
-                <span class="sub" class:code={isPath(item)} class:wrap={isPlugin(item)}
-                  >{#each highlight(item.subtitle) as part}{#if part.hit}<mark>{part.text}</mark
-                      >{:else}{part.text}{/if}{/each}</span
-                >
-              {:else if !top && isPlugin(item) && item.subtitle}
-                <span class="sub wrap">{item.subtitle}</span>
-              {/if}
-              {#if typeof item.metadata?.snippet === "string"}
-                <span class="snippet"
-                  >{#each snippetParts(item.metadata.snippet) as part}{#if part.hit}<mark>{part.text}</mark
-                      >{:else}{part.text}{/if}{/each}</span
-                >
-              {/if}
+        {/each}
+      </div>
+    {/if}
+
+    <div class="stage">
+      {#if disk}
+        <Disk onclose={closeDisk} />
+      {:else if panel}
+        <Privacy bind:this={privacy} onclose={closePanel} />
+      {:else if card?.phase === "confirm"}
+        {@const p = card.prepared}
+        <div
+          class="card glass"
+          class:danger={p.risk === "dangerous"}
+          role="alertdialog"
+          aria-labelledby="card-title"
+          aria-describedby="card-body"
+        >
+          <div class="card-head">
+            <span class="risk" class:danger={p.risk === "dangerous"}>
+              {p.risk === "dangerous" ? "Dangerous" : "Needs confirmation"}
             </span>
-            {#if i === selected && defaultAction(item)}
-              <span class="hint-enter"><kbd>Enter</kbd>{#if top}Open{/if}</span>
+            {#if p.preview.from}<p class="from">{p.preview.from}</p>{/if}
+            <h2 id="card-title">{p.preview.title}</h2>
+          </div>
+          <div id="card-body" class="card-body">
+            {#each p.preview.lines as line}<p class="line">{line}</p>{/each}
+            {#each p.preview.warnings as w}<p class="warning">{w}</p>{/each}
+            {#if card.error}<p class="warning" role="alert">{card.error}</p>{/if}
+          </div>
+          <div class="card-actions">
+            <button bind:this={cancelButton} class="btn" onclick={dismissCard}>Cancel <kbd>Esc</kbd></button>
+            <button
+              bind:this={confirmButton}
+              class="btn"
+              class:primary={p.risk !== "dangerous"}
+              class:danger={p.risk === "dangerous"}
+              disabled={!card.presented || card.busy}
+              onclick={confirm}
+            >
+              {p.is_undo ? "Undo" : "Confirm"}
+            </button>
+          </div>
+        </div>
+      {:else if card?.phase === "result"}
+        <section class="card glass" role="status">
+          <div class="card-head">
+            <span class="risk" class:danger={!card.ok}>{card.ok ? "Done" : "Not done"}</span>
+            <h2 id="card-title">{card.message}</h2>
+          </div>
+          <div class="card-actions">
+            <button class="btn" onclick={dismissCard}>Close <kbd>Esc</kbd></button>
+            {#if card.ok && card.undoable}
+              <button class="btn primary" onclick={startUndo}>Undo</button>
             {/if}
           </div>
-        </li>
-      {/each}
-    </ul>
-  {:else if query.trim() !== "" && done}
-    <p class="empty">No results for “{query.trim()}”</p>
-  {:else if query.trim() === ""}
-    <section class="empty" aria-label="Tips">
-      <p class="label-caps">Try typing</p>
-      <ul class="tips">
-        {#each TRY as [example, what]}
-          <li><span class="ex code">{example}</span><span class="what">{what}</span></li>
-        {/each}
-      </ul>
-      {#if status && status.roots === 0 && status.files === 0}
-        <p class="warning">No folders are chosen yet. Press <kbd>Ctrl+,</kbd> to choose some.</p>
-      {/if}
-    </section>
-  {/if}
+        </section>
+      {:else if home}
+        <div class="home" out:fade={{ duration: dur(70) }}>
+          <section class="tile t-index glass" aria-label="Index">
+            <h3 class="label-caps">Index</h3>
+            <p class="big">{status ? fmt(status.apps) : "…"} <span>apps</span></p>
+            <p class="big">{status ? fmt(status.files) : "…"} <span>files so far</span></p>
+            {#if status?.paused}<p class="sub">Paused</p>
+            {:else if status?.indexing}<p class="sub">Preparing files…</p>{/if}
+            <button class="btn small" onclick={() => (panel = true)}>Choose folders</button>
+          </section>
 
-  {#if !panel && !disk && !card}
-    <nav class="pills" aria-label="Sections">
-      {#each SECTIONS as name, n}
-        <button
-          type="button"
-          class="pill"
-          class:on={section === n}
-          aria-current={section === n ? "true" : undefined}
-          title="Ctrl+{n + 1}"
-          onclick={() => gotoSection(n)}>{name}</button
-        >
-      {/each}
-    </nav>
-  {/if}
+          <section class="tile t-disk glass" aria-label="Disk">
+            <h3 class="label-caps">Disk</h3>
+            <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+              <circle cx="60" cy="60" r="46" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="14" />
+              <circle
+                cx="60"
+                cy="60"
+                r="46"
+                fill="none"
+                stroke="var(--accent)"
+                stroke-width="14"
+                stroke-linecap="round"
+                stroke-dasharray="170 289"
+                transform="rotate(-90 60 60)"
+              />
+              <circle
+                cx="60"
+                cy="60"
+                r="46"
+                fill="none"
+                stroke="#c2417a"
+                stroke-width="14"
+                stroke-linecap="round"
+                stroke-dasharray="52 289"
+                stroke-dashoffset="-190"
+                transform="rotate(-90 60 60)"
+              />
+            </svg>
+            <p class="sub center">See what takes space</p>
+            <button class="btn small primary" onclick={openDisk}>Scan</button>
+          </section>
 
-  {#if !panel}
-  <footer>
-    {#if notice}
-      <span class="warn">{notice}</span>
-    {:else if status}
-      <span class="local"><i class="dot"></i>local only</span>
-      {#if !disk && !card && items.length > 0}
-        <span><kbd>Enter</kbd> Open</span>
-        <span><kbd>Esc</kbd> Back</span>
+          <section class="tile t-clip glass" aria-label="Clipboard">
+            <h3 class="label-caps">Clipboard</h3>
+            {#if homeClips.length === 0}
+              <p class="sub">Nothing copied yet.</p>
+            {:else}
+              <ul class="clips">
+                {#each homeClips as c (c.id)}
+                  <li class="code">{mask(c.title)}</li>
+                {/each}
+              </ul>
+            {/if}
+          </section>
+
+          <section class="tile t-cap glass" aria-label="Capture">
+            <h3 class="label-caps">Capture</h3>
+            <div class="capgrid">
+              <button class="btn small" onclick={() => startCapture("take_screenshot")}>Shot</button>
+              <button class="btn small" onclick={() => startCapture("record_screen")}>Record</button>
+              <button class="btn small" onclick={() => startCapture("take_scrolling_screenshot")}>Scroll</button>
+              <button class="btn small" onclick={() => startCapture("extract_text")}>Text</button>
+            </div>
+          </section>
+
+          <section class="tile t-try glass" aria-label="Tips">
+            <h3 class="label-caps">Try typing</h3>
+            <ul class="tips">
+              {#each TRY as [example, what]}
+                <li>
+                  <button class="ex code" onclick={() => tryExample(example)}>{example}</button>
+                  <span class="what">{what}</span>
+                </li>
+              {/each}
+            </ul>
+            {#if status && status.roots === 0 && status.files === 0}
+              <p class="warning">No folders are chosen yet. Press <kbd>Ctrl+,</kbd> to choose some.</p>
+            {/if}
+          </section>
+        </div>
+      {:else if isDiskCommand(query)}
+        <div class="res one" in:fly={{ x: 16, duration: dur(120), delay: dur(50) }}>
+          <ul class="results card glass" role="listbox">
+            <li role="presentation" class="entry">
+              <div role="option" tabindex="-1" aria-selected="true" class="row selected" onclick={openDisk} onkeydown={() => {}}>
+                <span class="icon code">disk</span>
+                <span class="text">
+                  <span class="title">Disk usage analyzer</span>
+                  <span class="snippet">See what takes the space on a drive or folder. Scans only when you press Scan.</span>
+                </span>
+                <span class="hint-enter"><kbd>Enter</kbd></span>
+              </div>
+            </li>
+          </ul>
+        </div>
       {:else}
-        <span>
-          {fmt(status.files)} files · {fmt(status.folders)} folders · {fmt(status.apps)} apps
-          {#if status.paused}· paused{:else if status.indexing}· preparing files…{:else if status.read_total > 0 && status.read_done < status.read_total}· Reading text: {fmt(status.read_done)} of {fmt(status.read_total)} files{:else if status.ocr_total > 0 && status.ocr_done < status.ocr_total}· Reading pictures: {fmt(status.ocr_done)} of {fmt(status.ocr_total)} files{/if}
-          {#if status.semantic_total > 0}· similar meaning {fmt(status.semantic_done)}/{fmt(status.semantic_total)}{/if}
-        </span>
+        <div class="res" class:one={items.length === 0} in:fly={{ x: 16, duration: dur(120), delay: dur(50) }}>
+          <div class="card glass listcard">
+            {#if corrected}<p class="note">Showing results for <b>{corrected}</b></p>{/if}
+            {#if items.length > 0}
+              <ul id="results" class="results" role="listbox" bind:this={list}>
+                {#each items as item, i (item.id)}
+                  {@const top = i === 0}
+                  <li
+                    role="presentation"
+                    class="entry"
+                    style:animation-delay="{Math.min(i, 7) * 20}ms"
+                    animate:flip={{ duration: dur(140) }}
+                  >
+                    {#if !top && (i === 1 || groupOf(items[i - 1]) !== groupOf(item))}
+                      <div class="group label-caps">{groupOf(item)}</div>
+                    {/if}
+                    <div
+                      role="option"
+                      tabindex="-1"
+                      id={`result-${i}`}
+                      aria-selected={i === selected}
+                      class="row"
+                      class:top
+                      class:selected={i === selected}
+                      data-index={i}
+                      onmousemove={() => (selected = i)}
+                      onclick={() => activate(item)}
+                      onkeydown={() => {}}
+                    >
+                      {#if top && thumbSrc}
+                        <img class="thumb" src={thumbSrc} alt="" />
+                      {:else}
+                        <span class="icon code">{badgeOf(item)}</span>
+                      {/if}
+                      <span class="text">
+                        <span class="l1">
+                          {#if top}<span class="tophit">Top hit</span>{/if}
+                          <span class="title"
+                            >{#each highlight(item.title) as part}{#if part.hit}<mark>{part.text}</mark
+                                >{:else}{part.text}{/if}{/each}</span
+                          >
+                          {#if !top && !isPlugin(item)}
+                            {#if typeof item.metadata?.snippet === "string" && item.uri}
+                              <span class="meta code">{item.uri}</span>
+                            {:else if item.subtitle}
+                              <span class="meta" class:code={isPath(item)}>{kindName(item.kind) === "clipboard" ? mask(item.subtitle) : item.subtitle}</span>
+                            {/if}
+                          {/if}
+                        </span>
+                        {#if top && item.subtitle}
+                          <span class="sub" class:code={isPath(item)} class:wrap={isPlugin(item)}
+                            >{#each highlight(kindName(item.kind) === "clipboard" ? mask(item.subtitle) : item.subtitle) as part}{#if part.hit}<mark>{part.text}</mark
+                                >{:else}{part.text}{/if}{/each}</span
+                          >
+                        {:else if !top && isPlugin(item) && item.subtitle}
+                          <span class="sub wrap">{kindName(item.kind) === "clipboard" ? mask(item.subtitle) : item.subtitle}</span>
+                        {/if}
+                        {#if typeof item.metadata?.snippet === "string"}
+                          <span class="snippet"
+                            >{#each snippetParts(item.metadata.snippet) as part}{#if part.hit}<mark>{part.text}</mark
+                                >{:else}{part.text}{/if}{/each}</span
+                          >
+                        {/if}
+                      </span>
+                      {#if i === selected && defaultAction(item)}
+                        <span class="hint-enter"><kbd>Enter</kbd>{#if top}{openLabel(item)}{/if}</span>
+                      {/if}
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {:else if done}
+              <p class="empty">No results for “{query.trim()}”</p>
+            {/if}
+          </div>
+
+          {#if items.length > 0 && cur}
+            <aside class="card glass prevcard" aria-label="Preview" in:fly={{ x: 24, duration: dur(120), delay: dur(50) }}>
+              {#if previewSource}
+                <PreviewPanel source={previewSource} embedded />
+              {:else}
+                <div class="plain">
+                  <strong class="nm">{mask(cur.title)}</strong>
+                  {#if cur.subtitle}<span class="sub wrap">{mask(cur.subtitle)}</span>{/if}
+                  <span class="sub">{groupOf(cur)}</span>
+                </div>
+              {/if}
+              <div class="prevactions">
+                {#if defaultAction(cur)}
+                  <button class="btn small primary" onclick={() => activate(cur)}>{openLabel(cur)}</button>
+                {/if}
+                {#if kindName(cur.kind) === "clipboard" && defaultAction(cur) !== "copy_clip"}
+                  <button class="btn small" onclick={() => copyText(cur)}>Copy text</button>
+                {/if}
+              </div>
+            </aside>
+          {/if}
+        </div>
       {/if}
-    {:else}
-      <span>Search unavailable</span>
+    </div>
+
+    {#if !card}
+      <nav class="dock glass" aria-label="Sections">
+        {#each SECTIONS as name, n}
+          <button
+            type="button"
+            class="dockbtn"
+            class:on={section === n}
+            aria-current={section === n ? "true" : undefined}
+            title="Ctrl+{n + 1}"
+            onclick={() => gotoSection(n)}>{name}</button
+          >
+        {/each}
+      </nav>
     {/if}
-    <span class="spacer"></span>
-    {#if openHotkey}<span class="hotkey">{openHotkey} open</span>{/if}
-    <button class="btn text" onclick={() => { if (!card && !disk) panel = true; }}>Ctrl+, settings</button>
-  </footer>
-  {/if}
+
+    {#if !panel && !disk}
+      <footer>
+        {#if notice}
+          <span class="warn">{notice}</span>
+        {:else}
+          <span><kbd>Enter</kbd> open</span>
+          <span><kbd>Space</kbd> preview</span>
+          <span><kbd>Tab</kbd> next lane</span>
+          <span><kbd>Ctrl+1-5</kbd> sections</span>
+          <span><kbd>Esc</kbd> back</span>
+        {/if}
+        <span class="spacer"></span>
+        {#if openHotkey}<span class="hotkey">{openHotkey} open</span>{/if}
+      </footer>
+    {/if}
+  </div>
 </main>
 
 <style>
@@ -790,25 +1037,51 @@
     height: 100%;
     box-sizing: border-box;
     display: flex;
-    flex-direction: column;
-    background: var(--glass-bg);
+    justify-content: center;
+    background: var(--window-bg);
     color: var(--text);
     border: 1px solid var(--glass-border);
     border-radius: var(--r-window);
     box-shadow: var(--shadow-window);
     overflow: hidden;
   }
-  :global(:root[data-glass="on"]) .bar {
-    border-radius: 0;
-    box-shadow: none;
+  .col {
+    width: 900px;
+    max-width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px 0 12px;
+    min-height: 0;
+  }
+  .col.wide {
+    width: 100%;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  /* The glass panel every surface shares. Flat and unblurred when glass is off. */
+  .glass {
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
   }
 
   .searchrow {
+    flex: none;
+    box-sizing: border-box;
+    height: 68px;
     display: flex;
     align-items: center;
     gap: var(--sp-3);
-    padding: 0 var(--sp-4) 0 var(--sp-5);
-    border-bottom: 1px solid var(--hairline);
+    padding: 0 var(--sp-4) 0 22px;
+    border-radius: var(--r-pill);
+  }
+  .count {
+    flex: none;
+    color: var(--muted);
+    font-size: var(--fs-sm);
   }
   .pin {
     all: unset;
@@ -833,8 +1106,8 @@
     box-sizing: border-box;
     flex: 1;
     min-width: 0;
-    padding: 18px 0;
-    font-size: var(--fs-xl);
+    font-size: 24px;
+    font-weight: 500;
     caret-color: var(--accent);
   }
   .search[readonly] {
@@ -847,16 +1120,239 @@
     outline: none;
   }
 
+  .chips {
+    flex: none;
+    display: flex;
+    gap: 8px;
+    padding: 0 6px;
+  }
+  .chip {
+    all: unset;
+    box-sizing: border-box;
+    cursor: pointer;
+    padding: 5px 16px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-pill);
+    color: var(--text-soft);
+    font-size: var(--fs-sm);
+    transition:
+      background-color var(--dur-fast) var(--ease),
+      color var(--dur-fast) var(--ease);
+  }
+  .chip:hover {
+    background: var(--raised);
+    color: var(--text);
+  }
+  .chip.on {
+    background: var(--accent-bg);
+    border-color: var(--accent-bg);
+    color: var(--accent-on);
+    font-weight: 600;
+  }
+  .chip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .stage {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .stage > :global(*) {
+    grid-area: 1 / 1;
+    min-height: 0;
+  }
+
+  /* ---- home tiles ---- */
+  .home {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .tile {
+    border-radius: var(--r-tile);
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .tile h3 {
+    margin: 0;
+  }
+  .t-index {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .t-disk {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    align-items: center;
+    text-align: center;
+  }
+  .t-disk h3 {
+    align-self: flex-start;
+  }
+  .t-clip {
+    grid-column: 3 / 5;
+    grid-row: 1;
+  }
+  .t-cap {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .t-try {
+    grid-column: 3 / 5;
+    grid-row: 2;
+  }
+  .big {
+    margin: 0;
+    font-size: var(--fs-xl);
+    font-weight: 600;
+    color: var(--text);
+  }
+  .big span {
+    font-size: var(--fs-sm);
+    font-weight: 400;
+    color: var(--text-soft);
+  }
+  .tile .btn {
+    align-self: flex-start;
+    margin-top: auto;
+  }
+  .t-disk .btn {
+    align-self: center;
+    margin-top: 0;
+  }
+  .ring {
+    width: 120px;
+    height: 120px;
+    margin: auto 0 0;
+  }
+  .t-disk .sub {
+    margin-bottom: auto;
+  }
+  .clips {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .clips li {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    padding: 5px 10px;
+    border-radius: var(--r-md);
+    background: var(--panel);
+    font-size: var(--fs-sm);
+    color: var(--text-soft);
+  }
+  .capgrid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-top: auto;
+  }
+  .capgrid .btn {
+    margin-top: 0;
+    justify-content: center;
+  }
+  .tips {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .tips li {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+  .ex {
+    all: unset;
+    cursor: pointer;
+    flex: none;
+    width: 160px;
+    color: var(--accent);
+    font-size: var(--fs-md);
+    font-family: var(--font-code);
+  }
+  .ex:hover {
+    text-decoration: underline;
+  }
+  .ex:focus-visible {
+    outline: 2px solid var(--accent);
+  }
+  .what {
+    color: var(--text-soft);
+    font-size: var(--fs-sm);
+  }
+
+  /* ---- results ---- */
+  .res {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 12px;
+    min-height: 0;
+  }
+  .res.one {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .card {
+    border-radius: var(--r-tile);
+  }
+  .listcard {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .prevcard {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .plain {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+    overflow: auto;
+  }
+  .nm {
+    overflow-wrap: anywhere;
+  }
+  .prevactions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
   .results {
     list-style: none;
     margin: 0;
-    padding: 6px 8px;
+    padding: 8px 10px;
     overflow-y: auto;
     flex: 1;
     min-height: 0;
   }
+  .results.card {
+    padding: 8px 10px;
+  }
   .entry {
-    animation: enter 90ms var(--ease) both;
+    animation: enter 120ms var(--ease) both;
   }
   @keyframes enter {
     from {
@@ -869,16 +1365,16 @@
     }
   }
   .group {
-    padding: 10px 12px 4px;
+    padding: 12px 12px 4px;
   }
   .row {
     display: flex;
     align-items: center;
     gap: var(--sp-3);
-    min-height: 40px;
-    padding: 5px 12px;
+    min-height: 44px;
+    padding: 6px 12px;
     border: 1px solid transparent;
-    border-radius: var(--r-md);
+    border-radius: var(--r-lg);
     cursor: default;
     transition: background-color var(--dur-fast) var(--ease);
   }
@@ -887,32 +1383,55 @@
     border-color: var(--accent-line);
   }
   .row.top {
-    min-height: 64px;
-    padding: 10px 14px;
-    border-radius: var(--r-lg);
+    min-height: 72px;
+    padding: 9px 14px;
+    border-radius: 18px;
+    border-color: var(--accent-line);
+    box-shadow: 0 0 24px var(--accent-soft);
     background: var(--raised);
   }
   .row.top.selected {
     background: var(--accent-soft);
+    border-color: var(--accent);
   }
 
   .icon {
     flex: none;
-    min-width: 36px;
+    width: 32px;
+    height: 32px;
     box-sizing: border-box;
-    text-align: center;
-    padding: 5px 4px;
+    display: grid;
+    place-items: center;
     border: 1px solid var(--hairline);
     border-radius: var(--r-md);
     background: var(--panel);
     color: var(--text-soft);
-    font-size: var(--fs-xs);
+    font-size: 11px;
+    overflow: hidden;
   }
   .row.top .icon {
-    min-width: 46px;
-    padding: 10px 4px;
+    width: 54px;
+    height: 54px;
     border-radius: var(--r-lg);
     color: var(--accent);
+    font-size: var(--fs-xs);
+  }
+  .thumb {
+    flex: none;
+    width: 72px;
+    height: 54px;
+    object-fit: cover;
+    border-radius: var(--r-md);
+    border: 1px solid var(--hairline);
+  }
+  .tophit {
+    flex: none;
+    padding: 1px 8px;
+    border-radius: var(--r-pill);
+    background: var(--accent-bg);
+    color: var(--accent-on);
+    font-size: 11px;
+    font-weight: 600;
   }
 
   .text {
@@ -941,7 +1460,7 @@
     max-width: 100%;
     font-size: var(--fs-hit);
   }
-  /* Path or meta, right-aligned in compact rows. */
+  /* Path or source, right-aligned in compact rows. */
   .meta {
     flex: 1;
     min-width: 0;
@@ -961,6 +1480,9 @@
     text-overflow: ellipsis;
     color: var(--text-soft);
     font-size: var(--fs-sm);
+  }
+  .sub.center {
+    text-align: center;
   }
   .sub.code {
     font-size: var(--fs-xs);
@@ -992,60 +1514,22 @@
     font-size: var(--fs-xs);
   }
 
-  .pills {
-    display: flex;
-    gap: 6px;
-    padding: 8px 14px;
-    border-top: 1px solid var(--hairline);
-  }
-  .pill {
-    all: unset;
-    box-sizing: border-box;
-    cursor: pointer;
-    padding: 4px 14px;
-    border: 1px solid var(--hairline);
-    border-radius: var(--r-pill);
-    color: var(--text-soft);
-    font-size: var(--fs-sm);
-    transition:
-      background-color var(--dur-fast) var(--ease),
-      color var(--dur-fast) var(--ease);
-  }
-  .pill:hover {
-    background: var(--raised);
-    color: var(--text);
-  }
-  .pill.on {
-    background: var(--accent-bg);
-    border-color: var(--accent-bg);
-    color: var(--accent-on);
-    font-weight: 600;
-  }
-  .pill:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-
   .note {
     margin: 0;
-    padding: 6px 20px 2px;
+    padding: 8px 20px 0;
   }
-
   .empty {
-    padding: 16px 20px;
+    padding: 18px 22px;
     color: var(--muted);
     font-size: var(--fs-md);
     margin: 0;
-    flex: 1;
-    overflow-y: auto;
   }
 
-  .card {
-    flex: 1;
-    min-height: 0;
+  /* ---- confirm / result card ---- */
+  .card:is(section, div[role="alertdialog"]) {
     display: flex;
     flex-direction: column;
-    padding: 14px 20px;
+    padding: 18px 22px;
     gap: 10px;
   }
   .card-head {
@@ -1101,51 +1585,59 @@
     gap: 8px;
   }
 
-  .tips {
-    list-style: none;
-    margin: 10px 0 0;
-    padding: 0;
-  }
-  .tips li {
-    display: flex;
-    align-items: baseline;
-    gap: 16px;
-    padding: 6px 0;
-  }
-  .ex {
+  /* ---- dock ---- */
+  .dock {
     flex: none;
-    width: 190px;
-    color: var(--accent);
-    font-size: var(--fs-md);
+    align-self: center;
+    box-sizing: border-box;
+    height: 50px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px;
+    border-radius: var(--r-pill);
   }
-  .what {
+  .dockbtn {
+    all: unset;
+    box-sizing: border-box;
+    cursor: pointer;
+    padding: 7px 18px;
+    border-radius: var(--r-pill);
     color: var(--text-soft);
-    font-size: var(--fs-md);
+    font-size: var(--fs-sm);
+    transition:
+      background-color var(--dur-fast) var(--ease),
+      color var(--dur-fast) var(--ease);
+  }
+  .dockbtn:hover {
+    background: var(--raised);
+    color: var(--text);
+  }
+  .dockbtn.on {
+    background: var(--accent-bg);
+    color: var(--accent-on);
+    font-weight: 600;
+  }
+  .dockbtn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 
   footer {
+    flex: none;
     display: flex;
-    flex-wrap: wrap; /* at 200% scaling on a small screen the links drop to a second line */
+    flex-wrap: wrap;
     align-items: center;
-    gap: 2px 14px;
-    padding: 6px 14px 6px 20px;
-    border-top: 1px solid var(--hairline);
+    justify-content: center;
+    gap: 2px 16px;
     color: var(--muted);
     font-size: var(--fs-xs);
   }
   footer .spacer {
-    flex: 1;
+    display: none;
   }
   footer .hotkey {
-    color: var(--text-soft);
-  }
-  footer .btn.text {
-    font-size: var(--fs-xs);
-    white-space: nowrap;
-    color: var(--accent);
-  }
-  footer .btn.text:hover {
-    text-decoration: underline;
+    color: var(--text-3);
   }
   footer > span {
     white-space: nowrap;
@@ -1153,17 +1645,6 @@
   footer kbd {
     padding: 0 5px;
     color: var(--text-soft);
-  }
-  .local {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--success);
   }
   .warn {
     color: var(--accent);
