@@ -104,7 +104,7 @@ jobs:
           $exe = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           $sigFile = "$($exe.FullName).sig"
           if (-not (Test-Path $sigFile)) { throw "Missing signature $sigFile" }
-          gh release create $TAG --generate-notes --title $TAG 2>$null
+          gh release create $TAG --draft --generate-notes --title $TAG 2>$null
           $notes = gh release view $TAG --json body --jq .body
           $url = "https://github.com/${env:GITHUB_REPOSITORY}/releases/download/$TAG/$($exe.Name)"
           $latest = [ordered]@{
