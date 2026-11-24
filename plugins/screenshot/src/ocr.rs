@@ -558,14 +558,31 @@ fn reconstruct_single_column_layout(words: Vec<OcrWordBox>, keep_line_breaks: bo
         let line_top = line.iter().map(|w| w.y).fold(f32::INFINITY, f32::min);
         let line_bottom = line.iter().map(|w| w.y + w.height).fold(0.0f32, f32::max);
 
-        // Check for paragraph gap between lines (only for prose, never for tables or code)
-        if line_idx > 0 && line_top > prev_line_bottom + avg_line_h * 0.75 && !is_table && !is_code
-        {
+        let first_w = &line[0];
+        let bullet_prefixes = ["•", "*", "-", "·", "+"];
+        let is_bullet = bullet_prefixes.iter().any(|b| first_w.text == *b);
+        let is_prev_bullet = if line_idx > 0 {
+            lines[line_idx - 1]
+                .first()
+                .map(|w| bullet_prefixes.iter().any(|b| w.text == *b))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        let in_bullet_list = is_bullet || is_prev_bullet;
+
+        // Check for paragraph gap between lines (only for prose, never for tables, code, or bullet lists)
+        let gap_threshold = if in_bullet_list {
+            avg_line_h * 2.0
+        } else {
+            avg_line_h * 1.35
+        };
+
+        if line_idx > 0 && line_top > prev_line_bottom + gap_threshold && !is_table && !is_code {
             output_lines.push(String::new()); // Blank line for paragraph separation
         }
         prev_line_bottom = line_bottom;
 
-        let first_w = &line[0];
         let mut line_str = String::new();
 
         // Calculate leading indentation
@@ -581,16 +598,12 @@ fn reconstruct_single_column_layout(words: Vec<OcrWordBox>, keep_line_breaks: bo
                     line_str.push(' ');
                 }
             }
-        } else if indent_px >= avg_char_w * 2.0 && !is_table {
+        } else if indent_px >= avg_char_w * 2.8 && !is_table && !in_bullet_list {
             let space_count = ((indent_px / avg_char_w).round() as usize).clamp(1, 16);
             for _ in 0..space_count {
                 line_str.push(' ');
             }
         }
-
-        // Detect bullet list start
-        let bullet_prefixes = ["•", "*", "-", "·", "+"];
-        let is_bullet = bullet_prefixes.iter().any(|b| first_w.text == *b);
 
         for (i, word) in line.iter().enumerate() {
             if i > 0 {
