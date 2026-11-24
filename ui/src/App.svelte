@@ -222,7 +222,6 @@
   });
   // Settings and Disk fill a fixed window; everything else sizes the window to
   // its content so the dock sits right under the panels.
-  let diskBig = $state(false);
 
   // Window drag from any non-interactive area. Interactive controls, lists, charts,
   // previews and scrollbars (data-no-drag, or the selector below) stay clickable.
@@ -242,8 +241,6 @@
     if (own && !t.closest(DRAG_TEXT)) return;
     getCurrentWindow().startDragging().catch(() => {});
   }
-  // Expanded Disk: as tall as the screen allows, minus the bar's own chrome.
-  const bigH = $derived(Math.max(500, Math.floor(window.screen.availHeight) - 80 - 260));
   let colEl: HTMLDivElement | undefined = $state();
   let fitH = $state(0);
   $effect(() => {
@@ -257,7 +254,7 @@
   });
   $effect(() => {
     if (fitH > 0) {
-      invoke("bar_resize", { wide: disk, huge: disk && diskBig, height: fitH }).catch(() => {});
+      invoke("bar_resize", { wide: disk, huge: false, height: fitH }).catch(() => {});
     }
   });
   let confirmButton: HTMLButtonElement | undefined = $state();
@@ -875,7 +872,7 @@
 
     <div class="stage">
       {#if disk}
-        <div class="page glass diskpage" style:height={diskBig ? `${bigH}px` : null}><Disk onclose={closeDisk} onbig={(v) => (diskBig = v)} /></div>
+        <div class="page glass diskpage"><Disk onclose={closeDisk} /></div>
       {:else if panel}
         <div class="page glass"><Privacy bind:this={privacy} onclose={closePanel} /></div>
       {:else if card?.phase === "confirm"}

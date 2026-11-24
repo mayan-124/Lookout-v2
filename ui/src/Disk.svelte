@@ -85,7 +85,7 @@
     depth: number;
   }
 
-  let { onclose, onbig }: { onclose: () => void; onbig: (v: boolean) => void } = $props();
+  let { onclose }: { onclose: () => void } = $props();
 
   let locations: Location[] = $state([]);
   let chosen = $state("");
@@ -132,7 +132,7 @@
   let listEl: HTMLElement | undefined = $state();
   let timer: ReturnType<typeof setInterval> | undefined;
   // Per-chart expand: one pane at a time grows in place over the content area.
-  let exp = $state<null | "tree" | "chart">(null);
+  let exp = $state(false);
   let chartW = $state(330);
   const basePath = $derived.by(() => {
     const names = (view?.crumbs ?? []).map((c) => c.name);
@@ -148,10 +148,7 @@
     return f ? { hit: f.idx } : null;
   });
 
-  function setExp(v: null | "tree" | "chart") {
-    exp = v;
-    onbig(v !== null);
-  }
+  const setExp = (v: boolean) => (exp = v);
   // Drag the divider between the tree and the chart.
   function dragSplit(e: PointerEvent) {
     e.preventDefault();
@@ -248,7 +245,7 @@
   function setTab(t: Tab) {
     tab = t;
     menu = null;
-    if (exp) setExp(null);
+    exp = false;
     loadFiles();
   }
 
@@ -501,7 +498,7 @@
       e.preventDefault();
       if (pv.overlay) pv.overlay = false;
       else if (menu) menu = null;
-      else if (exp) setExp(null);
+      else if (exp) exp = false;
       else if (scanning) cancel();
       else onclose();
       return;
@@ -587,7 +584,6 @@
   // Closing the view frees the scan; nothing is kept unless it was saved.
   onDestroy(() => {
     stopTimer();
-    onbig(false);
     invoke("disk_close").catch(() => {});
   });
 
@@ -596,18 +592,9 @@
 
 <svelte:window onkeydown={onKeydown} onclick={() => (menu = null)} />
 
-{#snippet expandBtn(which: "tree" | "chart")}
-  <button
-    class="xbtn"
-    type="button"
-    data-no-drag
-    aria-label={exp === which ? "Collapse" : "Expand"}
-    title={exp === which ? "Collapse (Esc)" : "Expand"}
-    onclick={(e) => { e.stopPropagation(); setExp(exp === which ? null : which); }}
-  >
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      {#if exp === which}<path d="M6 2v4H2M10 14v-4h4M14 6h-4V2M2 10h4v4" />{:else}<path d="M2 6V2h4M14 10v4h-4M10 2h4v4M6 14H2v-4" />{/if}
-    </svg>
+{#snippet expandBtn()}
+  <button class="xbtn" type="button" data-no-drag aria-label="Expand chart" title="Expand chart" onclick={(e) => { e.stopPropagation(); exp = true; }}>
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 6V2h4M14 10v4h-4M10 2h4v4M6 14H2v-4" /></svg>
   </button>
 {/snippet}
 
@@ -755,8 +742,7 @@
       <p class="keys"><kbd>Space</kbd> preview · <kbd>↑↓</kbd> move · <kbd>Enter</kbd> open · <kbd>Ctrl+E</kbd> show in folder · <kbd>Ctrl+C</kbd> copy path · <kbd>Del</kbd> Recycle Bin · right-click for a menu</p>
     {:else}
     <div class="split" style:grid-template-columns={`minmax(0, 1fr) 6px ${chartW}px`}>
-    <div class="left" class:exp={exp === "tree"} class:dim={exp === "chart"} inert={exp === "chart"}>
-    <div class="pbar" data-tauri-drag-region>{@render expandBtn("tree")}</div>
+    <div class="left">
     <div class="head" role="row">
       <button class="c-name" onclick={() => setSort("name")}>Name{arrow("name")}</button>
       <span class="c-bar">Share of folder</span>
@@ -804,23 +790,21 @@
     </ul>
     </div>
     <div class="grip" role="separator" aria-orientation="vertical" onpointerdown={dragSplit}></div>
-    <aside class="chartpane" class:exp={exp === "chart"} class:dim={exp === "tree"} inert={exp === "tree"} aria-label="Chart">
+    <aside class="chartpane" aria-label="Chart">
       <div class="pbar" data-tauri-drag-region>
         <div class="toggle" role="group" aria-label="Chart type">
           <button class:on={chartMode === "ring"} aria-pressed={chartMode === "ring"} onclick={() => { chartMode = "ring"; loadChart(); }}>Ring</button>
           <button class:on={chartMode === "treemap"} aria-pressed={chartMode === "treemap"} onclick={() => { chartMode = "treemap"; loadChart(); }}>Treemap</button>
         </div>
-        {@render expandBtn("chart")}
+        {@render expandBtn()}
       </div>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="chartbox" ondblclick={() => setExp(exp === "chart" ? null : "chart")}>
+      <div class="chartbox">
       <Chart
         data={chart}
         mode={chartMode}
         title={crumbTitle}
         highlightId={current()?.id ?? null}
         {basePath}
-        big={exp === "chart"}
         ondrill={(id) => show(id)}
         onup={up}
         onselect={(id) => { const i = flat.findIndex((f) => f.row.id === id); if (i >= 0) selected = i; }}
@@ -836,6 +820,40 @@
       <kbd>Del</kbd> Recycle Bin · right-click for a menu
     </p>
     {/if}
+  {/if}
+
+  {#if exp && tab === "tree" && finished}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="lbback" onclick={() => (exp = false)}>
+      <div class="lbox" role="dialog" aria-label="Chart" onclick={(e) => e.stopPropagation()}>
+        <div class="lbbar">
+          <div class="toggle" role="group" aria-label="Chart type">
+            <button class:on={chartMode === "ring"} aria-pressed={chartMode === "ring"} onclick={() => { chartMode = "ring"; loadChart(); }}>Ring</button>
+            <button class:on={chartMode === "treemap"} aria-pressed={chartMode === "treemap"} onclick={() => { chartMode = "treemap"; loadChart(); }}>Treemap</button>
+          </div>
+          <span class="lbtitle">{crumbTitle}</span>
+          <button class="xbtn" type="button" data-no-drag aria-label="Close" title="Close (Esc)" onclick={() => (exp = false)}>
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" /></svg>
+          </button>
+        </div>
+        <div class="lbbody">
+          <div class="lbchart">
+            <Chart
+              data={chart}
+              mode={chartMode}
+              title={crumbTitle}
+              highlightId={current()?.id ?? null}
+              {basePath}
+              big={true}
+              ondrill={(id) => show(id)}
+              onup={up}
+              onselect={(id) => { const i = flat.findIndex((f) => f.row.id === id); if (i >= 0) selected = i; }}
+            />
+          </div>
+          <div class="lbside"><Preview source={previewSource} /></div>
+        </div>
+      </div>
+    </div>
   {/if}
 
   {#if menu}
@@ -1015,31 +1033,71 @@
   .chartbox {
     flex: none;
   }
-  .dim {
-    opacity: 0.3;
-    pointer-events: none;
-  }
-  .left.exp,
-  .chartpane.exp {
+  .lbback {
     position: absolute;
     inset: 0;
-    z-index: 5;
-    padding: 8px 10px;
-    border-radius: 12px;
+    z-index: 20;
+    padding: 16px;
+    display: flex;
+    background: rgba(5, 7, 16, 0.6);
+    animation: fadein 160ms ease-out;
+  }
+  .lbox {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    border-radius: 14px;
     border: 1px solid var(--glass-border);
     background: rgba(13, 16, 34, 0.96);
     animation: pop 160ms ease-out;
   }
-  .chartpane.exp {
+  .lbbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .lbtitle {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--text-soft);
+  }
+  .lbbody {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: 14px;
+  }
+  .lbchart {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .lbside {
+    flex: none;
+    width: 280px;
+    min-height: 0;
     overflow-y: auto;
+  }
+  @keyframes fadein {
+    from { opacity: 0; }
+    to { opacity: 1; }
   }
   @keyframes pop {
     from { opacity: 0; transform: scale(0.97); }
     to { opacity: 1; transform: none; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .left.exp,
-    .chartpane.exp { animation: none; }
+    .lbback,
+    .lbox { animation: none; }
   }
   .chartpane {
     display: flex;
@@ -1169,10 +1227,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .dim {
-    color: var(--muted);
-    font-style: italic;
   }
   .chev {
     all: unset;
