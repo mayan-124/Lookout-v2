@@ -140,6 +140,8 @@
     const n = Number(m[1]);
     return now - n * (m[2] === "min" ? 60 : m[2] === "h" ? 3600 : 86400);
   }
+  // Temp-folder paths and hidden or .tmp files are noise in the recent list.
+  const TEMPISH = /[\\/]temp[\\/]/i;
   const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   function dayLabel(ts: number): string {
     const d = new Date(ts * 1000);
@@ -158,9 +160,12 @@
   }
   const recent = $derived.by<Recent[]>(() => {
     const rows: Recent[] = [
-      ...homeClips.slice(0, 3).map((item) => ({ item, ts: clipTime(item), clip: true })),
+      ...homeClips
+        .filter((i) => !TEMPISH.test(i.title))
+        .slice(0, 3)
+        .map((item) => ({ item, ts: clipTime(item), clip: true })),
       ...homeFiles
-        .filter((i) => i.modified_at)
+        .filter((i) => i.modified_at && !TEMPISH.test(i.uri ?? "") && !/(^|[\\/])\.[^\\/]*$|\.tmp$/i.test(i.uri ?? i.title))
         .map((item) => ({ item, ts: item.modified_at as number, clip: false })),
     ];
     return rows.sort((a, b) => b.ts - a.ts).slice(0, 6);
@@ -666,6 +671,16 @@
   // backend's preview_file keeps hiding sensitive files and never reads cloud placeholders.
   const previewable = (i: Item | undefined) =>
     !!pathOf(i) && ["file", "folder", "screenshot", "project"].includes(kindName(i!.kind));
+  // One simple icon per kind; kinds without one (answers, ports) keep their short text badge.
+  function iconKind(i: Item): "app" | "folder" | "image" | "clipboard" | "file" | null {
+    const k = kindName(i.kind);
+    if (k === "app") return "app";
+    if (k === "folder") return "folder";
+    if (k === "clipboard") return "clipboard";
+    if (k === "screenshot" || IMAGE_EXT.test(i.title)) return "image";
+    if (k === "file") return "file";
+    return null;
+  }
   const home = $derived(query.trim() === "" && !panel && !disk && !card);
   const cur = $derived(items[selected] as Item | undefined);
   const previewSource = $derived(previewable(cur) ? { path: pathOf(cur)! } : null);
@@ -723,6 +738,29 @@
 />
 <svelte:document onvisibilitychange={() => (visible = document.visibilityState === "visible")} />
 
+{#snippet tile(it: Item)}
+  {@const k = iconKind(it)}
+  {#if k}
+    <span class="icon" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round">
+        {#if k === "app"}
+          <rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1" /><rect x="9" y="2.5" width="4.5" height="4.5" rx="1" /><rect x="2.5" y="9" width="4.5" height="4.5" rx="1" /><rect x="9" y="9" width="4.5" height="4.5" rx="1" />
+        {:else if k === "folder"}
+          <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6l1.4 1.5h5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" />
+        {:else if k === "image"}
+          <rect x="2" y="3" width="12" height="10" rx="1.6" /><circle cx="5.7" cy="6.5" r="1.1" /><path d="M2.5 12l3.6-3.4 2.6 2.4 2-1.8 3.3 2.8" />
+        {:else if k === "clipboard"}
+          <rect x="3.5" y="3" width="9" height="10.5" rx="1.5" /><path d="M6 3V2h4v1M5.8 7h4.4M5.8 9.5h4.4" />
+        {:else}
+          <path d="M4 2h5l3 3v9H4z" /><path d="M9 2v3h3" />
+        {/if}
+      </svg>
+    </span>
+  {:else}
+    <span class="icon code">{badgeOf(it)}</span>
+  {/if}
+{/snippet}
+
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <main
   class="bar"
@@ -733,6 +771,7 @@
   }}
 >
   <div class="col" class:wide={disk}>
+    <div class="head">
     <div class="searchrow glass" data-tauri-drag-region>
       <Orb mode={orbMode} active={visible && !look.reduced} />
       <input
@@ -785,6 +824,7 @@
         {/each}
       </div>
     {/if}
+    </div>
 
     <div class="stage">
       {#if disk}
@@ -853,7 +893,7 @@
                       {#if n === 0 && thumbSrc}
                         <img class="thumb" src={thumbSrc} alt="" />
                       {:else}
-                        <span class="icon code">{r.clip ? "clip" : badgeOf(r.item)}</span>
+                        {@render tile(r.item)}
                       {/if}
                       <span class="text">
                         <span class="title">{r.clip ? mask(r.item.title) : r.item.title}</span>
@@ -869,19 +909,17 @@
             {/if}
           </section>
 
-          <div class="side">
-            <section class="card glass trycard" aria-label="Tips">
-              <h3 class="label-caps">Try typing</h3>
-              <ul class="tips">
-                {#each TRY as [example, what]}
-                  <li>
-                    <button class="ex" onclick={() => tryExample(example)}>{example}</button>
-                    <span class="what">{what}</span>
-                  </li>
-                {/each}
-              </ul>
-            </section>
-            <section class="card glass idx" aria-label="Index">
+          <section class="card glass side" aria-label="Tips and index">
+            <h3 class="label-caps">Try typing</h3>
+            <ul class="tips">
+              {#each TRY as [example, what]}
+                <li>
+                  <button class="ex" onclick={() => tryExample(example)}>{example}</button>
+                  <span class="what">{what}</span>
+                </li>
+              {/each}
+            </ul>
+            <div class="idx">
               <div>
                 <strong>{status ? fmt(status.apps) : "…"} apps · {status ? fmt(status.files) : "…"} files</strong>
                 <span class="sub"
@@ -889,15 +927,19 @@
                 >
               </div>
               <button class="btn small primary" onclick={() => (panel = true)}>Choose</button>
-            </section>
-          </div>
+            </div>
+          </section>
         </div>
       {:else if isDiskCommand(query)}
         <div class="res one" in:fly={{ x: 16, duration: dur(120), delay: dur(50) }}>
           <ul class="results card glass" role="listbox">
             <li role="presentation" class="entry">
               <div role="option" tabindex="-1" aria-selected="true" class="row selected" onclick={openDisk} onkeydown={() => {}}>
-                <span class="icon code">disk</span>
+                <span class="icon" aria-hidden="true"
+                  ><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"
+                    ><circle cx="8" cy="8" r="5.5" /><path d="M8 8V2.5M8 8l4 3" /></svg
+                  ></span
+                >
                 <span class="text">
                   <span class="title">Disk usage analyzer</span>
                   <span class="snippet">See what takes the space on a drive or folder. Scans only when you press Scan.</span>
@@ -940,15 +982,7 @@
                       {#if top && thumbSrc}
                         <img class="thumb" src={thumbSrc} alt="" />
                       {:else}
-                        {#if kindName(item.kind) === "app"}
-                          <span class="icon" aria-hidden="true"
-                            ><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"
-                              ><rect x="2" y="2" width="5" height="5" rx="1.2" /><rect x="9" y="2" width="5" height="5" rx="1.2" /><rect x="2" y="9" width="5" height="5" rx="1.2" /><rect x="9" y="9" width="5" height="5" rx="1.2" /></svg
-                            ></span
-                          >
-                        {:else}
-                          <span class="icon code">{badgeOf(item)}</span>
-                        {/if}
+                        {@render tile(item)}
                       {/if}
                       <span class="text">
                         <span class="l1">
@@ -1017,6 +1051,7 @@
       {/if}
     </div>
 
+    <div class="foot">
     {#if !card}
       <nav class="dock glass" aria-label="Sections">
         {#each SECTIONS as name, n}
@@ -1037,16 +1072,11 @@
         {#if notice}
           <span class="warn">{notice}</span>
         {:else}
-          <span><kbd>Enter</kbd> open</span>
-          <span><kbd>Space</kbd> preview</span>
-          <span><kbd>Tab</kbd> next lane</span>
-          <span><kbd>Ctrl+1-5</kbd> sections</span>
-          <span><kbd>Esc</kbd> back</span>
+          Enter open · Space preview · Tab next lane · Ctrl+1–5 sections · Esc back{#if openHotkey} · {openHotkey} opens Lookout{/if}
         {/if}
-        <span class="spacer"></span>
-        {#if openHotkey}<span class="hotkey">{openHotkey} open</span>{/if}
       </footer>
     {/if}
+    </div>
   </div>
 </main>
 
@@ -1059,12 +1089,22 @@
     justify-content: center;
     color: var(--text);
   }
+  .head,
+  .foot {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .foot {
+    gap: 8px;
+  }
   .col {
     width: 900px;
     max-width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 16px;
     padding: 20px 0 24px;
     min-height: 0;
   }
@@ -1138,7 +1178,7 @@
     flex: none;
     display: flex;
     gap: 8px;
-    padding: 0 6px;
+    padding: 0;
   }
   .chip {
     all: unset;
@@ -1190,8 +1230,8 @@
   .home {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 300px;
-    gap: 12px;
-    max-height: 400px;
+    gap: 16px;
+    align-self: start;
   }
   .home .card {
     border-radius: 28px;
@@ -1204,8 +1244,7 @@
     min-height: 0;
     overflow: hidden;
   }
-  .pick h3,
-  .trycard h3 {
+  .pick h3 {
     margin: 0;
   }
   .recent {
@@ -1256,31 +1295,34 @@
     color: var(--muted);
     font-size: var(--fs-sm);
   }
-  .side {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    min-height: 0;
+  .pick {
+    min-height: 230px;
   }
-  .trycard {
-    flex: 1;
+  .side {
     padding: 18px 20px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 14px;
+    min-height: 0;
+  }
+  .side h3 {
+    margin: 0;
   }
   .idx {
-    flex: none;
-    padding: 14px 18px;
+    margin-top: auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
+    text-align: left;
   }
   .idx div {
     display: flex;
     flex-direction: column;
     min-width: 0;
+  }
+  .idx strong {
+    font-weight: 500;
   }
   .tips {
     list-style: none;
@@ -1298,7 +1340,7 @@
     all: unset;
     cursor: pointer;
     color: var(--text);
-    font-size: var(--fs-lg);
+    font-size: var(--fs-md);
     font-weight: 500;
   }
   .ex:hover {
@@ -1308,7 +1350,7 @@
     outline: 2px solid var(--accent);
   }
   .what {
-    color: var(--text-soft);
+    color: var(--muted);
     font-size: var(--fs-sm);
   }
 
@@ -1316,7 +1358,7 @@
   .res {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 300px;
-    gap: 12px;
+    gap: 16px;
     min-height: 0;
   }
   .res.one {
@@ -1402,8 +1444,8 @@
     min-height: 72px;
     padding: 9px 14px;
     border-radius: 18px;
-    border-color: var(--accent-line);
-    box-shadow: 0 0 24px var(--accent-soft);
+    border-color: var(--accent);
+    box-shadow: 0 0 26px var(--accent-soft);
   }
   .row.top.selected {
     background: var(--accent-soft);
@@ -1469,7 +1511,7 @@
     white-space: nowrap;
     text-overflow: ellipsis;
     font-size: var(--fs-md);
-    font-weight: 600;
+    font-weight: 500;
   }
   .row.top .title {
     max-width: 100%;
@@ -1493,7 +1535,7 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-    color: var(--text-soft);
+    color: var(--muted);
     font-size: var(--fs-sm);
   }
   .sub.code {
@@ -1637,26 +1679,9 @@
 
   footer {
     flex: none;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: center;
-    gap: 2px 16px;
+    text-align: center;
     color: var(--muted);
     font-size: var(--fs-xs);
-  }
-  footer .spacer {
-    display: none;
-  }
-  footer .hotkey {
-    color: var(--text-3);
-  }
-  footer > span {
-    white-space: nowrap;
-  }
-  footer kbd {
-    padding: 0 5px;
-    color: var(--text-soft);
   }
   .warn {
     color: var(--accent);

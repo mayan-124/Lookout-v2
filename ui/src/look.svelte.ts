@@ -11,7 +11,6 @@ export const ACCENTS = [
 
 const KEY = "lookout.look";
 const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-const transparencyQuery = window.matchMedia("(prefers-reduced-transparency: reduce)");
 
 interface Stored {
   accent: string;
@@ -65,7 +64,7 @@ const blurSupported =
   typeof CSS !== "undefined" &&
   (CSS.supports("backdrop-filter", "blur(1px)") || CSS.supports("-webkit-backdrop-filter", "blur(1px)"));
 function applyGlass() {
-  const on = look.glass && blurSupported && !transparencyQuery.matches;
+  const on = look.glass && blurSupported;
   look.glassActive = on;
   document.documentElement.dataset.glass = on ? "on" : "solid";
 }
@@ -94,4 +93,3 @@ applyAccent();
 applyMotion();
 applyGlass();
 motionQuery.addEventListener("change", applyMotion);
-transparencyQuery.addEventListener("change", applyGlass);

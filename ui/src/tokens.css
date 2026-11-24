@@ -50,12 +50,15 @@
   --solid-bg: #161b24;
 
   /* glass panel: the shadow stays inside the window bounds */
-  --glass-bg: linear-gradient(
-    135deg,
-    rgba(59, 91, 219, 0.34),
-    rgba(16, 20, 44, 0.62) 55%,
-    rgba(194, 65, 122, 0.3)
-  );
+  /* a dark base keeps the tint readable over any desktop, the gradient sits on it */
+  --glass-bg:
+    linear-gradient(
+      135deg,
+      rgba(59, 91, 219, 0.3),
+      rgba(16, 20, 44, 0.55) 55%,
+      rgba(194, 65, 122, 0.26)
+    ),
+    rgba(13, 16, 32, 0.5);
   --glass-blur: blur(24px) saturate(160%);
   --glass-border: rgba(255, 255, 255, 0.22);
   --glass-shadow:
@@ -65,7 +68,7 @@
   --text: #ffffff;
   --text-soft: #e3e8f5;
   --text-3: #d5dbec;
-  --muted: #c9d0e4;
+  --muted: #9aa3bd;
   --hairline: rgba(255, 255, 255, 0.12);
 
   /* surfaces drawn over the glass */
