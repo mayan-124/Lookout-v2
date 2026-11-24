@@ -1,0 +1,50 @@
+[
+  {
+    "file": "real_ocr_article_light.png",
+    "ground_truth": "Architectural Principles of Modern Distributed Systems\nDistributed systems require careful decoupling between storage and computation to achieve high throughput and predictable latency.\nEventual consistency allows decentralized nodes to process reads and writes locally without blocking for global consensus across network partitions.\nObservability platforms must aggregate telemetry metrics, distributed traces, and structured logs to maintain operational reliability.",
+    "name": "article_light",
+    "sha256": "d34dd39a36c63a6af2b4359a416539d8a275fc42c424a58b646657c58ec3cc40"
+  },
+  {
+    "file": "real_ocr_article_dark.png",
+    "ground_truth": "Core Runtime Architecture and Execution Model\nThe runtime schedules lightweight tasks across a pool of worker threads using lock-free work-stealing queues.\nMemory safety is enforced through static lifetime analysis and ownership semantics without requiring garbage collection pauses.\nAsynchronous input and output operations leverage native platform event loops to minimize operating system context switches.",
+    "name": "article_dark",
+    "sha256": "d9b4b5145d51357d76f451998568789b4274e1d93b88c8a82e1c6bd6b659c16f"
+  },
+  {
+    "file": "real_ocr_table_page.png",
+    "ground_truth": "Service\tRegion\tLatency\tStatus\napi-gateway\tus-east-1\t12ms\tHealthy\nauth-server\teu-west-1\t48ms\tHealthy\ndata-store\tap-northeast-1\t115ms\tDegraded\ncache-node\tsa-east-1\t85ms\tHealthy",
+    "name": "table_page",
+    "sha256": "a29efb14ddea907ec59fe5f6a2d3a73841793b703e5005ee31a29e32ec4946fe"
+  },
+  {
+    "file": "real_ocr_code_notepad.png",
+    "ground_truth": "fn process_batch(items: &[u64]) -> Result<usize, Error> {\n    let mut processed = 0;\n    for &id in items {\n        if validate_token(id)? {\n            dispatch_job(id);\n            processed += 1;\n        }\n    }\n    Ok(processed)\n}",
+    "name": "code_notepad",
+    "sha256": "0cab92784850590fb9d947a3936da8e76491ffac28be0f5d0f969d52a75579d4"
+  },
+  {
+    "file": "real_ocr_code_editor.png",
+    "ground_truth": "fn process_batch(items: &[u64]) -> Result<usize, Error> {\n    let mut processed = 0;\n    for &id in items {\n        if validate_token(id)? {\n            dispatch_job(id);\n            processed += 1;\n        }\n    }\n    Ok(processed)\n}",
+    "name": "code_editor",
+    "sha256": "84126be1e5c08e7743bb48b76f828cd0c677ecc030befe48e24bc69660a43738"
+  },
+  {
+    "file": "real_ocr_small_text.png",
+    "ground_truth": "Lookout Capture Agent version 2.4.0 (x86_64-pc-windows-msvc build release).\nAll telemetry endpoints are operational. Configuration loaded from C:\\ProgramData\\Lookout.\nLicense identifier: MIT-Commercial-Dual-2026. Process priority: Normal. Thread count: 8.",
+    "name": "small_text",
+    "sha256": "28eb1f03a738915976c2bcbe7854873a215928651c43171db373d554426c01c8"
+  },
+  {
+    "file": "real_ocr_bullets_columns.png",
+    "ground_truth": "Primary Features\n• Fast desktop screen capture\n• High fidelity video encoding\n• Automatic scrolling stitcher\n\nSystem Requirements\n• Windows 10 build 19041 or higher\n• DirectX 11 compatible graphics\n• Minimum 4 GB available system RAM",
+    "name": "bullets_columns",
+    "sha256": "0cd20c801fd69b586315dac64d358a88b5e09731c9c9109a41eb784cc29cc6be"
+  },
+  {
+    "file": "real_ocr_accents_page.png",
+    "ground_truth": "The café serves fresh croissants to naïve travellers visiting Zürich and São Paulo.\nInternational offices located in 東京, 서울, and München report quarterly earnings.\nMathematical symbols include ∑, ∏, √, and standard ASCII punctuation.",
+    "name": "accents_page",
+    "sha256": "8c23172ca6fd41cfc9a5aafb6eac4096d794253e2922d39c8f39fb1906e9e602"
+  }
+]

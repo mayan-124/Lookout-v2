@@ -1,0 +1,38 @@
+[
+  {
+    "file": "held_out_terminal.png",
+    "ground_truth": "PS C:\\Lookout> cargo --version\ncargo 1.82.0 (8f40fc59f 2026-10-15)\nPS C:\\Lookout> lookout-cli status\nStatus: ACTIVE [PID 4092]\nWorker pool: 4 threads initialized",
+    "name": "held_out_terminal",
+    "sha256": "0fc53dbcf411bbe000cf269166a7469ba2e8d850a62285008ae0a9edae8d4426"
+  },
+  {
+    "file": "held_out_code_solarized.png",
+    "ground_truth": "struct WorkerConfig {\n    pub max_retries: u32,\n    pub timeout_ms: u64,\n}",
+    "name": "held_out_code_solarized",
+    "sha256": "a484b0960a44a4ae68307834f26237ca97fe672868e35c0c494a743fb28bc953"
+  },
+  {
+    "file": "held_out_settings_dark.png",
+    "ground_truth": "Lookout System Settings\nCapture Engine: DirectX 11 Desktop Duplication\nAudio Loopback: Enabled (Default Audio Device)\nHardware Acceleration: Auto (NVIDIA GeForce RTX)\nTelemetry Reporting: Anonymous Diagnostics Only",
+    "name": "held_out_settings_dark",
+    "sha256": "107f4c5401657d4c099c44108a6de2944dad9576d0a52c94f9cb26e83f83b9d5"
+  },
+  {
+    "file": "held_out_pdf_viewer.png",
+    "ground_truth": "Abstract\nWe present a high-performance visual capture pipeline designed for low-latency desktop streaming.\nBy integrating hardware-accelerated color conversion directly into texture memory, host memory bus saturation is eliminated.\nExperimental benchmarks demonstrate continuous 60 FPS recording with minimal jitter across heterogeneous display configurations.",
+    "name": "held_out_pdf_viewer",
+    "sha256": "6165f3190bbaf6433140ce1efd414e31574226628db808fe6f65f3e5523faa3e"
+  },
+  {
+    "file": "held_out_small_gray.png",
+    "ground_truth": "Copyright (c) 2026 Lookout Technologies Inc. All rights reserved.\nConfidential build 0.9.4-rc2. Not for public redistribution.\nHardware fingerprint: 4B82-99F1-0A3E. Timestamp: 2026-11-24 22:15:00 UTC.",
+    "name": "held_out_small_gray",
+    "sha256": "b96b21c6d5abd3ba4a32b00806dbf59fe96549aaf25334e08edca1e3f192691d"
+  },
+  {
+    "file": "held_out_numbers_table.png",
+    "ground_truth": "Metric\tP50\tP95\tP99\tLoss%\nLatency\t1.42ms\t4.88ms\t12.05ms\t0.02%\nThroughput\t840MB/s\t792MB/s\t710MB/s\t0.00%\nMemory\t128.4MB\t142.1MB\t156.8MB\t0.00%",
+    "name": "held_out_numbers_table",
+    "sha256": "4057cec3d31f38ac7ac30121a5ae63ad9035b143fb99d1494b1d217b7d74ae4d"
+  }
+]

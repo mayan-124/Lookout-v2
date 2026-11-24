@@ -1,0 +1,39 @@
+[package]
+name = "lookout-fastscan"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# Read-only helper for the Disk page's "Fast scan (admin)". It reads an NTFS
+# volume's file table and streams records to Lookout over a named pipe. It does
+# not link lookout-core and has no network, spawn or write code.
+
+[[bin]]
+name = "lookout-fastscan"
+path = "src/main.rs"
+
+[dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Pipes",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+lookout-core.workspace = true
+tempfile = "3"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

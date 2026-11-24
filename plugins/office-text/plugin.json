@@ -1,0 +1,13 @@
+{
+  "id": "com.lookout.office-text",
+  "name": "Office text",
+  "version": "0.1.0",
+  "summary": "Makes the text inside Word, Excel, PowerPoint and PDF files searchable.",
+  "description": "Makes the words inside Word (.docx), Excel (.xlsx), PowerPoint (.pptx) and PDF files searchable. Encrypted files, scanned PDFs without a text layer and files over 50 MB are skipped.",
+  "entry": "lookout-office-text.exe",
+  "triggers": [],
+  "kinds": ["file"],
+  "background": false,
+  "approval_note": "Receives the bytes of your Office and PDF files from Lookout (excluded files never) and returns their text, which Lookout masks before indexing. It opens no files itself and keeps nothing.",
+  "permissions": { "fs_read": [], "fs_write": [], "network": [], "spawn": false, "clipboard": "none" }
+}

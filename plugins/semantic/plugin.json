@@ -1,0 +1,14 @@
+{
+  "id": "com.lookout.semantic",
+  "name": "Semantic search",
+  "version": "0.1.0",
+  "summary": "Finds files by what they mean, not only by the words they contain.",
+  "description": "Finds files by what they mean, not only by the words they contain. Needs a model and a runtime: one button in the Plugins panel downloads them (checked by SHA-256), or you place them by hand (see docs/semantic.md). This helper itself never connects to the network.",
+  "entry": "lookout-semantic.exe",
+  "triggers": [],
+  "kinds": ["file"],
+  "background": false,
+  "approval_note": "Receives the text of your indexed files (secrets masked, excluded files never) from Lookout and keeps an encrypted vector index. Loads a runtime DLL and a model file from its own folder after checking their SHA-256. It reads no files itself.",
+  "permissions": { "fs_read": [], "fs_write": [], "network": [], "spawn": false, "clipboard": "none" },
+  "config_defaults": { "min_similarity": 0.6 }
+}

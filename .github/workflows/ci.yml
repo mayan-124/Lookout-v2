@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-lint:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: ui
+
+      - name: Type-check frontend
+        run: npm run check
+        working-directory: ui
+
+      # The Tauri macros embed ui/dist, so the frontend must be built before Rust lint/build.
+      - name: Build frontend
+        run: npm run build
+        working-directory: ui
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      # The OCR tests skip themselves if the runner has no OCR language; this
+      # step shows "OCR RAN" or "SKIPPED" lines in the log.
+      - name: OCR tests (output shown)
+        run: |
+          cargo test -p lookout-core --lib content::ocr -- --nocapture
+          cargo test -p lookout-core --test content screenshot_with_text -- --nocapture
+
+      - name: Build app (release, no installer)
+        run: npm run tauri build -- --no-bundle
+        working-directory: ui

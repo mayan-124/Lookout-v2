@@ -1,0 +1,41 @@
+{
+  "comment": "Known queries with the result that must rank first under the default weights. If a ranking change breaks a case, decide whether the new order is better and update the case deliberately. Files exist only in memory.",
+  "now": 1700000000,
+  "files": [
+    { "path": "docs/report.pdf", "age_days": 400 },
+    { "path": "docs/Annual Report 2024.pdf", "age_days": 30 },
+    { "path": "docs/report-draft-final-v2-old-copy.docx", "age_days": 20 },
+    { "path": "docs/my_report_notes.txt", "age_days": 10 },
+    { "path": "docs/Reporting Guide.pdf", "age_days": 60 },
+    { "path": "docs/readme.md", "age_days": 90 },
+    { "path": "docs/readme notes for the quarterly planning meeting.md", "age_days": 5 },
+    { "path": "docs/plan.md", "age_days": 200 },
+    { "path": "docs/airplane tickets.txt", "age_days": 3 },
+    { "path": "billing/invoice march.pdf", "age_days": 60, "frecency": 200 },
+    { "path": "billing/invoice april.pdf", "age_days": 60 },
+    { "path": "notes/notes old.txt", "age_days": 900 },
+    { "path": "notes/notes new.txt", "age_days": 2 },
+    { "path": "pictures/IMG_0042.JPG", "age_days": 15 },
+    { "path": "pictures/holiday photo album.zip", "age_days": 100 },
+    { "path": "pictures/photo.png", "age_days": 100 }
+  ],
+  "folders": [
+    "photos",
+    "photography archive",
+    "docs/photos of the office"
+  ],
+  "cases": [
+    { "query": "report", "top": "report.pdf", "why": "exact stem beats longer names despite being oldest" },
+    { "query": "annual report", "top": "Annual Report 2024.pdf", "why": "all tokens, word starts" },
+    { "query": "report draft", "top": "report-draft-final-v2-old-copy.docx", "why": "only file with both tokens" },
+    { "query": "readme", "top": "readme.md", "why": "exact stem beats a long prefix match even though it is older" },
+    { "query": "plan", "top": "plan.md", "why": "exact stem beats a substring inside airplane" },
+    { "query": "invoice", "top": "invoice march.pdf", "why": "frecency beats the later-indexed twin it would otherwise lose a tie to" },
+    { "query": "notes", "top": "notes", "why": "a folder named exactly 'notes' is an exact match and outranks files" },
+    { "query": "kind:file notes", "top": "notes new.txt", "why": "recency breaks a tie between equal matches" },
+    { "query": "img 0042", "top": "IMG_0042.JPG", "why": "tokens match across underscore" },
+    { "query": "photo", "top": "photo.png", "why": "exact stem" },
+    { "query": "kind:folder photos", "top": "photos", "why": "kind filter limits to folders; exact name" },
+    { "query": "kind:file photos", "top_absent": "photos", "why": "kind filter excludes folders" }
+  ]
+}

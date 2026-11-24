@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "resources": {
+      "../../target/release/plugins/clipboard/*": "plugins/clipboard/",
+      "../../target/release/plugins/files-tools/*": "plugins/files-tools/",
+      "../../target/release/plugins/semantic/*": "plugins/semantic/",
+      "../../target/release/plugins/office-text/*": "plugins/office-text/",
+      "../../target/release/plugins/screenshot/*": "plugins/screenshot/",
+      "../../target/release/helpers/fastscan/*": "helpers/fastscan/"
+    }
+  }
+}

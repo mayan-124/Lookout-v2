@@ -1,0 +1,27 @@
+{
+  "id": "dev.lookout.screenshot",
+  "name": "Screenshot",
+  "version": "0.1.0",
+  "description": "Screen capture, scrolling capture, screen recording (up to 60 min or 2 GB), and local OCR text extraction for Lookout.",
+  "summary": "Capture, scroll-capture, record, and extract text from your screen; mark up, copy or save.",
+  "entry": "lookout-screenshot.exe",
+  "args": [],
+  "triggers": ["shot", "screenshot", "scrolling", "scroll", "record", "screenrecord", "ocr", "text", "extract"],
+  "kinds": [],
+  "permissions": {
+    "fs_read": [],
+    "fs_write": ["screenshots_folder"],
+    "network": [],
+    "spawn": false,
+    "clipboard": "write"
+  },
+  "background": true,
+  "config_defaults": {
+    "hotkey": "Ctrl+Alt+S",
+    "hotkey_scrolling": "",
+    "hotkey_recording": "",
+    "hotkey_text": "",
+    "save_folder": ""
+  },
+  "approval_note": "Captures screen areas, scrolling pages, records screen video (up to 60 min or 2 GB), and extracts text using local Windows.Media.Ocr (offline, no network) to clipboard or screenshots folder. Uses GDI BitBlt capture: black frames possible for GPU/DRM content; high CPU at 1080p60+."
+}

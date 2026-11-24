@@ -1,0 +1,35 @@
+[package]
+name = "lookout"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+# Test harness exes of Tauri apps fail to start on Windows without an app
+# manifest; testable logic lives in lookout-core instead.
+[lib]
+name = "lookout_lib"
+test = false
+doctest = false
+
+[[bin]]
+name = "lookout"
+path = "src/main.rs"
+test = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+lookout-core = { workspace = true, features = ["download"] }
+thiserror.workspace = true
+serde.workspace = true
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-dialog = "2"
+# ShellExecute instead of the default PowerShell launcher: same exact-path behaviour,
+# about 2.5x faster to the first open (see docs/decisions.md, Phase 2).
+open = { version = "5", features = ["shellexecute-on-windows"] }
+
+[lints]
+workspace = true

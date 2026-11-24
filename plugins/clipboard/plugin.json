@@ -1,0 +1,14 @@
+{
+  "id": "com.lookout.clipboard",
+  "name": "Clipboard history",
+  "version": "0.1.0",
+  "summary": "Remembers text you copy so you can find it again. Secrets are masked; stored text is encrypted.",
+  "description": "Remembers text you copy so you can find and copy it again (type: clip). Secrets are masked before anything is stored; stored text is encrypted. Nothing is recorded while Lookout is paused or when a password manager asks not to be recorded.",
+  "entry": "lookout-clipboard.exe",
+  "triggers": ["clip", "clipboard", "clips"],
+  "kinds": ["clipboard"],
+  "background": true,
+  "approval_note": "Records text you copy into an encrypted history. Secret detection is best effort.",
+  "permissions": { "fs_read": [], "fs_write": [], "network": [], "spawn": false, "clipboard": "write" },
+  "config_defaults": { "max_clips": 100, "retention_hours": 168, "exclude_apps": "", "default_action": "paste" }
+}

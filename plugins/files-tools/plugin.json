@@ -1,0 +1,12 @@
+{
+  "id": "com.lookout.files-tools",
+  "name": "File tools",
+  "version": "0.1.0",
+  "summary": "Compress photos, rename files in bulk and strip metadata, from the bar.",
+  "description": "Three verbs on files you pick in the bar: 'compress photo.png under 200 kb', 'rename holiday to Trip {n}' (live preview, whole folder), 'strip metadata photo.jpg'. Originals are never overwritten except by a rename, which can be undone.",
+  "entry": "lookout-files-tools.exe",
+  "triggers": ["compress", "rename", "strip"],
+  "kinds": ["file", "folder"],
+  "background": false,
+  "permissions": { "fs_read": ["user_selected"], "fs_write": ["user_selected"], "network": [], "spawn": false, "clipboard": "none" }
+}

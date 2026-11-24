@@ -1,0 +1,57 @@
+[package]
+name = "lookout-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+chacha20 = "0.10.2"
+chacha20poly1305 = "0.11.0"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+getrandom = "0.3"
+memchr = "2.8.3"
+notify = "8.2.2"
+regex = "1.13.2"
+rusqlite = { version = "0.43.0", features = ["bundled", "serialize"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10.9"
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
+tantivy = "0.27.0"
+thiserror.workspace = true
+# Pure Rust, same pins as the office helper: only used to take one dll out of the runtime package.
+zip = { version = "=9.8.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[features]
+# The WinHTTP downloader for semantic setup. Only the main app turns it on; plugin executables do not link it.
+download = ["windows-sys/Win32_Networking_WinHttp"]
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Media_Ocr", "Graphics_Imaging", "Storage", "Storage_Streams", "Globalization", "Foundation", "Win32_System_WinRT", "Win32_Graphics_Gdi", "Foundation_Collections", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_System_Threading",
+    "Win32_Security_Cryptography",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_SystemInformation",
+    "Win32_System_JobObjects",
+    "Win32_Security",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_Storage_FileSystem",
+    "Win32_System_ProcessStatus",
+    "Win32_UI_Shell",
+    "Win32_Security_Authorization",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_System_Registry",
+] }
+
+[dev-dependencies]
+png = "0.18.1"
+tempfile = "3"
+
+[lints]
+workspace = true

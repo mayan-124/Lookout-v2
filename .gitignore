@@ -1,0 +1,9 @@
+/target
+node_modules
+ui/dist
+ui/src-tauri/gen
+*.log
+latency.csv
+review/
+stderr.txt
+stdout.txt

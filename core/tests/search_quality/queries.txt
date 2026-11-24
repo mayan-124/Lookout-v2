@@ -1,0 +1,69 @@
+# Search quality queries. Fields, separated by " | ":
+#   category | query | expected top-1 | acceptable others (comma separated, optional)
+# Expected values are paths below the corpus root ("Finance/budget-2026.xlsx"),
+# or "app:<name>" for an application.
+# Scoring: top-1 passes if the first result is the expected top-1.
+# An acceptable other written with a leading = ties with the top-1: first place may be either.
+# Top-3 passes if the expected top-1 or any acceptable other is in the first three.
+exact | budget-2026.xlsx | Finance/budget-2026.xlsx
+exact | ProjectPlan.docx | Documents/Work/ProjectPlan.docx | Archive/2019/old/ProjectPlan.docx
+exact | invoice-0043.pdf | Finance/Billing/invoice-0043.pdf
+exact | config.json | Projects/lookout/config.json
+exact | calculator.xlsx | Documents/Work/calculator.xlsx
+partial | taxes | Finance/taxes-2026.pdf
+partial | bookmarks | Downloads/chrome-bookmarks.html
+partial | itinerary | Documents/Personal/holiday-itinerary.pdf
+prefix | annu | Finance/annual-report-2024.pdf
+prefix | recei | Finance/receipt-grocery.pdf | Finance/receipt-hardware.pdf
+prefix | dee | Projects/lookout/src/a/b/c/d/e/f/deep-settings-config.json
+parent | holiday photos | Pictures/Holiday Photos
+parent | holiday img 2003 | Pictures/Holiday Photos/IMG_2003.jpg
+parent | billing 0043 | Finance/Billing/invoice-0043.pdf
+initials | vsc | app:Visual Studio Code
+initials | vs | app:Visual Studio Code | =app:Visual Studio 2022
+initials | gc | app:Google Chrome
+camel | plan | Documents/Work/ProjectPlan.docx | Archive/2019/old/ProjectPlan.docx
+camel | minutes | Documents/Work/MeetingMinutes-2025.docx
+typo | budgt | Finance/budget-2026.xlsx | =Downloads/budget-2026-draft.xlsx, =Finance/Budget Reviews
+typo | invoce | Finance/Billing/invoice-0043.pdf | Finance/Billing/invoice-0042.pdf
+typo | calculater | app:Calculator
+typo | holidya | Documents/Personal/holiday-itinerary.pdf | =Pictures/Holiday Photos
+plural | invoices | Finance/Billing/invoice-0043.pdf | Finance/Billing/invoice-0042.pdf, Finance/Billing/invoice_march.pdf
+plural | receipts | Finance/receipt-grocery.pdf | Finance/receipt-hardware.pdf
+plural | reports | Documents/Work/final-report-v3.docx | Documents/Work/Q3_report_final_v2.docx, Finance/annual-report-2024.pdf
+number | 0043 | Finance/Billing/invoice-0043.pdf
+number | 2024 | Finance/annual-report-2024.pdf
+number | budget 2025 | Finance/Archive/budget-2025.xlsx
+short | x | Pictures/x.png
+short | gh | Projects/lookout/gh-cli-cheatsheet.md
+short | q3 | Documents/Work/Q3_report_final_v2.docx | Documents/Work/Q3_report_final.docx, Documents/Work/Q3-report-draft.docx
+appfile | chrome | app:Google Chrome | Downloads/chrome-bookmarks.html
+appfile | calculator | app:Calculator | Documents/Work/calculator.xlsx
+appfile | calc | app:Calculator
+appfile | notepad | app:Notepad
+recent | meeting notes | Documents/Work/meeting notes.txt | Archive/2019/meeting notes.txt
+recent | readme | Projects/lookout/readme.md | Projects/lookout/src/readme.md, Projects/other/readme.md
+filter | kind:folder photos | Pictures/Holiday Photos
+filter | kind:app code | app:Visual Studio Code
+filter | kind:file budget 2025 | Finance/Archive/budget-2025.xlsx
+content | renovation invoice | Documents/Personal/home-notes.txt
+content | kitchen renovation | Documents/Personal/home-notes.txt
+content | saffron | Documents/Personal/recipe.txt
+content | payroll database | Documents/Work/meeting-2026-01-15.txt
+content | payroll migration | Documents/Work/meeting-2026-01-15.txt
+content | dentist appointment | Documents/Work/todo.md
+content | vendor contract | Documents/Work/meeting notes.txt
+content | printer replacement | Archive/2019/meeting notes.txt
+multi | annual report 2024 | Finance/annual-report-2024.pdf
+multi | project plan | Documents/Work/ProjectPlan.docx | Archive/2019/old/ProjectPlan.docx
+multi | final report | Documents/Work/final-report-v3.docx
+multi | report final | Documents/Work/final-report-v3.docx
+multi | my resume | Documents/Personal/MyResume.pdf | Archive/my_resume_old.docx
+unicode | café | Documents/Personal/café-menu.txt
+unicode | cafe | Documents/Personal/café-menu.txt
+unicode | muller | Documents/Work/Müller-Rechnung.pdf
+unicode | 日本語 | Documents/Study/日本語ノート.txt
+exact | resume | Documents/Personal/résumé.pdf
+appfile | edge | app:Microsoft Edge
+appfile | notepad++ | app:Notepad++
+appfile | code | app:Visual Studio Code

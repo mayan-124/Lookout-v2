@@ -1,0 +1,1685 @@
+//! Assembles the Phase 1 pieces (index service, frecency, sources, engine)
+//! behind one handle, so the UI shell only forwards calls.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
+
+use crate::actions::disk::{
+    BatchRemoveAction, CopyPathAction, ExplorerReveal, RecycleAction, RevealAction, ShellRecycler,
+    WindowsClipboardWriter,
+};
+use crate::actions::kill_port::{self, KillPort, PortSource};
+use crate::actions::open::{self, Launcher, OpenAction};
+use crate::actions::system::ProcessBackend;
+use crate::actions::undo_log::{Entry, UndoLog};
+use crate::actions::{
+    Action, ActionEngine, ActionError, Done, GateConfig, PluginOrigin, Prepared, Target,
+};
+use crate::apps;
+use crate::content::idle::IdleSource;
+use crate::content::ocr::Ocr;
+use crate::content::office::{OfficeText, PluginOffice};
+use crate::content::service::{ContentConfig, ContentService, ContentStats};
+use crate::content::source::ContentSource;
+use crate::content::store::ContentStore;
+use crate::engine::{Engine, EngineConfig, Sink, Update};
+use crate::exclude::Excludes;
+use crate::frecency::{FrecencyError, FrecencyStore};
+use crate::index_service::{
+    apply_frecency, new_shared_index, unix_now, write, IndexConfig, IndexService, ReindexHook,
+    ServiceError, SharedIndex,
+};
+use crate::item::Kind;
+use crate::names_store::{self, Persister};
+use crate::pause::PauseState;
+use crate::plugins::{HostConfig, PluginActions, PluginHost, PluginSource};
+use crate::ranking;
+use crate::semantic::{
+    SemanticClient, SemanticConfig, SemanticIndexer, SemanticProgress, SemanticSource,
+    SemanticStatus, PLUGIN_ID,
+};
+use crate::settings::Settings;
+use crate::sources::{AppsSource, CalculatorSource, FilesSource, Source, UnitsSource};
+use crate::storage::{Storage, StorageError};
+use crate::synthetic;
+
+#[derive(Debug, thiserror::Error)]
+pub enum StartError {
+    #[error(transparent)]
+    Frecency(#[from] FrecencyError),
+    #[error("could not start the query engine: {0}")]
+    Engine(#[source] std::io::Error),
+    #[error(transparent)]
+    Service(#[from] ServiceError),
+    #[error(transparent)]
+    ActionLog(#[from] crate::actions::undo_log::LogError),
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error("could not start the index saver: {0}")]
+    Saver(#[source] std::io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WipeError {
+    #[error("could not delete the index: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+pub struct StartOptions {
+    pub settings: Settings,
+    /// Replaces `settings.index_roots` when non-empty (developer flag).
+    pub roots_override: Vec<PathBuf>,
+    /// Fill the index with this many generated names instead of crawling (benchmarks).
+    pub synthetic_files: Option<usize>,
+    /// With `synthetic_files`: also index the contents of the configured folders.
+    /// Off unless explicitly asked for, so a generated-data run never reads real folders.
+    pub synthetic_uses_folders: bool,
+    pub start_menu_dirs: Vec<PathBuf>,
+    /// Where the encrypted `meta.db`, name snapshot and content index live.
+    pub storage: Storage,
+    /// When the user last used the keyboard or mouse; content work waits for idleness.
+    pub idle: Arc<dyn IdleSource>,
+    /// Reads text in images. Only used if `settings.ocr` is on.
+    pub ocr: Arc<dyn Ocr>,
+    /// How "open" hands a path to Windows. Tests pass a recorder.
+    pub launcher: Arc<dyn Launcher>,
+    /// Process and port access for `kill port`; `None` uses the real system.
+    pub system: Option<Arc<dyn ProcessBackend>>,
+    pub gate: GateConfig,
+    /// Plugin folders and data folder; `None` runs without a plugin host.
+    pub plugins: Option<HostConfig>,
+}
+
+/// Live state of every background feature, for the Settings health panel.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Health {
+    pub name_index: NameIndexHealth,
+    pub content: ContentHealth,
+    pub screenshots: ScreenshotHealth,
+    pub plugins: Vec<PluginHealth>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NameIndexHealth {
+    pub count: u64,
+    pub state: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ContentHealth {
+    /// running, waiting for idle, paused, off or up to date.
+    pub state: String,
+    pub reason: String,
+    pub files_done: u64,
+    pub files_queued: u64,
+    /// Reading text (documents) in this scan, then pictures: done of total.
+    pub read_done: u64,
+    pub read_total: u64,
+    pub ocr_done: u64,
+    pub ocr_total: u64,
+    pub last_error: Option<String>,
+    pub index_now_running: bool,
+    /// Size of the content index and its limit, in bytes.
+    pub size_bytes: u64,
+    pub max_bytes: u64,
+    /// The limit is reached: nothing new is added.
+    pub full: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScreenshotHealth {
+    pub state: String,
+    pub reason: String,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PluginHealth {
+    pub name: String,
+    pub state: String,
+    pub reason: String,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Status {
+    pub files: usize,
+    pub folders: usize,
+    pub apps: usize,
+    pub roots: usize,
+    pub indexing: bool,
+    pub paused: bool,
+    /// The user has not yet chosen folders (first run): the UI shows the chooser.
+    pub needs_setup: bool,
+    /// Documents in the full-text index (file contents and screenshot text).
+    pub content_docs: u64,
+    /// Semantic indexing: files done and files to do in the current pass (0 when off).
+    pub semantic_done: u64,
+    pub semantic_total: u64,
+    /// File reading in the current scan: documents first, pictures after.
+    pub read_done: u64,
+    pub read_total: u64,
+    pub ocr_done: u64,
+    pub ocr_total: u64,
+}
+
+struct SemanticRuntime {
+    client: SemanticClient,
+    progress: Arc<SemanticProgress>,
+    indexer: Mutex<Option<SemanticIndexer>>,
+}
+
+struct ContentRuntime {
+    ocr: Option<Arc<dyn Ocr>>,
+    idle_secs: u32,
+    store: Arc<ContentStore>,
+    service: Mutex<Option<ContentService>>,
+    stats: Arc<ContentStats>,
+}
+
+pub struct Lookout {
+    engine: Engine,
+    index: SharedIndex,
+    service: Mutex<Option<IndexService>>,
+    frecency: Arc<FrecencyStore>,
+    pause: PauseState,
+    populating: Arc<AtomicBool>,
+    targets: Arc<Mutex<HashMap<String, Target>>>,
+    actions: ActionEngine,
+    roots: usize,
+    apps: usize,
+    needs_setup: bool,
+    storage: Storage,
+    persister: Mutex<Option<Persister>>,
+    wiped: AtomicBool,
+    content: Option<ContentRuntime>,
+    /// Why there is no content index although it is switched on.
+    content_error: Option<String>,
+    index_contents: bool,
+    plugins: Option<Arc<PluginHost>>,
+    semantic: Option<SemanticRuntime>,
+    /// Disk usage analyzer: idle until the user starts a scan.
+    disk: crate::diskusage::DiskService,
+    /// Clean up list and duplicate finder (on demand).
+    tidy: crate::cleanup::Tidy,
+}
+
+/// Adds `%LOCALAPPDATA%` and `%APPDATA%` (names only; contents are never read)
+/// to a non-empty root list, unless an existing root already covers them.
+fn with_appdata_roots(mut roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    if roots.is_empty() {
+        return roots;
+    }
+    for var in ["LOCALAPPDATA", "APPDATA"] {
+        let Some(dir) = std::env::var_os(var).map(PathBuf::from) else {
+            continue;
+        };
+        if dir.is_dir() && !roots.iter().any(|r| dir.starts_with(r)) {
+            roots.push(dir);
+        }
+    }
+    roots
+}
+
+impl Lookout {
+    pub fn start(opts: StartOptions, sink: Sink, pause: PauseState) -> Result<Self, StartError> {
+        let storage = opts.storage.clone();
+        let pause_for_disk = pause.clone();
+        let disk_file = storage.paths.as_ref().map(|p| p.disk_scan());
+        let disk_key = storage.key.clone();
+        let frecency = Arc::new(FrecencyStore::new(storage.db.clone())?);
+        let index = new_shared_index();
+        let weights = opts.settings.ranking;
+
+        let roots = if opts.roots_override.is_empty() {
+            opts.settings.index_roots.clone()
+        } else {
+            opts.roots_override.clone()
+        };
+        // Content indexing uses the real folders even when the name index is synthetic
+        // (benchmark: a 1M-name index and a content batch at the same time).
+        let content_roots = if opts.synthetic_files.is_some() && !opts.synthetic_uses_folders {
+            Vec::new()
+        } else {
+            roots.clone()
+        };
+        let roots = if opts.synthetic_files.is_some() {
+            Vec::new()
+        } else {
+            roots
+        };
+        let root_count = roots.len();
+        // AppData\Local and \Roaming are searchable by name once indexing is on.
+        let roots = if opts.roots_override.is_empty() && opts.storage.paths.is_some() {
+            with_appdata_roots(roots)
+        } else {
+            roots
+        };
+        let excludes = Excludes::default()
+            .with_extra(opts.settings.excluded_names.clone())
+            .with_folders(opts.settings.excluded_folders.clone());
+        // After the first crawl and after every rescan, lift files the user has opened before.
+        let (hook_index, hook_store) = (index.clone(), frecency.clone());
+        let on_reindexed: ReindexHook = Arc::new(move || {
+            apply_frecency(&hook_index, &hook_store, i64::from(unix_now()));
+        });
+        // The encrypted snapshot of the name index, if it was made for these folders.
+        let snapshot_path = match (&storage.paths, &storage.key, opts.synthetic_files) {
+            (Some(p), Some(k), None) => Some((p.names_file(), k.clone())),
+            _ => None,
+        };
+        let fingerprint = names_store::fingerprint(
+            &roots,
+            &names_store::excludes_key(
+                &opts.settings.excluded_names,
+                &opts.settings.excluded_folders,
+            ),
+        );
+        let preloaded = match &snapshot_path {
+            Some((path, key)) if !roots.is_empty() => {
+                match names_store::load(path, key, &fingerprint, opts.settings.snapshot_max_entries)
+                {
+                    Some(idx) => {
+                        *write(&index) = idx;
+                        apply_frecency(&index, &frecency, i64::from(unix_now()));
+                        true
+                    }
+                    None => {
+                        if let Some(n) = names_store::snapshot_entries(path, key, &fingerprint) {
+                            eprintln!(
+                                "lookout: the name snapshot has {n} entries (limit {}); not loading it, \
+                                 search starts empty and fills as the startup crawl runs",
+                                opts.settings.snapshot_max_entries
+                            );
+                        }
+                        false
+                    }
+                }
+            }
+            _ => false,
+        };
+        let persister = match snapshot_path {
+            Some((path, key)) => Some(
+                Persister::start(index.clone(), path, key, fingerprint, pause.clone())
+                    .map_err(StartError::Saver)?,
+            ),
+            None => None,
+        };
+        let on_changed: Option<ReindexHook> =
+            persister.as_ref().map(Persister::dirty_flag).map(|d| {
+                let hook: ReindexHook = Arc::new(move || d.store(true, Ordering::Release));
+                hook
+            });
+        let plugin_host = opts.plugins.clone().map(|mut cfg| {
+            if cfg.master_key.is_none() {
+                cfg.master_key = storage.key.clone();
+            }
+            PluginHost::start(cfg, pause.clone())
+        });
+        // Full-text index and its worker. A failure here only disables content search.
+        let mut content_error: Option<String> = None;
+        let store = if opts.settings.index_contents
+            && (opts.synthetic_files.is_none() || !content_roots.is_empty())
+        {
+            let opened = match (&storage.paths, &storage.key) {
+                (Some(p), Some(k)) => ContentStore::open(&p.content_dir(), k),
+                _ => ContentStore::open_in_ram(),
+            };
+            match opened {
+                Ok(st) => Some(Arc::new(st)),
+                Err(e) => {
+                    eprintln!("lookout: content search is off: {e}");
+                    content_error = Some(e.to_string());
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let content = match store {
+            Some(store) => {
+                let svc = if content_roots.is_empty() {
+                    None
+                } else {
+                    let cfg = ContentConfig {
+                        roots: content_roots.clone(),
+                        excludes: excludes.for_contents(),
+                        store: store.clone(),
+                        ocr: opts.settings.ocr.then(|| opts.ocr.clone()),
+                        office: plugin_host
+                            .clone()
+                            .map(|h| Arc::new(PluginOffice(h)) as Arc<dyn OfficeText>),
+                        idle: opts.idle.clone(),
+                        idle_secs: opts.settings.idle_secs,
+                        duty: opts.settings.index_speed.duty(opts.settings.crawl_duty),
+                        commit_every: opts.settings.index_speed.commit_every(),
+                        pause: pause.clone(),
+                        max_bytes: opts.settings.content_index_max_bytes(),
+                        fast: opts.settings.index_speed == crate::settings::IndexSpeed::Fast,
+                    };
+                    match ContentService::start(cfg) {
+                        Ok(s) => Some(s),
+                        Err(e) => {
+                            eprintln!("lookout: content indexing is off: {e}");
+                            None
+                        }
+                    }
+                };
+                let stats = svc.as_ref().map(ContentService::stats).unwrap_or_default();
+                Some(ContentRuntime {
+                    ocr: opts.settings.ocr.then(|| opts.ocr.clone()),
+                    idle_secs: opts.settings.idle_secs,
+                    store,
+                    service: Mutex::new(svc),
+                    stats,
+                })
+            }
+            None => None,
+        };
+        let on_path: Option<crate::index_service::PathHook> = content
+            .as_ref()
+            .and_then(|c| {
+                c.service
+                    .lock()
+                    .ok()?
+                    .as_ref()
+                    .map(ContentService::notifier)
+            })
+            .map(|n| {
+                let hook: crate::index_service::PathHook = Arc::new(move |p| n.notify(p));
+                hook
+            });
+        let hours = opts.settings.rescan_hours;
+        let make_config = |watch| {
+            let mut c = IndexConfig::new(roots.clone(), excludes.clone());
+            c.duty = opts.settings.crawl_duty;
+            c.watch = watch;
+            c.rescan_interval = (hours > 0).then(|| Duration::from_secs(u64::from(hours) * 3600));
+            c.on_reindexed = Some(on_reindexed.clone());
+            c.on_changed = on_changed.clone();
+            c.on_path = on_path.clone();
+            c.preloaded = preloaded;
+            c
+        };
+        // A watcher that cannot start (for example a network share) must not stop indexing.
+        let service = match IndexService::start(index.clone(), make_config(true), pause.clone()) {
+            Ok(s) => s,
+            Err(ServiceError::Watch(..)) => {
+                IndexService::start(index.clone(), make_config(false), pause.clone())?
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let populating = Arc::new(AtomicBool::new(false));
+        if let Some(files) = opts.synthetic_files {
+            populating.store(true, Ordering::Release);
+            let (idx, flag) = (index.clone(), populating.clone());
+            let _ = std::thread::Builder::new()
+                .name("lookout-synthetic".into())
+                .spawn(move || {
+                    let mut w = write(&idx);
+                    let _ = synthetic::populate(&mut w, files, 42, unix_now());
+                    w.shrink_to_fit();
+                    drop(w);
+                    flag.store(false, Ordering::Release);
+                });
+        }
+
+        let app_list = apps::scan_start_menu(&opts.start_menu_dirs);
+        let app_count = app_list.len();
+        let system = match opts.system.clone() {
+            Some(s) => s,
+            None => default_system(),
+        };
+        let files_source = Arc::new(FilesSource::new(index.clone(), weights));
+        let sources: Vec<Arc<dyn Source>> = vec![
+            Arc::new(CalculatorSource),
+            Arc::new(UnitsSource),
+            Arc::new(crate::pathquery::PathSource),
+            Arc::new(PortSource::new(system.clone())),
+            Arc::new(AppsSource::new(app_list, frecency.clone(), weights)),
+            files_source.clone(),
+        ];
+        let mut sources = sources;
+        if let Some(host) = &plugin_host {
+            let ids: Vec<String> = host.manifests().map(|m| m.id.clone()).collect();
+            for id in ids {
+                let wants_files = host
+                    .manifest(&id)
+                    .is_some_and(|m| !m.permissions.fs_read.is_empty());
+                let files: Option<Arc<dyn Source>> =
+                    wants_files.then(|| files_source.clone() as Arc<dyn Source>);
+                if let Some(src) = PluginSource::new(host.clone(), &id, files) {
+                    sources.push(Arc::new(src));
+                }
+            }
+        }
+        if let Some(c) = &content {
+            sources.push(Arc::new(ContentSource::new(c.store.clone(), weights)));
+        }
+        let semantic = match (&plugin_host, &content, &storage.paths) {
+            (Some(host), Some(c), Some(paths))
+                if host.manifest(PLUGIN_ID).is_some() && !content_roots.is_empty() =>
+            {
+                let client = SemanticClient::new(host.clone(), PLUGIN_ID, paths.root());
+                let progress = Arc::new(SemanticProgress::default());
+                let triggers: Vec<String> = host
+                    .manifests()
+                    .flat_map(|m| m.triggers.iter().cloned())
+                    .collect();
+                let cfg_host = host.clone();
+                let min: Box<dyn Fn() -> f32 + Send + Sync> = Box::new(move || {
+                    cfg_host
+                        .config_number(PLUGIN_ID, "min_similarity")
+                        .unwrap_or(0.6) as f32
+                });
+                sources.push(Arc::new(SemanticSource::new(
+                    client.clone(),
+                    c.store.clone(),
+                    weights,
+                    triggers,
+                    min,
+                )));
+                let indexer = SemanticIndexer::start(SemanticConfig {
+                    client: client.clone(),
+                    roots: content_roots.clone(),
+                    excludes: excludes.for_contents(),
+                    store: c.store.clone(),
+                    content: c.stats.clone(),
+                    ocr: opts.settings.ocr.then(|| opts.ocr.clone()),
+                    idle: opts.idle.clone(),
+                    idle_secs: opts.settings.idle_secs,
+                    duty: opts.settings.crawl_duty,
+                    pause: pause.clone(),
+                    frecency: frecency.clone(),
+                    progress: progress.clone(),
+                })
+                .map_err(|e| eprintln!("lookout: semantic indexing is off: {e}"))
+                .ok();
+                Some(SemanticRuntime {
+                    client,
+                    progress,
+                    indexer: Mutex::new(indexer),
+                })
+            }
+            _ => None,
+        };
+
+        let log = UndoLog::new(storage.db.clone())?;
+        let disk_hints = crate::diskusage::Hints::default();
+        let tidy_store = Arc::new(crate::cleanup::BatchStore::new(
+            crate::cleanup::Env::current(),
+        ));
+        let tidy = crate::cleanup::Tidy::new(tidy_store.clone(), pause.clone());
+        let action_list: Vec<Arc<dyn Action>> = vec![
+            Arc::new(OpenAction::new(opts.launcher.clone())),
+            Arc::new(KillPort::new(system)),
+            Arc::new(RevealAction(Arc::new(ExplorerReveal))),
+            Arc::new(CopyPathAction(Arc::new(WindowsClipboardWriter))),
+            Arc::new(RecycleAction::new(
+                Arc::new(ShellRecycler),
+                disk_hints.clone(),
+            )),
+            Arc::new(BatchRemoveAction::new(tidy_store, Arc::new(ShellRecycler))),
+        ];
+        let mut actions = ActionEngine::new(action_list, log, opts.gate);
+        if let Some(host) = &plugin_host {
+            actions = actions.with_provider(Arc::new(PluginActions(host.clone())));
+        }
+
+        // Remember which results can be acted on, so the UI can only name items we
+        // produced. Actions never receive a path or port from the webview.
+        let targets: Arc<Mutex<HashMap<String, Target>>> = Arc::default();
+        let (map, inner) = (targets.clone(), sink);
+        let wrapped: Sink = Arc::new(move |update: Update| {
+            let known: HashMap<String, Target> = update
+                .items
+                .iter()
+                .filter_map(|i| target_of(i).map(|t| (i.id.clone(), t)))
+                .collect();
+            *map.lock().unwrap_or_else(PoisonError::into_inner) = known;
+            inner(update);
+        });
+        let engine =
+            Engine::new(sources, wrapped, EngineConfig::default()).map_err(StartError::Engine)?;
+
+        Ok(Self {
+            engine,
+            index,
+            service: Mutex::new(Some(service)),
+            frecency,
+            pause,
+            populating,
+            targets,
+            actions,
+            roots: root_count,
+            apps: app_count,
+            needs_setup: opts.settings.needs_first_run(),
+            storage,
+            persister: Mutex::new(persister),
+            wiped: AtomicBool::new(false),
+            content,
+            content_error,
+            index_contents: opts.settings.index_contents,
+            plugins: plugin_host,
+            semantic,
+            disk: crate::diskusage::DiskService::new(
+                pause_for_disk,
+                // The scan uses the Balanced duty, never less than the user's own setting.
+                crate::settings::IndexSpeed::Balanced.duty(opts.settings.crawl_duty),
+                disk_file,
+                disk_key,
+                disk_hints,
+            ),
+            tidy,
+        })
+    }
+
+    fn stop_semantic(&self) {
+        if let Some(s) = &self.semantic {
+            if let Some(mut i) = s
+                .indexer
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+            {
+                i.stop();
+            }
+        }
+    }
+
+    /// State of semantic search for the Plugins panel (`None`: not available in this run).
+    pub fn semantic_status(&self) -> Option<SemanticStatus> {
+        let s = self.semantic.as_ref()?;
+        Some(s.progress.snapshot(s.client.assets_dir()))
+    }
+
+    /// "Delete my index" for semantic search: removes every vector and turns
+    /// the helper off, so nothing is rebuilt until the user turns it on again.
+    pub fn delete_semantic_index(&self) -> Result<(), String> {
+        let s = self
+            .semantic
+            .as_ref()
+            .ok_or("semantic search is not available")?;
+        if let Some(h) = &self.plugins {
+            let _ = h.set_enabled(PLUGIN_ID, false, false);
+        }
+        s.client.delete_all().map_err(|e| e.to_string())
+    }
+
+    /// The plugin host, if plugins are available.
+    pub fn plugins(&self) -> Option<&Arc<PluginHost>> {
+        self.plugins.as_ref()
+    }
+
+    /// "Index now" for file contents: runs without waiting for idle and
+    /// without the duty cap until the queue is empty. False if content indexing is off.
+    pub fn index_now(&self, on: bool) -> bool {
+        let Some(c) = &self.content else {
+            return false;
+        };
+        let guard = c.service.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(svc) = guard.as_ref() else {
+            return false;
+        };
+        if on {
+            svc.index_now();
+        } else {
+            svc.stop_index_now();
+        }
+        true
+    }
+
+    /// Queues a content rescan (no idle bypass): files that were left alone,
+    /// such as Office files while the Office helper was off, get read.
+    pub fn rescan_contents(&self) {
+        let Some(c) = &self.content else { return };
+        let guard = c.service.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(svc) = guard.as_ref() {
+            svc.request_rescan();
+        }
+    }
+
+    /// What each feature is doing and why, from live state.
+    pub fn health(&self) -> Health {
+        use crate::content::service::{STATE_PAUSED, STATE_RUNNING, STATE_WAITING_IDLE};
+        let st = self.status();
+        let name_state = if st.paused {
+            (
+                "paused",
+                "Indexing is paused; names already indexed still work.".to_owned(),
+            )
+        } else if st.indexing {
+            (
+                "running",
+                "Reading your folders for the first time.".to_owned(),
+            )
+        } else if st.roots == 0 {
+            ("off", "No folders are chosen to index.".to_owned())
+        } else {
+            (
+                "up to date",
+                format!("Watching {} folder(s) for changes.", st.roots),
+            )
+        };
+        let name_index = NameIndexHealth {
+            count: st.files as u64 + st.folders as u64,
+            state: name_state.0.to_owned(),
+            reason: name_state.1,
+        };
+
+        let stats = self.content.as_ref().map(|c| c.stats.clone());
+        // Merges grow the files on disk after the last commit; re-read the
+        // live size so "full" cannot stay unseen once the queue is empty.
+        if let (Some(c), Some(s)) = (&self.content, &stats) {
+            s.size_bytes.store(c.store.size_bytes(), Ordering::Relaxed);
+        }
+        let pending = stats.as_ref().map_or(0, |s| {
+            s.queued.load(Ordering::Relaxed) + s.pending.load(Ordering::Relaxed)
+        });
+        let (cstate, creason) = match (&self.content, &stats) {
+            _ if !self.index_contents => (
+                "off",
+                "File contents are switched off in Settings.".to_owned(),
+            ),
+            (None, _) => (
+                "off",
+                match &self.content_error {
+                    Some(e) => format!("The full-text index could not be opened: {e}"),
+                    None => "No folders are chosen to read.".to_owned(),
+                },
+            ),
+            (Some(_), Some(s)) if s.full() => (
+                "full",
+                "Content index full: raise the limit or delete the index. Everything already indexed stays searchable; nothing new is added. File names are not affected."
+                    .to_owned(),
+            ),
+            (Some(c), Some(s)) => {
+                let running = s.busy.load(Ordering::Acquire);
+                match s.state.load(Ordering::Acquire) {
+                    STATE_PAUSED => (
+                        "paused",
+                        "Indexing is paused (pause key or tray). Nothing is read until you resume."
+                            .to_owned(),
+                    ),
+                    STATE_WAITING_IDLE => (
+                        "waiting for idle",
+                        format!(
+                            "Large files and screenshots wait until you have been idle for {} s. Small text files you save are still indexed at once.",
+                            c.idle_secs
+                        ),
+                    ),
+                    STATE_RUNNING if running => (
+                        "running",
+                        if s.boost.load(Ordering::Acquire) {
+                            "Index now is running without waiting for idle.".to_owned()
+                        } else {
+                            "Reading files in the background.".to_owned()
+                        },
+                    ),
+                    _ => (
+                        "up to date",
+                        "Nothing is waiting; changes are picked up as you save.".to_owned(),
+                    ),
+                }
+            }
+            (Some(_), None) => ("off", "No folders are chosen to read.".to_owned()),
+        };
+        let content = ContentHealth {
+            state: cstate.to_owned(),
+            reason: creason,
+            files_done: self.content.as_ref().map_or(0, |c| c.store.doc_count()),
+            files_queued: pending,
+            read_done: stats
+                .as_ref()
+                .map_or(0, |s| s.read_done.load(Ordering::Relaxed)),
+            read_total: stats
+                .as_ref()
+                .map_or(0, |s| s.read_total.load(Ordering::Relaxed)),
+            ocr_done: stats
+                .as_ref()
+                .map_or(0, |s| s.ocr_done.load(Ordering::Relaxed)),
+            ocr_total: stats
+                .as_ref()
+                .map_or(0, |s| s.ocr_total.load(Ordering::Relaxed)),
+            last_error: stats.as_ref().and_then(|s| s.last_error()),
+            index_now_running: stats
+                .as_ref()
+                .is_some_and(|s| s.boost.load(Ordering::Acquire)),
+            size_bytes: self.content.as_ref().map_or(0, |c| c.store.size_bytes()),
+            max_bytes: stats
+                .as_ref()
+                .map_or(0, |s| s.max_bytes.load(Ordering::Relaxed)),
+            full: cstate == "full",
+        };
+
+        let (sstate, sreason) = match self.content.as_ref().map(|c| &c.ocr) {
+            None => ("off", "File contents are off, so screenshots are not read.".to_owned()),
+            Some(None) => ("off", "Screenshot reading is switched off in Settings.".to_owned()),
+            Some(Some(o)) if o.available() => (
+                "available",
+                "Windows can read text in images with your OCR language.".to_owned(),
+            ),
+            Some(Some(_)) => (
+                "unavailable",
+                "No OCR language installed. Add one in Windows Settings > Time & language > Language & region.".to_owned(),
+            ),
+        };
+        let screenshots = ScreenshotHealth {
+            state: sstate.to_owned(),
+            reason: sreason,
+            last_error: None,
+        };
+
+        let plugins = self
+            .plugins
+            .as_ref()
+            .map(|h| {
+                h.list()
+                    .into_iter()
+                    .map(|p| {
+                        let (state, reason) = if !p.enabled {
+                            ("off", "Switched off in Add-ons.".to_owned())
+                        } else if !p.approved {
+                            (
+                                "off",
+                                "Waiting for you to accept its permissions.".to_owned(),
+                            )
+                        } else if p.running {
+                            ("running", "The add-on program is running.".to_owned())
+                        } else if p.last_error.is_some() {
+                            ("failed", "The add-on stopped with an error.".to_owned())
+                        } else {
+                            ("ready", "Starts when it is first needed.".to_owned())
+                        };
+                        PluginHealth {
+                            name: p.name,
+                            state: state.to_owned(),
+                            reason,
+                            last_error: p.last_error,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Health {
+            name_index,
+            content,
+            screenshots,
+            plugins,
+        }
+    }
+
+    /// Segments in the full-text index (for the benchmark).
+    pub fn content_segments(&self) -> usize {
+        self.content.as_ref().map_or(0, |c| c.store.segment_count())
+    }
+
+    /// Counters of the content worker (for tests and the benchmark).
+    pub fn content_stats(&self) -> Option<Arc<ContentStats>> {
+        self.content.as_ref().map(|c| c.stats.clone())
+    }
+
+    fn stop_content(&self) {
+        if let Some(c) = &self.content {
+            if let Some(mut svc) = c
+                .service
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+            {
+                svc.stop();
+            }
+        }
+    }
+
+    /// Stops indexing and writes the latest name snapshot. The handle must not
+    /// be used for anything that writes afterwards (its `meta.db` writes are
+    /// switched off so it cannot overwrite what a successor saved).
+    pub fn shutdown(&self) {
+        self.disk.close();
+        self.stop_semantic();
+        if let Some(h) = &self.plugins {
+            h.shutdown();
+        }
+        self.stop_content();
+        if let Some(c) = &self.content {
+            c.store.close();
+        }
+        if let Some(service) = self
+            .service
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            service.stop();
+        }
+        if let Some(p) = self
+            .persister
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            p.stop(true);
+        }
+        self.storage.detach();
+    }
+
+    /// "Delete my index": stops indexing, then deletes the name snapshot,
+    /// `meta.db` (frecency and the undo log) and the encryption key, and
+    /// empties the in-memory index. Afterwards this handle finds nothing;
+    /// start a new `Lookout` to index again. Settings are left alone.
+    pub fn wipe_index(&self) -> Result<(), WipeError> {
+        self.wiped.store(true, Ordering::Release);
+        self.pause.set(true);
+        self.disk.close();
+        if let Some(h) = &self.plugins {
+            h.shutdown();
+        }
+        // Stop everything that writes before deleting anything.
+        self.stop_semantic();
+        self.stop_content();
+        if let Some(c) = &self.content {
+            c.store.close();
+        }
+        if let Some(service) = self
+            .service
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            service.stop();
+        }
+        if let Some(p) = self
+            .persister
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            p.stop(false);
+        }
+        self.storage.detach();
+        *write(&self.index) = crate::name_index::NameIndex::new();
+        if let Some(paths) = &self.storage.paths {
+            paths.wipe()?;
+            // What plugins stored (clipboard history) was encrypted with the key just deleted.
+            match std::fs::remove_dir_all(paths.root().join("plugins")) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Starts a query; see [`Engine::submit`].
+    pub fn query(&self, generation: u64, text: &str) -> bool {
+        self.engine.submit(generation, text)
+    }
+
+    pub fn status(&self) -> Status {
+        let sem = self
+            .semantic_status()
+            .filter(|s| s.state == crate::semantic::SemanticState::Indexing);
+        let s = self
+            .service
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(IndexService::status);
+        let stat = |f: fn(&ContentStats) -> &std::sync::atomic::AtomicU64| {
+            self.content
+                .as_ref()
+                .map_or(0, |c| f(&c.stats).load(Ordering::Relaxed))
+        };
+        Status {
+            files: s.map_or(0, |s| s.files),
+            folders: s.map_or(0, |s| s.folders),
+            apps: self.apps,
+            roots: self.roots,
+            indexing: s.is_some_and(|s| s.crawling) || self.populating.load(Ordering::Acquire),
+            paused: self.pause.is_paused(),
+            needs_setup: self.needs_setup,
+            content_docs: self.content.as_ref().map_or(0, |c| c.store.doc_count()),
+            semantic_done: sem.as_ref().map_or(0, |s| s.done),
+            semantic_total: sem.as_ref().map_or(0, |s| s.total),
+            read_done: stat(|s| &s.read_done),
+            read_total: stat(|s| &s.read_total),
+            ocr_done: stat(|s| &s.ocr_done),
+            ocr_total: stat(|s| &s.ocr_total),
+        }
+    }
+
+    /// The target of a result from the most recent update, if it can be acted on.
+    pub fn target(&self, id: &str) -> Option<Target> {
+        self.targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned()
+    }
+
+    /// The disk usage analyzer (on demand; idle until a scan is started).
+    pub fn disk(&self) -> &crate::diskusage::DiskService {
+        &self.disk
+    }
+
+    pub fn tidy(&self) -> &crate::cleanup::Tidy {
+        &self.tidy
+    }
+
+    /// Step 1 for removing a stored list (Clean up item or chosen duplicates).
+    pub fn prepare_batch(&self, batch_id: &str) -> Result<Prepared, ActionError> {
+        let target = Target {
+            item_id: format!("batch:{batch_id}"),
+            kind: Kind::Folder,
+            uri: Some(format!("batch:{batch_id}")),
+            port: None,
+            origin: None,
+        };
+        self.actions
+            .prepare(crate::actions::disk::BATCH_REMOVE, target)
+    }
+
+    /// Step 1 for an action on a row of the disk view. The path comes from the
+    /// scan held here; the webview only names a row.
+    pub fn prepare_disk_action(&self, action_id: &str, node: u32) -> Result<Prepared, ActionError> {
+        use crate::diskusage::NodeKind;
+        let tree = self
+            .disk
+            .tree()
+            .ok_or_else(|| ActionError::Stale("there is no scan open".into()))?;
+        let kind = match tree.kind_of(node) {
+            Some(NodeKind::Folder) => Kind::Folder,
+            Some(NodeKind::File) => Kind::File,
+            _ => {
+                return Err(ActionError::Refused(
+                    "that row is not a file or folder".into(),
+                ))
+            }
+        };
+        let path = self
+            .disk
+            .hint_for(node)
+            .ok_or_else(|| ActionError::Stale("that row is no longer in the scan".into()))?;
+        let target = Target {
+            item_id: format!("disk:{node}"),
+            kind,
+            uri: Some(path.to_string_lossy().into_owned()),
+            port: None,
+            origin: None,
+        };
+        self.actions.prepare(action_id, target)
+    }
+
+    /// Like [`Self::prepare_disk_action`] for a row of the large-file tabs.
+    pub fn prepare_disk_file_action(
+        &self,
+        action_id: &str,
+        hit: u32,
+    ) -> Result<Prepared, ActionError> {
+        let path = self
+            .disk
+            .hint_for_hit(hit)
+            .ok_or_else(|| ActionError::Stale("that file is no longer in the scan".into()))?;
+        let target = Target {
+            item_id: format!("disk-file:{hit}"),
+            kind: Kind::File,
+            uri: Some(path.to_string_lossy().into_owned()),
+            port: None,
+            origin: None,
+        };
+        self.actions.prepare(action_id, target)
+    }
+
+    /// Step 1 of every action: build the preview from the live state. The item
+    /// must be one the backend sent in its latest update.
+    pub fn prepare_action(&self, action_id: &str, item_id: &str) -> Result<Prepared, ActionError> {
+        let target = self.target(item_id).ok_or_else(|| {
+            ActionError::Stale("that result is no longer available; search again".into())
+        })?;
+        self.actions.prepare(action_id, target)
+    }
+
+    pub fn prepare_undo(&self) -> Result<Prepared, ActionError> {
+        self.actions.prepare_undo()
+    }
+
+    /// Step 2: the interface reports that the preview is on screen.
+    pub fn present_action(&self, ticket: &str) -> Result<(), ActionError> {
+        self.actions.present(ticket)
+    }
+
+    pub fn cancel_action(&self, ticket: &str) {
+        self.actions.cancel(ticket);
+    }
+
+    /// Step 3 for `safe` actions. Refused for anything that needs confirmation.
+    pub fn run_action(&self, ticket: &str) -> Result<Done, ActionError> {
+        let done = self.actions.run(ticket)?;
+        self.after_run(&done);
+        Ok(done)
+    }
+
+    /// Step 3 for any action: the user confirmed the preview that was shown.
+    pub fn confirm_action(&self, ticket: &str) -> Result<Done, ActionError> {
+        let done = self.actions.confirm(ticket)?;
+        self.after_run(&done);
+        Ok(done)
+    }
+
+    pub fn action_history(&self, limit: usize) -> Result<Vec<Entry>, ActionError> {
+        self.actions.history(limit)
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.actions.can_undo()
+    }
+
+    fn after_run(&self, done: &Done) {
+        if done.action_id == open::ID && !done.was_undo {
+            for id in &done.items {
+                if let Err(e) = self.record_open(id) {
+                    eprintln!("lookout: could not record the open: {e}");
+                }
+            }
+        }
+    }
+
+    /// Counts an open for ranking: persists it and lifts the file in the index.
+    pub fn record_open(&self, id: &str) -> Result<(), FrecencyError> {
+        let score = self.frecency.record_open(id, i64::from(unix_now()))?;
+        if let Some(path) = id
+            .strip_prefix("file:")
+            .or_else(|| id.strip_prefix("folder:"))
+        {
+            write(&self.index)
+                .set_frecency(std::path::Path::new(path), ranking::frecency_level(score));
+        }
+        Ok(())
+    }
+}
+
+/// What an action may act on for this result, if anything.
+fn target_of(item: &crate::item::Item) -> Option<Target> {
+    if item.source.starts_with("plugin:") {
+        let meta = |k: &str| item.metadata.get(k);
+        return Some(Target {
+            item_id: item.id.clone(),
+            kind: item.kind.clone(),
+            uri: item.uri.clone(),
+            port: None,
+            origin: Some(PluginOrigin {
+                plugin_id: meta("plugin")?.as_str()?.to_owned(),
+                action_id: meta("plugin_action")?.as_str()?.to_owned(),
+                params: meta("plugin_params").cloned().unwrap_or_default(),
+            }),
+        });
+    }
+    match item.kind {
+        Kind::File | Kind::Folder | Kind::App => Some(Target {
+            item_id: item.id.clone(),
+            kind: item.kind.clone(),
+            uri: Some(item.uri.clone()?),
+            port: None,
+            origin: None,
+        }),
+        Kind::Port => {
+            let port = item.metadata.get("port")?.as_u64()?;
+            Some(Target {
+                item_id: item.id.clone(),
+                kind: Kind::Port,
+                uri: None,
+                port: Some(u16::try_from(port).ok()?),
+                origin: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn default_system() -> Arc<dyn ProcessBackend> {
+    Arc::new(crate::actions::system::WindowsSystem)
+}
+
+/// The default action for each kind of result.
+pub fn default_action(kind: &Kind) -> Option<&'static str> {
+    match kind {
+        Kind::File | Kind::Folder | Kind::App => Some(open::ID),
+        Kind::Port => Some(kill_port::ID),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::open::NoopLauncher;
+    use std::fs;
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    fn test_key() -> crate::crypto::Key {
+        crate::crypto::Key::from_bytes(&[7u8; 32]).unwrap()
+    }
+
+    struct Fixture {
+        lookout: Lookout,
+        updates: Arc<Mutex<Vec<Update>>>,
+        _dir: tempfile::TempDir,
+    }
+
+    fn make_files(dir: &std::path::Path) {
+        let files = dir.join("files");
+        fs::create_dir_all(&files).unwrap();
+        fs::write(files.join("budget alpha.xlsx"), b"x").unwrap();
+        fs::write(files.join("budget beta.xlsx"), b"x").unwrap();
+        let start_menu = dir.join("start");
+        fs::create_dir_all(&start_menu).unwrap();
+        fs::write(start_menu.join("Notepad.lnk"), b"").unwrap();
+    }
+
+    fn start(extra: impl FnOnce(&std::path::Path)) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        make_files(dir.path());
+        extra(dir.path());
+        let (lookout, updates) = launch(dir.path());
+        Fixture {
+            lookout,
+            updates,
+            _dir: dir,
+        }
+    }
+
+    /// Starts Lookout over the files made by `make_files`; frecency goes to `meta.db` in `dir`.
+    fn launch(dir: &std::path::Path) -> (Lookout, Arc<Mutex<Vec<Update>>>) {
+        launch_with(dir, Settings::default(), PauseState::new())
+    }
+
+    fn launch_with(
+        dir: &std::path::Path,
+        settings: Settings,
+        pause: PauseState,
+    ) -> (Lookout, Arc<Mutex<Vec<Update>>>) {
+        let files = dir.join("files");
+        let start_menu = dir.join("start");
+        let updates: Arc<Mutex<Vec<Update>>> = Arc::default();
+        let u = updates.clone();
+        let (tx, _rx) = mpsc::channel::<()>();
+        let sink: Sink = Arc::new(move |update| {
+            u.lock().unwrap().push(update);
+            let _ = tx.send(());
+        });
+        let lookout = Lookout::start(
+            StartOptions {
+                settings,
+                roots_override: vec![files],
+                synthetic_files: None,
+                synthetic_uses_folders: false,
+                start_menu_dirs: vec![start_menu],
+                storage: crate::storage::Storage::with_key(
+                    crate::storage::DataPaths::new(dir),
+                    test_key(),
+                )
+                .unwrap(),
+                idle: Arc::new(crate::content::idle::AlwaysIdle),
+                ocr: Arc::new(crate::content::ocr::NoOcr),
+                launcher: Arc::new(NoopLauncher),
+                system: None,
+                gate: GateConfig::default(),
+                plugins: None,
+            },
+            sink,
+            pause,
+        )
+        .unwrap();
+        (lookout, updates)
+    }
+
+    impl Fixture {
+        fn ask(&self, generation: u64, text: &str) -> Update {
+            assert!(self.lookout.query(generation, text));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(u) = self
+                    .updates
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|u| u.generation == generation && u.done)
+                {
+                    return u.clone();
+                }
+                assert!(Instant::now() < deadline, "query never completed");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn wait_indexed(&self) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while self.lookout.status().indexing {
+                assert!(Instant::now() < deadline, "indexing never finished");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    #[test]
+    fn status_reports_counts_roots_and_apps() {
+        let f = start(|_| {});
+        f.wait_indexed();
+        let s = f.lookout.status();
+        assert_eq!((s.files, s.roots, s.apps), (2, 1, 1));
+        assert!(!s.indexing && !s.paused);
+    }
+
+    #[test]
+    fn only_results_from_the_latest_update_can_be_opened() {
+        let f = start(|_| {});
+        f.wait_indexed();
+        let r = f.ask(1, "budget");
+        let first = &r.items[0];
+        let target = f.lookout.target(&first.id).unwrap();
+        assert_eq!(target.kind, Kind::File);
+        assert_eq!(target.uri.as_deref(), first.uri.as_deref());
+        assert!(f
+            .lookout
+            .target("file:C:\\Windows\\system32\\cmd.exe")
+            .is_none());
+        // Calculator answers are not openable.
+        let calc = f.ask(2, "1+1");
+        assert!(f.lookout.target(&calc.items[0].id).is_none());
+        // After a new query the old ids are forgotten.
+        assert!(f.lookout.target(&first.id).is_none());
+    }
+
+    #[test]
+    fn opening_an_item_ranks_it_higher_next_time_and_survives_restart() {
+        let f = start(|_| {});
+        f.wait_indexed();
+        let before = f.ask(1, "budget");
+        // Equal matches: whichever is second can be promoted by use.
+        let second = before.items[1].clone();
+        f.lookout.record_open(&second.id).unwrap();
+        let after = f.ask(2, "budget");
+        assert_eq!(after.items[0].id, second.id);
+        assert!(after.items[0].score_features.frecency > 0.0);
+    }
+
+    #[test]
+    fn frecency_survives_a_restart_and_is_reapplied_to_the_new_index() {
+        let dir = tempfile::tempdir().unwrap();
+        make_files(dir.path());
+        let opened = {
+            let f = {
+                let (lookout, updates) = launch(dir.path());
+                Fixture {
+                    lookout,
+                    updates,
+                    _dir: tempfile::tempdir().unwrap(),
+                }
+            };
+            f.wait_indexed();
+            let before = f.ask(1, "budget");
+            // The lower-ranked of two near-equal files is the one we "use".
+            let second = before.items[1].clone();
+            f.lookout.record_open(&second.id).unwrap();
+            second.id
+            // `f` is dropped here: the process-level state is gone, only meta.db remains.
+        };
+        let (lookout, updates) = launch(dir.path());
+        let f = Fixture {
+            lookout,
+            updates,
+            _dir: tempfile::tempdir().unwrap(),
+        };
+        f.wait_indexed(); // the reindex hook has applied frecency before indexing reports done
+        let after = f.ask(1, "budget");
+        assert_eq!(
+            after.items[0].id, opened,
+            "the file opened before the restart now leads"
+        );
+        assert!(after.items[0].score_features.frecency > 0.0);
+    }
+
+    #[test]
+    fn names_with_shell_metacharacters_are_found_and_open_to_the_exact_path() {
+        let names = ["R&D plan.txt", "a^b.txt", "100%.txt"];
+        let f = start(|dir| {
+            for n in names {
+                fs::write(dir.join("files").join(n), b"x").unwrap();
+            }
+        });
+        f.wait_indexed();
+        let files = f._dir.path().join("files");
+        let queries = ["r&d plan", "a^b", "100%"];
+        for (i, (name, query)) in names.iter().zip(queries).enumerate() {
+            let update = f.ask(i as u64 + 1, query);
+            let titles: Vec<_> = update.items.iter().map(|it| it.title.as_str()).collect();
+            let item = update
+                .items
+                .iter()
+                .find(|it| it.title == *name)
+                .unwrap_or_else(|| panic!("{name:?} not found for {query:?}: {titles:?}"));
+            assert_eq!(
+                item.kind,
+                Kind::File,
+                "{query:?} must not turn into a calculation"
+            );
+            let expected = files.join(name);
+            assert_eq!(item.id, format!("file:{}", expected.display()));
+            let target = f.lookout.target(&item.id).unwrap();
+            assert_eq!(target.kind, Kind::File);
+            assert_eq!(
+                std::path::Path::new(target.uri.as_deref().unwrap()),
+                expected,
+                "open target must be the exact path, characters unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn apps_and_files_both_answer_one_query() {
+        let f = start(|_| {});
+        f.wait_indexed();
+        let r = f.ask(1, "notepad");
+        assert_eq!(r.items[0].kind, Kind::App);
+    }
+
+    fn paths_in(dir: &std::path::Path) -> crate::storage::DataPaths {
+        crate::storage::DataPaths::new(dir)
+    }
+
+    fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !cond() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn the_name_index_survives_a_restart_and_is_served_before_the_new_crawl_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        make_files(dir.path());
+        {
+            let (lookout, updates) = launch(dir.path());
+            let f = Fixture {
+                lookout,
+                updates,
+                _dir: tempfile::tempdir().unwrap(),
+            };
+            f.wait_indexed();
+            // dropped here: the saver writes the snapshot on a normal stop
+        }
+        let snapshot = std::fs::read(paths_in(dir.path()).names_file()).unwrap();
+        assert!(
+            !snapshot.windows(6).any(|w| w == b"budget"),
+            "file names must not be readable in names.idx"
+        );
+        let meta = std::fs::read(paths_in(dir.path()).meta_db()).unwrap();
+        assert!(crate::crypto::looks_sealed(&meta));
+
+        // Restart with indexing paused: the crawl cannot run, so anything found
+        // came from the snapshot.
+        let pause = PauseState::new();
+        pause.set(true);
+        let (lookout, updates) = launch_with(dir.path(), Settings::default(), pause);
+        let f = Fixture {
+            lookout,
+            updates,
+            _dir: tempfile::tempdir().unwrap(),
+        };
+        assert_eq!(f.lookout.status().files, 2, "snapshot loaded at start");
+        let r = f.ask(1, "budget");
+        assert_eq!(r.items.len(), 2);
+    }
+
+    #[test]
+    fn a_snapshot_made_for_other_folders_or_exclusions_is_not_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        make_files(dir.path());
+        fs::create_dir_all(dir.path().join("files").join("private")).unwrap();
+        fs::write(
+            dir.path()
+                .join("files")
+                .join("private")
+                .join("diary budget.txt"),
+            b"x",
+        )
+        .unwrap();
+        {
+            let (lookout, updates) = launch(dir.path());
+            let f = Fixture {
+                lookout,
+                updates,
+                _dir: tempfile::tempdir().unwrap(),
+            };
+            f.wait_indexed();
+            assert_eq!(f.lookout.status().files, 3);
+        }
+        // The user now excludes the folder; the old snapshot still lists it.
+        let settings = Settings {
+            excluded_folders: vec![dir.path().join("files").join("private")],
+            ..Settings::default()
+        };
+        let pause = PauseState::new();
+        pause.set(true);
+        let (lookout, updates) = launch_with(dir.path(), settings.clone(), pause);
+        let f = Fixture {
+            lookout,
+            updates,
+            _dir: tempfile::tempdir().unwrap(),
+        };
+        assert_eq!(
+            f.lookout.status().files,
+            0,
+            "stale snapshot ignored while paused"
+        );
+        drop(f);
+        let (lookout, updates) = launch_with(dir.path(), settings, PauseState::new());
+        let f = Fixture {
+            lookout,
+            updates,
+            _dir: tempfile::tempdir().unwrap(),
+        };
+        f.wait_indexed();
+        let r = f.ask(1, "diary");
+        assert!(
+            r.items.is_empty(),
+            "excluded folder is never indexed: {r:?}"
+        );
+        assert_eq!(f.lookout.status().files, 2);
+    }
+
+    #[test]
+    fn delete_my_index_removes_every_index_file_and_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        make_files(dir.path());
+        let paths = paths_in(dir.path());
+        let (lookout, updates) = launch(dir.path());
+        let f = Fixture {
+            lookout,
+            updates,
+            _dir: tempfile::tempdir().unwrap(),
+        };
+        f.wait_indexed();
+        // Use it so frecency and the undo log have data.
+        let first = f.ask(1, "budget").items[0].id.clone();
+        f.lookout.record_open(&first).unwrap();
+        // Wait for the saver to write the snapshot, so there is something to delete.
+        wait_until("snapshot", || paths.names_file().exists());
+        assert!(paths.meta_db().exists());
+        // The key lives next to the data; Storage::with_key does not write one,
+        // so make one the way the app does.
+        crate::crypto::KeyStore::new(paths.key_file())
+            .load_or_create()
+            .unwrap();
+        std::fs::write(paths.ocr_marker(), "3").unwrap();
+        assert!(!paths.leftovers().is_empty());
+
+        f.lookout.wipe_index().unwrap();
+        assert!(!paths.ocr_marker().exists());
+
+        assert!(
+            paths.leftovers().is_empty(),
+            "left behind: {:?}",
+            paths.leftovers()
+        );
+        assert!(!paths.key_file().exists());
+        // Nothing comes back, and the live index is empty.
+        std::thread::sleep(Duration::from_millis(800));
+        assert!(
+            paths.leftovers().is_empty(),
+            "re-created: {:?}",
+            paths.leftovers()
+        );
+        assert_eq!(f.lookout.status().files, 0);
+        assert!(f.ask(2, "budget").items.is_empty());
+        // Writes after the wipe do not re-create meta.db.
+        let _ = f.lookout.record_open(&first);
+        assert!(!paths.meta_db().exists());
+    }
+
+    #[test]
+    fn the_first_run_flag_reflects_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        make_files(dir.path());
+        let (l, _) = launch_with(dir.path(), Settings::default(), PauseState::new());
+        assert!(l.status().needs_setup);
+        drop(l);
+        let done = Settings {
+            first_run_done: true,
+            ..Settings::default()
+        };
+        let (l, _) = launch_with(dir.path(), done, PauseState::new());
+        assert!(!l.status().needs_setup);
+    }
+
+    #[test]
+    fn a_snapshot_above_snapshot_max_entries_is_not_loaded_and_the_crawl_fills_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        make_files(dir.path());
+        {
+            let (lookout, updates) = launch(dir.path());
+            let f = Fixture {
+                lookout,
+                updates,
+                _dir: tempfile::tempdir().unwrap(),
+            };
+            f.wait_indexed();
+        }
+        // 2 files + 1 root folder = 3 entries. With a limit of 2 the snapshot is ignored
+        // (paused, so the crawl cannot fill it either: the index starts empty).
+        let pause = PauseState::new();
+        pause.set(true);
+        let small = Settings {
+            snapshot_max_entries: 2,
+            ..Settings::default()
+        };
+        let (l, _) = launch_with(dir.path(), small, pause.clone());
+        assert_eq!(l.status().files, 0, "search starts empty above the limit");
+        drop(l);
+        let (l, _) = launch_with(dir.path(), Settings::default(), pause);
+        assert_eq!(l.status().files, 2, "below the limit it is loaded");
+        drop(l);
+        // Unpaused, the startup crawl fills the empty index.
+        let small = Settings {
+            snapshot_max_entries: 2,
+            ..Settings::default()
+        };
+        let (lookout, updates) = launch_with(dir.path(), small, PauseState::new());
+        let f = Fixture {
+            lookout,
+            updates,
+            _dir: tempfile::tempdir().unwrap(),
+        };
+        f.wait_indexed();
+        assert_eq!(f.lookout.status().files, 2);
+    }
+
+    #[test]
+    fn synthetic_mode_never_reads_the_configured_folders_unless_told_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("private.txt"), "zebrafish secret plans").unwrap();
+        let run = |uses_folders: bool| {
+            let sink: Sink = Arc::new(|_| {});
+            let settings = Settings {
+                index_roots: vec![real.clone()],
+                idle_secs: 0,
+                ..Settings::default()
+            };
+            Lookout::start(
+                StartOptions {
+                    settings,
+                    roots_override: Vec::new(),
+                    synthetic_files: Some(100),
+                    synthetic_uses_folders: uses_folders,
+                    start_menu_dirs: Vec::new(),
+                    storage: Storage::in_memory().unwrap(),
+                    idle: Arc::new(crate::content::idle::AlwaysIdle),
+                    ocr: Arc::new(crate::content::ocr::NoOcr),
+                    launcher: Arc::new(NoopLauncher),
+                    system: None,
+                    gate: GateConfig::default(),
+                    plugins: None,
+                },
+                sink,
+                PauseState::new(),
+            )
+            .unwrap()
+        };
+        let l = run(false);
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(
+            l.content_stats().is_none(),
+            "no content worker without the flag"
+        );
+        assert_eq!(l.status().content_docs, 0);
+        assert_eq!(l.status().roots, 0);
+        drop(l);
+        let l = run(true);
+        wait_until("content indexing with the explicit flag", || {
+            l.content_stats()
+                .is_some_and(|s| s.extractions.load(Ordering::Relaxed) > 0)
+        });
+    }
+
+    #[test]
+    fn synthetic_mode_builds_the_requested_index_without_crawling() {
+        let dir = tempfile::tempdir().unwrap();
+        let sink: Sink = Arc::new(|_| {});
+        let lookout = Lookout::start(
+            StartOptions {
+                settings: Settings::default(),
+                roots_override: vec![dir.path().to_path_buf()],
+                synthetic_files: Some(5000),
+                synthetic_uses_folders: false,
+                start_menu_dirs: Vec::new(),
+                storage: Storage::in_memory().unwrap(),
+                idle: Arc::new(crate::content::idle::AlwaysIdle),
+                ocr: Arc::new(crate::content::ocr::NoOcr),
+                launcher: Arc::new(NoopLauncher),
+                system: None,
+                gate: GateConfig::default(),
+                plugins: None,
+            },
+            sink,
+            PauseState::new(),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while lookout.status().indexing {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let s = lookout.status();
+        assert_eq!(s.files, 5000);
+        assert_eq!(s.roots, 0, "the real root is ignored in synthetic mode");
+    }
+}

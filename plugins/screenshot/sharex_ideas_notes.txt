@@ -1,0 +1,39 @@
+# Reference Notes on Screenshot Behaviors and Edge Cases
+
+1. Multi-Monitor Virtual Desktop Layout
+- Windows multi-monitor desktops form a single virtual bounding rectangle.
+- Monitors positioned above or to the left of the primary display have negative coordinates.
+- Using SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, and SM_CYVIRTUALSCREEN
+  gives the true encompassing bounding box across all active displays.
+- Coordinate transformations must translate between local overlay window coordinates and
+  global virtual screen coordinates by offsetting by the virtual screen origin.
+
+2. Mixed-DPI Across Displays
+- In Windows 10/11, monitors frequently run at differing DPI scale factors (e.g., 100%, 125%, 150%, 200%).
+- Setting Per-Monitor DPI Awareness V2 on the thread ensures coordinates, mouse positions,
+  and drawing APIs operate in physical device pixels rather than being distorted by OS virtualization.
+
+3. Region Selection and Overlay Mechanics
+- Capturing the virtual screen image into an off-screen buffer before displaying the overlay
+  prevents screen flicker, freezes transient UI (menus, tooltips), and ensures the overlay itself
+  never appears inside the screenshot.
+- Region selection should support dragging in any direction, normalizing coordinates into positive width/height.
+- Micro-selections (under 4 to 8 pixels) should be treated as accidental clicks and discarded.
+- Pressing Escape cancels the capture cleanly without saving or opening the editor.
+- Visual feedback during selection: dimmed screen mask outside the selection, bright border,
+  crosshair guides aligned with the cursor, and a live dimension indicator (width × height).
+
+4. Annotation Behaviors
+- Blur / Pixelate redaction: Redacted regions must directly overwrite the underlying pixel data
+  in the image buffer. Redaction must not be a superficial layer or mask that a viewer could strip away.
+- Step Markers: Consecutive numbered badges (1, 2, 3...) that increment automatically on click.
+- Highlighter: Semi-transparent color stroke with blending so underlying text remains legible.
+- Full undo/redo stack for all annotation actions during editing.
+- Crop: Shrinking the active image bounds to a refined sub-rectangle.
+
+5. Safe File and Clipboard Handling
+- Automatic numbering: File saves must never overwrite existing files. If a file exists, append
+  an incremented suffix (e.g. " (1)").
+- Clipboard locking: On Windows, background utilities may momentarily hold the clipboard.
+  Retrying a few times over ~100 ms prevents spurious clipboard write errors.
+- Graceful error handling for read-only save paths and disconnected monitors.

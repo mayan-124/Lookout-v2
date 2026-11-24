@@ -1,0 +1,29 @@
+[package]
+name = "lookout-office-text"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "lookout_office_text"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lookout-office-text"
+path = "src/main.rs"
+
+[dependencies]
+lookout-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Pure Rust only: flate2 with its default miniz_oxide backend, no bzip2/zstd/xz/aes.
+zip = { version = "=9.8.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+quick-xml = "=0.42.0"
+# PDF text: pure Rust (MIT), no C code; no default features (no rayon, no chrono).
+lopdf = { version = "=0.47.0", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
