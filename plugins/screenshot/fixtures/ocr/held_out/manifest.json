@@ -12,6 +12,12 @@
     "sha256": "a484b0960a44a4ae68307834f26237ca97fe672868e35c0c494a743fb28bc953"
   },
   {
+    "file": "held_out_code_cplusplus.png",
+    "ground_truth": "template <typename T>\nsize_t binary_search(const T* arr, size_t n, T target) {\n    size_t low = 0, high = n;\n    while (low < high) {\n        size_t mid = low + (high - low) / 2;\n        if (arr[mid] < target) low = mid + 1;\n        else high = mid;\n    }\n    return low;\n}",
+    "name": "held_out_code_cplusplus",
+    "sha256": "00e075a85938d1bb8e14df5f87a37b4a543d2317096d7980e93fe5fca9212001"
+  },
+  {
     "file": "held_out_settings_dark.png",
     "ground_truth": "Lookout System Settings\nCapture Engine: DirectX 11 Desktop Duplication\nAudio Loopback: Enabled (Default Audio Device)\nHardware Acceleration: Auto (NVIDIA GeForce RTX)\nTelemetry Reporting: Anonymous Diagnostics Only",
     "name": "held_out_settings_dark",
@@ -34,5 +40,11 @@
     "ground_truth": "Metric\tP50\tP95\tP99\tLoss%\nLatency\t1.42ms\t4.88ms\t12.05ms\t0.02%\nThroughput\t840MB/s\t792MB/s\t710MB/s\t0.00%\nMemory\t128.4MB\t142.1MB\t156.8MB\t0.00%",
     "name": "held_out_numbers_table",
     "sha256": "4057cec3d31f38ac7ac30121a5ae63ad9035b143fb99d1494b1d217b7d74ae4d"
+  },
+  {
+    "file": "held_out_financial_matrix.png",
+    "ground_truth": "Quarter\tRevenue\tOperating_Cost\tNet_Margin\tEBITDA\nQ1-2026\t$4,120.5M\t$2,890.2M\t+29.8%\t$1,230.3M\nQ2-2026\t$4,580.0M\t$3,010.5M\t+34.2%\t$1,569.5M\nQ3-2026\t$5,015.8M\t$3,250.0M\t+35.2%\t$1,765.8M\nQ4-2026\t$5,640.2M\t$3,480.9M\t+38.3%\t$2,159.3M",
+    "name": "held_out_financial_matrix",
+    "sha256": "c316b84a266c176b5a40175e1baa3182cae327f44f54974112e7e8bb84dff9bc"
   }
 ]
