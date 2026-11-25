@@ -379,7 +379,17 @@ mod pipe {
             1,
             "one allow entry only: {sddl}"
         );
-        assert!(sddl.contains(&format!(";;;{sid})")), "{sddl}");
+        // SDDL abbreviates well-known account SIDs: the built-in local Administrator
+        // (RID 500, the account a CI runner uses) is written "LA".
+        let trustee = if sid.ends_with("-500") {
+            "LA"
+        } else {
+            sid.as_str()
+        };
+        assert!(
+            sddl.contains(&format!(";;;{trustee})")),
+            "{sddl} (user {sid})"
+        );
         assert!(
             sddl.starts_with("D:P"),
             "protected, nothing inherited: {sddl}"
