@@ -1,12 +1,15 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onDestroy, onMount, tick } from "svelte";
-  import Chart from "./Chart.svelte";
+  import Chart, { type ChartData, type Detail } from "./Chart.svelte";
   import Cleanup from "./Cleanup.svelte";
   import Duplicates from "./Duplicates.svelte";
   import Preview, { type Source } from "./Preview.svelte";
   import { pv } from "./previewui.svelte";
-  import type { CNode } from "./chartlayout";
+  import { prune, type CNode } from "./chartlayout";
+  import type { ColourMode } from "./chartcolors";
+  import { human } from "./chartdraw";
+  import { listPath } from "./chartsync";
 
   interface Location {
     label: string;
@@ -107,7 +110,14 @@
   // Which page of the disk view: the scan, the clean-up list or the duplicate finder.
   let page = $state<"disk" | "cleanup" | "dupes">("disk");
   let chartMode = $state<"ring" | "treemap">("ring");
-  let chart = $state<CNode | null>(null);
+  // Raw: the chart tree is replaced whole, never changed in place.
+  let chart = $state.raw<ChartData | null>(null);
+  let chartLoading = $state(false);
+  let colours = $state<ColourMode>("folder");
+  let chartQuery = $state("");
+  let detail = $state.raw<Detail | null>(null);
+  // An item picked in the chart while the list is still opening its folders.
+  let picking = $state.raw<number[] | null>(null);
   let minMb = $state(100);
   let olderDays = $state(365);
   let files = $state<{ rows: FileRow[]; note: string }>({ rows: [], note: "" });
@@ -124,7 +134,9 @@
   let selected = $state(-1);
   let notice = $state("");
   let saved: { root: string; saved_at: number } | null = $state(null);
-  let menu: { x: number; y: number } | null = $state(null);
+  // `target` and `back` are set by the chart's menu; the list's menu acts on the selected row.
+  let menu: { x: number; y: number; target?: Target; back?: HTMLElement } | null = $state.raw(null);
+  let menuEl: HTMLElement | undefined = $state();
   let card: { prepared: Prepared; node: number; hit: number; presented: boolean; busy: boolean; error: string } | null =
     $state(null);
   let confirmButton: HTMLButtonElement | undefined = $state();
@@ -134,10 +146,6 @@
   // Per-chart expand: one pane at a time grows in place over the content area.
   let exp = $state(false);
   let chartW = $state(330);
-  const basePath = $derived.by(() => {
-    const names = (view?.crumbs ?? []).map((c) => c.name);
-    return names.reduce((a, n) => (a ? a.replace(/\\$/, "") + "\\" + n : n), "");
-  });
   const previewSource = $derived.by<Source | null>(() => {
     if (!finished) return null;
     if (tab === "tree") {
@@ -169,16 +177,6 @@
   const finished = $derived(progress?.state === "done" && view !== null);
   const errorText = (e: unknown) => (typeof e === "string" ? e : String(e));
 
-  function human(n: number): string {
-    const u = ["B", "KB", "MB", "GB", "TB"];
-    let i = 0;
-    let v = n;
-    while (v >= 1024 && i < u.length - 1) {
-      v /= 1024;
-      i++;
-    }
-    return i === 0 ? `${n} B` : `${v.toFixed(v >= 100 ? 0 : 1)} ${u[i]}`;
-  }
   const when = (s: number) => (s ? new Date(s * 1000).toLocaleDateString() : "");
 
   const flat = $derived.by<Flat[]>(() => {
@@ -219,17 +217,72 @@
     expanded = new Set();
     kids = new Map();
     selected = -1;
+    cancelPick();
     view = await load(node);
     selected = view.rows.length ? 0 : -1;
     loadChart();
   }
 
+  let chartSeq = 0;
   async function loadChart() {
+    const mine = ++chartSeq;
+    const crumbs = view?.crumbs ?? [];
+    chartLoading = true;
     try {
-      chart = await invoke<CNode>("disk_chart", { node: focus, levels: chartMode === "ring" ? 4 : 2 });
+      const root = await invoke<CNode>("disk_chart", { node: focus, levels: chartMode === "ring" ? 4 : 2 });
+      if (mine === chartSeq) chart = { root, crumbs };
     } catch {
-      chart = null;
+      if (mine === chartSeq) chart = null;
+    } finally {
+      if (mine === chartSeq) chartLoading = false;
     }
+  }
+
+  function setChartMode(mode: "ring" | "treemap") {
+    chartMode = mode;
+    loadChart();
+  }
+
+  function setColours(mode: ColourMode) {
+    colours = mode;
+    invoke("set_chart_colors", { mode }).catch((e) => (notice = errorText(e)));
+  }
+
+  // What was moved to the Recycle Bin leaves the chart too.
+  const shownChart = $derived(chart && { root: prune(chart.root, removed), crumbs: chart.crumbs });
+  const selectedPath = $derived(picking ?? listPath(flat, selected));
+
+  // ------------------------------------------------------------ selection sync
+  let pickSeq = 0;
+  function cancelPick() {
+    pickSeq++;
+    picking = null;
+  }
+  const scrollToSelected = () =>
+    tick().then(() => listEl?.querySelector<HTMLElement>(`[data-i="${selected}"]`)?.scrollIntoView({ block: "nearest" }));
+  function selectRow(i: number) {
+    cancelPick();
+    selected = i;
+  }
+  // The chart picked an item: open the folders above it in the list, select it, scroll to it.
+  async function selectPath(path: number[]) {
+    const mine = ++pickSeq;
+    picking = path;
+    // Nothing else is selected meanwhile, so no action can hit the wrong row.
+    selected = -1;
+    for (const id of path.slice(0, -1)) {
+      try {
+        if (!kids.has(id)) await load(id);
+      } catch {
+        break;
+      }
+      if (mine !== pickSeq) return;
+      expanded.add(id);
+    }
+    expanded = new Set(expanded);
+    selected = flat.findIndex((f) => f.row.id === path[path.length - 1]);
+    picking = null;
+    scrollToSelected();
   }
 
   async function loadFiles() {
@@ -324,6 +377,7 @@
     if (!path) return;
     notice = "";
     view = null;
+    chart = null;
     removed = new Set();
     try {
       if (fastMode) await invoke("disk_start_fast", { path });
@@ -365,6 +419,7 @@
     try {
       await invoke("disk_load_saved");
       view = null;
+      chart = null;
       removed = new Set();
       poll();
     } catch (e) {
@@ -497,8 +552,8 @@
 
   function select(delta: number) {
     if (flat.length === 0) return;
-    selected = Math.min(flat.length - 1, Math.max(0, selected + delta));
-    tick().then(() => listEl?.querySelector<HTMLElement>(`[data-i="${selected}"]`)?.scrollIntoView({ block: "nearest" }));
+    selectRow(Math.min(flat.length - 1, Math.max(0, selected + delta)));
+    scrollToSelected();
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -583,8 +638,34 @@
 
   function openMenu(e: MouseEvent, i: number) {
     e.preventDefault();
-    selected = i;
+    selectRow(i);
     menu = { x: Math.min(e.clientX, window.innerWidth - 190), y: Math.min(e.clientY, window.innerHeight - 140) };
+  }
+
+  async function openChartMenu(path: number[], x: number, y: number) {
+    menu = {
+      x: Math.min(x, window.innerWidth - 190),
+      y: Math.min(y, window.innerHeight - 160),
+      target: { node: path[path.length - 1] },
+      back: document.activeElement as HTMLElement,
+    };
+    await tick();
+    menuEl?.querySelector("button")?.focus({ preventScroll: true });
+  }
+
+  function menuKey(e: KeyboardEvent) {
+    const items = [...(menuEl?.querySelectorAll("button") ?? [])];
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
+    } else if (e.key === "Escape" || e.key === "Tab") {
+      e.preventDefault();
+      menu?.back?.focus();
+      menu = null;
+    } else if (e.key !== "Enter" && e.key !== " ") return;
+    // Enter and Space press the focused item; the view's own keys stay out.
+    e.stopPropagation();
   }
 
   onMount(async () => {
@@ -596,6 +677,9 @@
     } catch {
       /* the view still opens; Scan reports the error */
     }
+    invoke<ColourMode>("get_chart_colors")
+      .then((m) => (colours = m))
+      .catch(() => {});
   });
 
   // Closing the view frees the scan; nothing is kept unless it was saved.
@@ -609,6 +693,35 @@
 
 <svelte:window onkeydown={onKeydown} onclick={() => (menu = null)} />
 <svelte:document onvisibilitychange={onVisibility} />
+
+{#snippet theChart(big: boolean)}
+  <Chart
+    data={shownChart}
+    mode={chartMode}
+    {colours}
+    selected={selectedPath}
+    loading={chartLoading}
+    {big}
+    bind:query={chartQuery}
+    ondrill={(id) => show(id)}
+    onup={up}
+    onselect={selectPath}
+    onmenu={openChartMenu}
+    oncolours={setColours}
+    onhover={(d) => (detail = d)}
+  />
+{/snippet}
+
+{#snippet detailLine()}
+  <p class="keys detail">
+    {#if detail}
+      <strong>{detail.name}</strong> · {human(detail.size)} · {detail.share.toFixed(detail.share < 10 ? 1 : 0)}% ·
+      {detail.items.toLocaleString()} item{detail.items === 1 ? "" : "s"}{detail.modified ? ` · modified ${when(detail.modified)}` : ""}
+    {:else}
+      Click a folder to go into it (or scroll the wheel forward); Backspace or scroll back to go up. Right-click for a menu.
+    {/if}
+  </p>
+{/snippet}
 
 {#snippet expandBtn()}
   <button class="xbtn" type="button" data-no-drag aria-label="Expand chart" title="Expand chart" onclick={(e) => { e.stopPropagation(); exp = true; }}>
@@ -776,7 +889,7 @@
           aria-expanded={f.row.kind === "folder" && f.row.has_children ? expanded.has(f.row.id) : undefined}
           class:selected={i === selected}
           data-i={i}
-          onclick={() => (selected = i)}
+          onclick={() => selectRow(i)}
           ondblclick={() => f.row.kind === "folder" && show(f.row.id)}
           oncontextmenu={(e) => openMenu(e, i)}
           onkeydown={() => {}}
@@ -811,24 +924,16 @@
     <aside class="chartpane" aria-label="Chart">
       <div class="pbar" data-tauri-drag-region>
         <div class="toggle" role="group" aria-label="Chart type">
-          <button class:on={chartMode === "ring"} aria-pressed={chartMode === "ring"} onclick={() => { chartMode = "ring"; loadChart(); }}>Ring</button>
-          <button class:on={chartMode === "treemap"} aria-pressed={chartMode === "treemap"} onclick={() => { chartMode = "treemap"; loadChart(); }}>Treemap</button>
+          <button class:on={chartMode === "ring"} aria-pressed={chartMode === "ring"} onclick={() => setChartMode("ring")}>Ring</button>
+          <button class:on={chartMode === "treemap"} aria-pressed={chartMode === "treemap"} onclick={() => setChartMode("treemap")}>Treemap</button>
         </div>
         {@render expandBtn()}
       </div>
-      <div class="chartbox">
-      <Chart
-        data={chart}
-        mode={chartMode}
-        title={crumbTitle}
-        highlightId={current()?.id ?? null}
-        {basePath}
-        ondrill={(id) => show(id)}
-        onup={up}
-        onselect={(id) => { const i = flat.findIndex((f) => f.row.id === id); if (i >= 0) selected = i; }}
-      />
-      </div>
-      <p class="keys">Click a folder to go into it (or scroll the wheel forward); scroll back or click the centre to go up.</p>
+      <!-- One chart at a time: none stays behind the expanded one. -->
+      {#if !exp}
+        {@render theChart(false)}
+        {@render detailLine()}
+      {/if}
       <Preview source={previewSource} />
     </aside>
     </div>
@@ -843,11 +948,11 @@
   {#if exp && tab === "tree" && finished}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="lbback" onclick={() => (exp = false)}>
-      <div class="lbox" role="dialog" tabindex="-1" aria-label="Chart" onclick={(e) => e.stopPropagation()}>
+      <div class="lbox" role="dialog" tabindex="-1" aria-label="Chart" onclick={(e) => { e.stopPropagation(); menu = null; }}>
         <div class="lbbar">
           <div class="toggle" role="group" aria-label="Chart type">
-            <button class:on={chartMode === "ring"} aria-pressed={chartMode === "ring"} onclick={() => { chartMode = "ring"; loadChart(); }}>Ring</button>
-            <button class:on={chartMode === "treemap"} aria-pressed={chartMode === "treemap"} onclick={() => { chartMode = "treemap"; loadChart(); }}>Treemap</button>
+            <button class:on={chartMode === "ring"} aria-pressed={chartMode === "ring"} onclick={() => setChartMode("ring")}>Ring</button>
+            <button class:on={chartMode === "treemap"} aria-pressed={chartMode === "treemap"} onclick={() => setChartMode("treemap")}>Treemap</button>
           </div>
           <span class="lbtitle">{crumbTitle}</span>
           <button class="xbtn" type="button" data-no-drag aria-label="Close" title="Close (Esc)" onclick={() => (exp = false)}>
@@ -855,31 +960,20 @@
           </button>
         </div>
         <div class="lbbody">
-          <div class="lbchart">
-            <Chart
-              data={chart}
-              mode={chartMode}
-              title={crumbTitle}
-              highlightId={current()?.id ?? null}
-              {basePath}
-              big={true}
-              ondrill={(id) => show(id)}
-              onup={up}
-              onselect={(id) => { const i = flat.findIndex((f) => f.row.id === id); if (i >= 0) selected = i; }}
-            />
-          </div>
-          <div class="lbside"><Preview source={previewSource} /></div>
+          <div class="lbchart">{@render theChart(true)}</div>
+          <div class="lbside">{@render detailLine()}<Preview source={previewSource} /></div>
         </div>
       </div>
     </div>
   {/if}
 
   {#if menu}
-    <div class="menu" role="menu" style:left={`${menu.x}px`} style:top={`${menu.y}px`}>
-      <button role="menuitem" onclick={() => act("open")}>Open</button>
-      <button role="menuitem" onclick={() => act("reveal")}>Show in folder</button>
-      <button role="menuitem" onclick={() => act("copy_path")}>Copy path</button>
-      <button role="menuitem" onclick={() => act("recycle")}>Move to Recycle Bin…</button>
+    {@const target = menu.target}
+    <div class="menu" role="menu" tabindex="-1" bind:this={menuEl} onkeydown={menuKey} style:left={`${menu.x}px`} style:top={`${menu.y}px`}>
+      <button role="menuitem" onclick={() => act("open", target)}>Open</button>
+      <button role="menuitem" onclick={() => act("reveal", target)}>Show in folder</button>
+      <button role="menuitem" onclick={() => act("copy_path", target)}>Copy path</button>
+      <button role="menuitem" onclick={() => act("recycle", target)}>Move to Recycle Bin…</button>
     </div>
   {/if}
 
@@ -1048,8 +1142,12 @@
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
-  .chartbox {
-    flex: none;
+  .detail {
+    min-height: 3em;
+    overflow-wrap: anywhere;
+  }
+  .detail strong {
+    color: var(--text);
   }
   .lbback {
     position: absolute;
@@ -1311,7 +1409,7 @@
     border: 1px solid var(--border-strong);
     border-radius: 10px;
     padding: 4px;
-    z-index: 10;
+    z-index: 25;
     min-width: 180px;
   }
   .menu button {

@@ -52,6 +52,8 @@ export const ACCENT_PRESETS = [
 export const TEXT_COLORS = { title: "#FFFFFF", soft: "#E3E8F5", muted: "#9AA3BD" };
 export const ON_ACCENT = { dark: "#111214", light: "#FFFFFF" };
 const SHADE = "#000000";
+/** Text on a chart fill: whichever of the two reads better. */
+export const INK = { black: SHADE, white: TEXT_COLORS.title };
 const SEMANTIC = { danger: "#FF6B63", success: "#3FB950" };
 /** Disk chart: color-blind-safe hues, one per folder, and grey for the rest. */
 const CHART_HUES = ["#66AFD9", "#41BD98", "#DC98C1", "#A8A8F4", "#AABF4A", "#D58385", "#4AB9C6", "#BAA8D2"];

@@ -799,11 +799,12 @@ fn disk_delete_saved(services: State<Services>) {
     }
 }
 
+/// Async: a big tree is walked off the window's thread.
 #[tauri::command]
-fn disk_chart(
+async fn disk_chart(
     node: u32,
     levels: u32,
-    services: State<Services>,
+    services: State<'_, Services>,
 ) -> Result<lookout_core::diskusage::ChartNode, String> {
     let tree = services_of(&services)?
         .disk()
@@ -1287,6 +1288,16 @@ fn get_appearance(services: State<Services>) -> AppearanceState {
 #[tauri::command]
 fn set_appearance(appearance: Appearance, services: State<Services>) -> Result<(), String> {
     lock(&services.settings).set_appearance(appearance, &services.paths.settings())
+}
+
+#[tauri::command]
+fn get_chart_colors(services: State<Services>) -> String {
+    lock(&services.settings).chart_colors.clone()
+}
+
+#[tauri::command]
+fn set_chart_colors(mode: String, services: State<Services>) -> Result<(), String> {
+    lock(&services.settings).set_chart_colors(&mode, &services.paths.settings())
 }
 
 #[tauri::command]
@@ -2035,6 +2046,8 @@ pub fn run() {
             disk_delete_saved,
             disk_prepare,
             disk_chart,
+            get_chart_colors,
+            set_chart_colors,
             disk_files,
             disk_prepare_file,
             cleanup_start,

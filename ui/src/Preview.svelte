@@ -77,7 +77,8 @@
   const icon = (d: PV) => (d.kind === "folder" ? "📁" : d.kind === "image" ? "🖼" : d.kind === "text" ? "📄" : "▫");
 
   function onKey(e: KeyboardEvent) {
-    if (e.key !== " " || !source || e.repeat) return;
+    // Two panels can be mounted (the expanded chart has its own): one Space, one toggle.
+    if (e.key !== " " || !source || e.repeat || e.defaultPrevented) return;
     const t = e.target as HTMLElement | null;
     const tag = t?.tagName;
     if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "BUTTON" || t?.isContentEditable) return;

@@ -1,151 +1,275 @@
-// Layout for the disk charts: pure functions, no DOM, no scan access.
+// Layout and hit-testing for the disk charts: pure functions, no DOM, no scan
+// access. Everything here works on the capped tree `disk_chart` sends.
 
 export interface CNode {
-  id: number | null; // null: grouped "smaller items" / "not listed"
+  id: number | null; // null: grouped "Other" and "not listed"
   name: string;
   kind: "folder" | "file" | "files" | "other" | "unlisted";
   size: number;
+  /** Items inside a folder, 1 for a file, how many were grouped. */
+  items: number;
+  /** Unix seconds (a folder: the newest inside); 0 when unknown. */
+  modified: number;
+  /** File type index (see TYPES in chartcolors.ts); a folder's largest type. */
+  cat: number;
   children: CNode[];
 }
 
-export interface Arc {
+export interface Shape {
   node: CNode;
-  depth: number; // 0 = innermost ring
-  branch: number; // colour group: index of the top-level segment it belongs to
-  path: string;
-  trail: string[]; // names from the chart's folder down to this segment
+  parent: CNode;
+  depth: number; // 0 = a child of the chart's folder
+  branch: number; // colour group: index of the depth-0 ancestor
+  /** Nodes from the chart's folder (excluded) down to this one (included). */
+  trail: CNode[];
 }
-
-export interface Block {
-  node: CNode;
-  depth: number;
-  branch: number;
-  trail: string[];
+export interface Arc extends Shape {
+  a0: number; // radians, clockwise from the top
+  a1: number;
+}
+export interface Rect {
   x: number;
   y: number;
   w: number;
   h: number;
 }
-
-export const VIEW = 400; // both charts draw into a VIEW x VIEW box
-
-const TAU = Math.PI * 2;
-
-function polar(cx: number, cy: number, r: number, a: number): [number, number] {
-  return [cx + r * Math.sin(a), cy - r * Math.cos(a)];
+export interface Block extends Shape, Rect {
+  /** Height of the header strip; 0 when nothing is drawn inside. */
+  head: number;
 }
 
-export function arcPath(cx: number, cy: number, r0: number, r1: number, a0: number, a1: number): string {
-  const end = Math.min(a1, a0 + TAU - 0.0001);
-  const large = end - a0 > Math.PI ? 1 : 0;
-  const [x0, y0] = polar(cx, cy, r1, a0);
-  const [x1, y1] = polar(cx, cy, r1, end);
-  const [x2, y2] = polar(cx, cy, r0, end);
-  const [x3, y3] = polar(cx, cy, r0, a0);
-  const f = (n: number) => n.toFixed(2);
-  return (
-    `M${f(x0)} ${f(y0)}A${f(r1)} ${f(r1)} 0 ${large} 1 ${f(x1)} ${f(y1)}` +
-    `L${f(x2)} ${f(y2)}A${f(r0)} ${f(r0)} 0 ${large} 0 ${f(x3)} ${f(y3)}Z`
-  );
+export const TAU = Math.PI * 2;
+export const MAX_SHAPES = 1500;
+export const RING_LEVELS = 4;
+/** Items under this share of their parent are grouped into "Other". */
+export const MIN_SHARE = 0.005;
+
+const total = (nodes: CNode[]) => nodes.reduce((s, n) => s + n.size, 0);
+
+/** Largest first, empty items dropped, small ones merged into one "Other (N items)" at the end. */
+export function mergeSmall(children: CNode[], parentSize: number, share = MIN_SHARE): CNode[] {
+  const live = children.filter((c) => c.size > 0).sort((a, b) => b.size - a.size);
+  const limit = Math.max(parentSize, total(live)) * share;
+  const keep: CNode[] = [];
+  const small: CNode[] = [];
+  for (const c of live) (c.kind === "other" || c.size < limit ? small : keep).push(c);
+  // One small item is not worth hiding behind "Other".
+  if (small.length < 2) return keep.concat(small);
+  const items = small.reduce((s, c) => s + (c.kind === "other" || c.kind === "files" ? c.items : 1), 0);
+  keep.push({
+    id: null,
+    name: `Other (${items.toLocaleString("en-US")} items)`,
+    kind: "other",
+    size: total(small),
+    items,
+    modified: small.reduce((m, c) => Math.max(m, c.modified), 0),
+    cat: 7,
+    children: [],
+  });
+  return keep;
 }
 
-/** Concentric rings: the children of `root` form ring 0, their children ring 1, ... */
-export function ringArcs(root: CNode, hole = 62, ringWidth = 34): Arc[] {
+/** The tree without the ids in `gone` (moved to the Recycle Bin since the scan). */
+export function prune(node: CNode, gone: ReadonlySet<number>): CNode {
+  if (!gone.size) return node;
+  let size = node.size;
+  let items = node.items;
+  let changed = false;
+  const children: CNode[] = [];
+  for (const c of node.children) {
+    if (c.id !== null && gone.has(c.id)) {
+      changed = true;
+      size -= c.size;
+      items -= c.kind === "folder" ? c.items + 1 : 1;
+      continue;
+    }
+    const p = prune(c, gone);
+    if (p !== c) {
+      changed = true;
+      size -= c.size - p.size;
+      items -= c.items - p.items;
+    }
+    children.push(p);
+  }
+  return changed ? { ...node, children, size: Math.max(0, size), items: Math.max(0, items) } : node;
+}
+
+// ------------------------------------------------------------ ring
+
+/**
+ * Sunburst arcs, level by level (so the shape cap drops outer rings first).
+ * Slices narrower than `minSpan` radians are not drawn.
+ */
+export function ringArcs(root: CNode, levels = RING_LEVELS, cap = MAX_SHAPES, minSpan = 0.004): Arc[] {
   const out: Arc[] = [];
-  const c = VIEW / 2;
-  const walk = (node: CNode, a0: number, a1: number, depth: number, branch: number, trail: string[]) => {
-    const total = node.children.reduce((s, k) => s + k.size, 0);
-    if (total <= 0) return;
-    let a = a0;
-    node.children.forEach((k, i) => {
-      const span = ((a1 - a0) * k.size) / total;
-      const b = depth === 0 ? i : branch;
-      // Slivers narrower than half a pixel are not drawn.
-      if (span * (hole + depth * ringWidth) >= 0.5) {
-        const r0 = hole + depth * ringWidth;
-        const t = [...trail, k.name];
-        out.push({ node: k, depth, branch: b, trail: t, path: arcPath(c, c, r0 + 1, r0 + ringWidth - 1, a, a + span) });
-        walk(k, a, a + span, depth + 1, b, t);
+  let frontier: { node: CNode; a0: number; a1: number; branch: number; trail: CNode[] }[] = [
+    { node: root, a0: 0, a1: TAU, branch: 0, trail: [] },
+  ];
+  for (let depth = 0; depth < levels && frontier.length; depth++) {
+    const next: typeof frontier = [];
+    for (const f of frontier) {
+      const kids = mergeSmall(f.node.children, f.node.size);
+      const sum = total(kids);
+      if (sum <= 0) continue;
+      let a = f.a0;
+      for (let i = 0; i < kids.length; i++) {
+        const node = kids[i];
+        const span = ((f.a1 - f.a0) * node.size) / sum;
+        const a1 = a + span;
+        if (span >= minSpan && out.length < cap) {
+          const branch = depth === 0 ? i : f.branch;
+          const trail = [...f.trail, node];
+          out.push({ node, parent: f.node, depth, branch, trail, a0: a, a1 });
+          if (node.children.length) next.push({ node, a0: a, a1, branch, trail });
+        }
+        a = a1;
       }
-      a += span;
-    });
-  };
-  walk(root, 0, TAU, 0, 0, []);
+    }
+    frontier = next;
+  }
   return out;
 }
 
-/** Squarified treemap (Bruls et al.): rectangles with areas proportional to sizes. */
-export function squarify(sizes: number[], x: number, y: number, w: number, h: number): { x: number; y: number; w: number; h: number }[] {
-  const total = sizes.reduce((s, v) => s + v, 0);
-  const out: { x: number; y: number; w: number; h: number }[] = [];
-  if (total <= 0 || w <= 0 || h <= 0) return sizes.map(() => ({ x, y, w: 0, h: 0 }));
-  const areas = sizes.map((s) => (s / total) * w * h);
-  const worst = (row: number[], side: number) => {
-    const sum = row.reduce((s, v) => s + v, 0);
-    let m = 0;
-    for (const a of row) m = Math.max(m, (side * side * a) / (sum * sum), (sum * sum) / (side * side * a));
-    return m;
+export interface RingGeom {
+  cx: number;
+  cy: number;
+  hole: number;
+  ring: number; // width of one level
+}
+
+export function ringGeom(w: number, h: number, levels = RING_LEVELS): RingGeom {
+  const radius = Math.max(20, Math.min(w, h) / 2 - 3);
+  const hole = radius * 0.38;
+  return { cx: w / 2, cy: h / 2, hole, ring: (radius - hole) / levels };
+}
+
+export const CENTRE = -2;
+
+/** Index of the arc under the point, `CENTRE` for the hole, -1 for nothing. */
+export function hitRing(arcs: Arc[], g: RingGeom, x: number, y: number): number {
+  const dx = x - g.cx;
+  const dy = y - g.cy;
+  const r = Math.hypot(dx, dy);
+  if (r < g.hole) return CENTRE;
+  const depth = Math.floor((r - g.hole) / g.ring);
+  const a = (Math.atan2(dx, -dy) + TAU) % TAU;
+  for (let i = 0; i < arcs.length; i++) {
+    const s = arcs[i];
+    if (s.depth === depth && a >= s.a0 && a < s.a1) return i;
+  }
+  return -1;
+}
+
+/** Where an arc goes when `focus` grows into the whole chart (`k` from 0 to 1). */
+export function zoomArc(s: Arc, focus: Arc, k: number): { a0: number; a1: number; depth: number } {
+  const span = Math.max(focus.a1 - focus.a0, 1e-9);
+  const to = (a: number) => Math.min(1, Math.max(0, (a - focus.a0) / span)) * TAU;
+  return {
+    a0: s.a0 + (to(s.a0) - s.a0) * k,
+    a1: s.a1 + (to(s.a1) - s.a1) * k,
+    depth: s.depth - (focus.depth + 1) * k,
   };
+}
+
+// ------------------------------------------------------------ treemap
+
+/** Squarified treemap (Bruls et al.): rectangles with areas proportional to sizes. */
+export function squarify(sizes: number[], x: number, y: number, w: number, h: number): Rect[] {
+  const out: Rect[] = sizes.map(() => ({ x, y, w: 0, h: 0 }));
+  // Empty items get an empty rectangle and take no part in the rows.
+  const live = sizes.map((_, i) => i).filter((i) => sizes[i] > 0);
+  const sum = live.reduce((s, i) => s + sizes[i], 0);
+  if (sum <= 0 || w <= 0 || h <= 0) return out;
+  const areas = live.map((i) => (sizes[i] / sum) * w * h);
   let rx = x,
     ry = y,
     rw = w,
     rh = h;
   let i = 0;
   while (i < areas.length) {
-    const side = Math.min(rw, rh);
-    let row = [areas[i]];
+    const side = Math.max(Math.min(rw, rh), 1e-9);
+    // Worst aspect ratio of a row, kept from its sum, smallest and largest area.
+    const worst = (s: number, lo: number, hi: number) => Math.max((side * side * hi) / (s * s), (s * s) / (side * side * lo));
+    let s = areas[i],
+      lo = s,
+      hi = s;
     let j = i + 1;
-    while (j < areas.length && worst([...row, areas[j]], side) <= worst(row, side)) {
-      row = [...row, areas[j]];
-      j++;
+    for (; j < areas.length; j++) {
+      const a = areas[j];
+      if (worst(s + a, Math.min(lo, a), Math.max(hi, a)) > worst(s, lo, hi)) break;
+      s += a;
+      lo = Math.min(lo, a);
+      hi = Math.max(hi, a);
     }
-    const sum = row.reduce((s, v) => s + v, 0);
     if (rw >= rh) {
-      const cw = sum / rh;
+      const cw = s / Math.max(rh, 1e-9);
       let cy = ry;
-      for (const a of row) {
-        out.push({ x: rx, y: cy, w: cw, h: a / cw });
-        cy += a / cw;
+      for (; i < j; i++) {
+        out[live[i]] = { x: rx, y: cy, w: cw, h: areas[i] / cw };
+        cy += areas[i] / cw;
       }
       rx += cw;
-      rw -= cw;
+      rw = Math.max(0, rw - cw);
     } else {
-      const chh = sum / rw;
+      const ch = s / Math.max(rw, 1e-9);
       let cx = rx;
-      for (const a of row) {
-        out.push({ x: cx, y: ry, w: a / chh, h: chh });
-        cx += a / chh;
+      for (; i < j; i++) {
+        out[live[i]] = { x: cx, y: ry, w: areas[i] / ch, h: ch };
+        cx += areas[i] / ch;
       }
-      ry += chh;
-      rh -= chh;
+      ry += ch;
+      rh = Math.max(0, rh - ch);
     }
-    i = j;
   }
   return out;
 }
 
-/** Blocks for the children of `root` and, inside each, their children. `head` is the height kept for a folder's name. */
-export function treemapBlocks(root: CNode, width = VIEW, height = width, head = 16): Block[] {
+/** Blocks for the children of `root` and, inside folders with room, their children. */
+export function treemapBlocks(root: CNode, width: number, height: number, head = 18, cap = MAX_SHAPES): Block[] {
   const out: Block[] = [];
-  const place = (node: CNode, x: number, y: number, w: number, h: number, depth: number, branch: number, trail: string[]) => {
-    const kids = [...node.children].sort((a, b) => b.size - a.size);
-    if (!kids.length) return;
+  const place = (parent: CNode, area: Rect, depth: number, branch: number, trail: CNode[]) => {
+    const kids = mergeSmall(parent.children, parent.size).sort((a, b) => b.size - a.size);
     const rects = squarify(
       kids.map((k) => k.size),
-      x,
-      y,
-      w,
-      h,
+      area.x,
+      area.y,
+      area.w,
+      area.h,
     );
-    kids.forEach((k, i) => {
+    for (let i = 0; i < kids.length && out.length < cap; i++) {
       const r = rects[i];
-      if (r.w < 1 || r.h < 1) return;
-      const b = depth === 0 ? i : branch;
-      const t = [...trail, k.name];
-      out.push({ node: k, depth, branch: b, trail: t, x: r.x, y: r.y, w: r.w, h: r.h });
-      if (depth === 0 && r.w > 28 && r.h > head + 14) place(k, r.x + 2, r.y + head, r.w - 4, r.h - head - 2, 1, b, t);
-    });
+      if (r.w < 1 || r.h < 1) continue;
+      out.push({ node: kids[i], parent, depth, branch: depth ? branch : i, trail: [...trail, kids[i]], head: 0, ...r });
+    }
   };
-  place(root, 0, 0, width, height, 0, 0, []);
+  place(root, { x: 0, y: 0, w: width, h: height }, 0, 0, []);
+  // All top blocks first, then their insides: a later block lies on top.
+  const top = out.length;
+  for (let i = 0; i < top && out.length < cap; i++) {
+    const b = out[i];
+    if (!b.node.children.length || b.w < 40 || b.h < head + 18) continue;
+    b.head = head;
+    place(b.node, { x: b.x + 3, y: b.y + head, w: b.w - 6, h: b.h - head - 3 }, 1, b.branch, b.trail);
+  }
   return out;
+}
+
+/** Index of the innermost block under the point, or -1. */
+export function hitBlocks(blocks: Block[], x: number, y: number): number {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) return i;
+  }
+  return -1;
+}
+
+/** Name filter over what is drawn: matches, and everything inside a match, stay bright. */
+export function filterShapes(shapes: Shape[], query: string): { bright: boolean[]; count: number } {
+  const q = query.trim().toLowerCase();
+  const hit = (n: CNode) => n.id !== null && n.name.toLowerCase().includes(q);
+  if (!q) return { bright: shapes.map(() => true), count: 0 };
+  return {
+    bright: shapes.map((s) => s.trail.some(hit)),
+    count: shapes.filter((s) => hit(s.node)).length,
+  };
 }

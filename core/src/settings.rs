@@ -127,6 +127,8 @@ pub struct Settings {
     pub content_index_max_mb: u64,
     /// Theme and accent; none until the window has saved its first choice.
     pub appearance: Option<Appearance>,
+    /// How the disk charts are coloured: one of [`CHART_COLORS`].
+    pub chart_colors: String,
     /// The window stays on top and does not hide when it loses focus.
     pub pinned: bool,
     /// Lets programs running as this Windows user search through the `lookout`
@@ -174,6 +176,9 @@ fn in_range(v: i64, lo: u64, hi: u64) -> bool {
     u64::try_from(v).is_ok_and(|v| (lo..=hi).contains(&v))
 }
 
+/// Disk chart colour modes; the first is the default.
+pub const CHART_COLORS: [&str; 3] = ["folder", "type", "age"];
+
 pub const DEFAULT_PAUSE_HOTKEY: &str = "Ctrl+Alt+P";
 pub const DEFAULT_GRAB_HOTKEY: &str = "Ctrl+Alt+T";
 
@@ -197,6 +202,7 @@ impl Default for Settings {
             snapshot_max_entries: 300_000,
             content_index_max_mb: DEFAULT_CONTENT_INDEX_MB,
             appearance: None,
+            chart_colors: CHART_COLORS[0].to_owned(),
             cli_access: false,
             pinned: false,
             window_positions: std::collections::BTreeMap::new(),
@@ -289,6 +295,19 @@ impl Settings {
         a.check()?;
         let mut next = self.clone();
         next.appearance = Some(a);
+        next.save(path)
+            .map_err(|e| format!("Could not save settings: {e}"))?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Saves the disk charts' colour mode; on any error nothing changes.
+    pub fn set_chart_colors(&mut self, mode: &str, path: &Path) -> Result<(), String> {
+        if !CHART_COLORS.contains(&mode) {
+            return Err("Unknown chart colour mode.".to_owned());
+        }
+        let mut next = self.clone();
+        next.chart_colors = mode.to_owned();
         next.save(path)
             .map_err(|e| format!("Could not save settings: {e}"))?;
         *self = next;
@@ -412,6 +431,19 @@ mod tests {
         let s = Settings::load(&path).unwrap();
         assert_eq!(s.appearance, None);
         assert_eq!(s.idle_secs, 7);
+    }
+
+    #[test]
+    fn the_chart_colour_mode_is_checked_saved_and_defaulted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{}").unwrap();
+        let mut s = Settings::load(&path).unwrap();
+        assert_eq!(s.chart_colors, "folder");
+        s.set_chart_colors("age", &path).unwrap();
+        assert!(s.set_chart_colors("rainbow", &path).is_err());
+        assert_eq!(s.chart_colors, "age");
+        assert_eq!(Settings::load(&path).unwrap().chart_colors, "age");
     }
 
     #[test]
@@ -539,6 +571,7 @@ mod tests {
                 theme: "plasma".into(),
                 accent: None,
             }),
+            chart_colors: "type".into(),
             pinned: true,
             cli_access: true,
             window_positions: [("M|0,0|1x1".to_owned(), (5, 6))].into(),

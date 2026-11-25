@@ -36,6 +36,7 @@ Everything. Your files, searches and index never leave your PC. Lookout connects
 - installed apps (Start Menu shortcuts)
 - a calculator (`2+2*5`, `sqrt(16)`, `2^10`) and unit conversion (`10 km to miles`, `100 f in c`, `1 gib to mb`)
 - frecency (files and apps you open rise in the ranking), recency, and a `kind:file|folder|app` filter
+- disk usage (type `disk`): scans a folder or drive when you ask, with a folder list, an interactive ring and treemap (colour by folder, type or age; mouse and keyboard), largest and old files, clean-up and duplicates
 
 Actions go through a preview and, when they can hurt, an explicit confirmation, and every one is written to an undo log that survives restarts:
 

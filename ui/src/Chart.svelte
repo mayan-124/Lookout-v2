@@ -1,281 +1,742 @@
+<script lang="ts" module>
+  import type { CNode } from "./chartlayout";
+
+  export interface ChartData {
+    root: CNode;
+    crumbs: { id: number; name: string }[];
+  }
+  /** What is under the pointer, for the details line. */
+  export interface Detail {
+    name: string;
+    path: string;
+    size: number;
+    share: number;
+    items: number;
+    modified: number;
+  }
+</script>
+
 <script lang="ts">
-  import { ringArcs, treemapBlocks, VIEW, type CNode } from "./chartlayout";
+  import { onDestroy, onMount, untrack } from "svelte";
+  import {
+    CENTRE,
+    RING_LEVELS,
+    filterShapes,
+    hitBlocks,
+    hitRing,
+    ringArcs,
+    ringGeom,
+    treemapBlocks,
+    type Arc,
+    type Block,
+    type RingGeom,
+    type Shape,
+  } from "./chartlayout";
+  import { COLOUR_MODES, legend, palette, type ColourMode } from "./chartcolors";
+  import { selectionShape, shapePath, stepShape, type Step } from "./chartsync";
+  import {
+    blockPath,
+    drawArc,
+    drawBlock,
+    drawBlocksMapped,
+    drawCentre,
+    drawRingZoom,
+    human,
+    outline,
+    slicePath,
+    type Style,
+  } from "./chartdraw";
+  import { look } from "./look.svelte";
 
   let {
     data,
     mode,
-    title,
-    highlightId,
-    basePath = "",
+    colours,
+    selected,
+    loading = false,
     big = false,
+    query = $bindable(""),
     ondrill,
     onup,
     onselect,
+    onmenu,
+    oncolours,
+    onhover,
   }: {
-    data: CNode | null;
+    data: ChartData | null;
     mode: "ring" | "treemap";
-    title: string;
-    highlightId: number | null;
-    basePath?: string;
+    colours: ColourMode;
+    /** Ids from the chart's folder down to the selected item. */
+    selected: number[] | null;
+    loading?: boolean;
     big?: boolean;
+    /** The treemap's name filter. */
+    query?: string;
     ondrill: (id: number) => void;
     onup: () => void;
-    onselect: (id: number) => void;
+    onselect: (path: number[]) => void;
+    onmenu: (path: number[], x: number, y: number) => void;
+    oncolours: (mode: ColourMode) => void;
+    onhover: (detail: Detail | null) => void;
   } = $props();
 
-  let hover: { node: CNode; trail: string[]; x: number; y: number } | null = $state(null);
-  let box: HTMLElement | undefined = $state();
-  let bw = $state(400);
-  let bh = $state(400);
-  const font = $derived(big ? 18 : 14);
-  const head = $derived(font + 6);
-  let lastWheel = 0;
+  interface Scene {
+    mode: "ring" | "treemap";
+    root: CNode;
+    crumbs: ChartData["crumbs"];
+    w: number;
+    h: number;
+    geom: RingGeom;
+    arcs: Arc[];
+    blocks: Block[];
+    shapes: Shape[];
+    now: number;
+  }
+  /** A zoom between a layout (`outer`) and the layout of one of its folders. */
+  interface Zoom {
+    outer: Scene;
+    inner: Scene;
+    focus: number; // the folder's shape in `outer`
+    from: number;
+    to: number;
+    start: number;
+  }
+  const DURATION = 260;
 
-  const arcs = $derived(data && mode === "ring" ? ringArcs(data) : []);
-  const blocks = $derived(data && mode === "treemap" ? treemapBlocks(data, Math.max(bw, 50), Math.max(bh, 50), head) : []);
+  let wrap: HTMLElement | undefined = $state();
+  let canvas: HTMLCanvasElement | undefined = $state();
+  let w = $state(0);
+  let h = $state(0);
+  let dpr = $state(window.devicePixelRatio || 1);
+  let scene = $state.raw<Scene | null>(null);
+  let hover = $state(-1);
+  let pointer = $state.raw<{ x: number; y: number } | null>(null);
 
-  function human(n: number): string {
-    const u = ["B", "KB", "MB", "GB", "TB"];
-    let i = 0;
-    let v = n;
-    while (v >= 1024 && i < u.length - 1) {
-      v /= 1024;
-      i++;
+  const px = $derived(big ? 14 : 12);
+  const colourSet = $derived(palette(look.theme, look.accent));
+  const marked = $derived(scene ? selectionShape(scene.shapes, selected) : { index: -1, exact: false });
+  const filtered = $derived(scene?.mode === "treemap" && query.trim() ? filterShapes(scene.blocks, query) : null);
+  const keys = $derived(scene ? legend(colours, colourSet, scene.now) : []);
+  const folderName = (n: string) => n.split("\\").filter(Boolean).pop() ?? n;
+  const title = $derived(data ? folderName(data.root.name) : "");
+  const hovered = $derived(hover >= 0 ? scene?.shapes[hover] : undefined);
+  const share = (s: Scene, n: CNode) => (s.root.size > 0 ? (n.size / s.root.size) * 100 : 0);
+  const percent = (v: number) => `${v.toFixed(v < 10 ? 1 : 0)}%`;
+  const count = (n: number) => `${n.toLocaleString()} item${n === 1 ? "" : "s"}`;
+  const date = (s: number) => (s ? new Date(s * 1000).toLocaleDateString() : "unknown");
+  const join = (parts: string[]) => parts.filter(Boolean).reduce((a, b) => (a ? `${a.replace(/\\$/, "")}\\${b}` : b), "");
+  const pathOf = (trail: CNode[]) => join([...(data?.crumbs ?? []).map((c) => c.name), ...trail.map((n) => n.name)]);
+  const empty = $derived(
+    !data
+      ? loading
+        ? "Loading chart…"
+        : "No chart for this folder."
+      : scene && scene.shapes.length === 0
+        ? data.root.items === 0
+          ? "This folder is empty."
+          : "Nothing here takes up space on this disk."
+        : "",
+  );
+  const summary = $derived(
+    data
+      ? `${mode === "ring" ? "Ring chart" : "Treemap"} of ${title}: ${human(data.root.size)}, ${count(data.root.items)}. Arrow keys move between items, Enter goes into a folder, Backspace goes up.`
+      : "Disk chart",
+  );
+  const spoken = $derived.by(() => {
+    const s = marked.exact ? scene?.shapes[marked.index] : undefined;
+    return s && scene ? `${s.node.name}, ${s.node.kind}, ${human(s.node.size)}, ${percent(share(scene, s.node))}` : "";
+  });
+
+  // ------------------------------------------------------------ drawing
+  let raf = 0;
+  let zoom: Zoom | null = null;
+  let stale = true; // the cached still picture needs redrawing
+  const still = document.createElement("canvas");
+  let fonts = { font: "sans-serif", code: "monospace" };
+
+  const style = (s: Scene): Style => ({ mode: colours, palette: colourSet, now: s.now, px, ...fonts });
+  const visible = () => document.visibilityState === "visible";
+  function schedule() {
+    if (!raf && visible()) raf = requestAnimationFrame(frame);
+  }
+  function invalidate() {
+    stale = true;
+    schedule();
+  }
+
+  function frame(time: number) {
+    raf = 0;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    const cw = Math.max(1, Math.round(w * dpr));
+    const ch = Math.max(1, Math.round(h * dpr));
+    if (canvas.width !== cw || canvas.height !== ch) {
+      canvas.width = cw;
+      canvas.height = ch;
+      stale = true;
     }
-    return i === 0 ? `${n} B` : `${v.toFixed(v >= 100 ? 0 : 1)} ${u[i]}`;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, cw, ch);
+    const s = scene;
+    if (!s) return;
+    if (zoom) {
+      zoom.start ||= time;
+      const t = Math.min(1, (time - zoom.start) / DURATION);
+      if (t < 1) {
+        const eased = 1 - (1 - t) ** 3;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        drawZoom(ctx, zoom, zoom.from + (zoom.to - zoom.from) * eased);
+        schedule();
+        return;
+      }
+      zoom = null;
+      stale = true;
+      if (pointer) setHover(hit(pointer.x, pointer.y));
+    }
+    if (stale) {
+      still.width = cw;
+      still.height = ch;
+      const c = still.getContext("2d");
+      if (c) drawStill(c, s);
+      stale = false;
+    }
+    ctx.drawImage(still, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawOverlay(ctx, s);
   }
-  const pct = (n: CNode) => (data && data.size > 0 ? (n.size / data.size) * 100 : 0);
-  const label = (n: CNode) => `${n.name}, ${human(n.size)}, ${pct(n).toFixed(1)}% of ${title}`;
 
-  function move(e: MouseEvent, node: CNode, trail: string[]) {
-    const r = box?.getBoundingClientRect();
-    if (r) hover = { node, trail, x: e.clientX - r.left, y: e.clientY - r.top };
+  function drawStill(ctx: CanvasRenderingContext2D, s: Scene) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const st = style(s);
+    if (s.mode === "ring") {
+      for (const a of s.arcs) drawArc(ctx, s.geom, a, st);
+    } else {
+      s.blocks.forEach((b, i) => {
+        ctx.globalAlpha = filtered && !filtered.bright[i] ? 0.22 : 1;
+        drawBlock(ctx, b, st);
+      });
+      ctx.globalAlpha = 1;
+    }
   }
-  const fullPath = (trail: string[]) => [basePath, ...trail].filter(Boolean).reduce((a, b) => a.replace(/\\$/, "") + "\\" + b);
+
+  /** Hover, selection and the ring's centre, over the still picture. */
+  function drawOverlay(ctx: CanvasRenderingContext2D, s: Scene) {
+    const st = style(s);
+    const p = colourSet;
+    const at = hover >= 0 ? s.shapes[hover] : undefined;
+    if (s.mode === "ring") {
+      if (at) {
+        // Dim what is drawn (not the empty canvas), then repaint the slice.
+        ctx.save();
+        ctx.globalCompositeOperation = "source-atop";
+        ctx.globalAlpha = 0.3;
+        ctx.fillStyle = p.base;
+        ctx.fillRect(0, 0, s.w, s.h);
+        ctx.restore();
+        drawArc(ctx, s.geom, s.arcs[hover], st);
+      }
+      const m = s.arcs[marked.index];
+      if (m && slicePath(ctx, s.geom, m.depth, m.a0, m.a1) >= 0) outline(ctx, p.accent, p.base, 2, !marked.exact);
+      if (at && slicePath(ctx, s.geom, s.arcs[hover].depth, s.arcs[hover].a0, s.arcs[hover].a1) >= 0)
+        outline(ctx, p.text, p.base, 1);
+      const node = at?.node ?? s.root;
+      drawCentre(
+        ctx,
+        s.geom,
+        [
+          { text: at ? node.name : folderName(s.root.name), strong: true },
+          { text: human(node.size), code: true },
+          ...(at ? [{ text: percent(share(s, node)) }] : []),
+          { text: count(node.items) },
+          ...(!at && s.crumbs.length > 1 ? [{ text: "▲ up" }] : []),
+        ],
+        hover === CENTRE && s.crumbs.length > 1,
+        st,
+      );
+    } else {
+      const m = s.blocks[marked.index];
+      if (m) {
+        blockPath(ctx, m, 2);
+        outline(ctx, p.accent, p.base, 2.5, !marked.exact);
+      }
+      if (at) {
+        blockPath(ctx, s.blocks[hover], 1.5);
+        outline(ctx, p.accent, p.base, 1.5);
+      }
+    }
+  }
+
+  function drawZoom(ctx: CanvasRenderingContext2D, z: Zoom, k: number) {
+    const st = style(z.outer);
+    if (z.outer.mode === "ring") {
+      drawRingZoom(ctx, z.outer.geom, z.outer.arcs, z.outer.arcs[z.focus], k, RING_LEVELS, st);
+      const s = z.to === 1 ? z.inner : z.outer;
+      drawCentre(ctx, s.geom, [{ text: folderName(s.root.name), strong: true }, { text: human(s.root.size), code: true }], false, st);
+      return;
+    }
+    const f = z.outer.blocks[z.focus];
+    const full = { x: 0, y: 0, w: z.outer.w, h: z.outer.h };
+    const now = {
+      x: f.x * (1 - k),
+      y: f.y * (1 - k),
+      w: f.w + (full.w - f.w) * k,
+      h: f.h + (full.h - f.h) * k,
+    };
+    ctx.globalAlpha = 1 - k;
+    drawBlocksMapped(ctx, z.outer.blocks, f, now, st);
+    ctx.globalAlpha = k;
+    drawBlocksMapped(ctx, z.inner.blocks, { x: 0, y: 0, w: z.inner.w, h: z.inner.h }, now, st);
+    ctx.globalAlpha = 1;
+  }
+
+  // ------------------------------------------------------------ layout
+  function build(d: ChartData, m: "ring" | "treemap", width: number, height: number, label: number): Scene {
+    const arcs = m === "ring" ? ringArcs(d.root) : [];
+    const blocks = m === "treemap" ? treemapBlocks(d.root, width, height, label + 8) : [];
+    return {
+      mode: m,
+      root: d.root,
+      crumbs: d.crumbs,
+      w: width,
+      h: height,
+      geom: ringGeom(width, height),
+      arcs,
+      blocks,
+      shapes: m === "ring" ? arcs : blocks,
+      now: Date.now() / 1000,
+    };
+  }
+
+  /** Zoom in when the new folder was drawn before, out when an old one is drawn now. */
+  function zoomBetween(prev: Scene, next: Scene): Zoom | null {
+    const find = (s: Scene, id: number | null) => s.shapes.findIndex((x) => x.node.id === id);
+    const into = find(prev, next.root.id);
+    if (into >= 0) return { outer: prev, inner: next, focus: into, from: 0, to: 1, start: 0 };
+    for (let i = prev.crumbs.length - 1; i >= 0; i--) {
+      const focus = find(next, prev.crumbs[i].id);
+      if (focus >= 0) return { outer: next, inner: prev, focus, from: 1, to: 0, start: 0 };
+    }
+    return null;
+  }
+
+  function rebuild(d: ChartData | null, m: "ring" | "treemap", width: number, height: number, label: number) {
+    const prev = scene;
+    const next = d && width > 0 && height > 0 ? build(d, m, width, height, label) : null;
+    zoom = null;
+    if (prev && next && prev.mode === m && prev.root.id !== next.root.id && !look.reduced && visible()) {
+      zoom = zoomBetween(prev, next);
+    }
+    scene = next;
+    setHover(!zoom && pointer && next ? hit(pointer.x, pointer.y) : -1);
+    invalidate();
+  }
+
+  $effect(() => {
+    const [d, m, width, height, label] = [data, mode, w, h, px];
+    untrack(() => rebuild(d, m, width, height, label));
+  });
+  $effect(() => {
+    void [colourSet, colours, filtered, dpr];
+    untrack(invalidate);
+  });
+  $effect(() => {
+    void marked;
+    untrack(schedule);
+  });
+  // A screen with another scale: redraw at its pixel density.
+  $effect(() => {
+    const scale = window.matchMedia(`(resolution: ${dpr}dppx)`);
+    const changed = () => (dpr = window.devicePixelRatio || 1);
+    scale.addEventListener("change", changed);
+    return () => scale.removeEventListener("change", changed);
+  });
+
+  // ------------------------------------------------------------ pointer and keys
+  function hit(x: number, y: number): number {
+    const s = scene;
+    if (!s) return -1;
+    return s.mode === "ring" ? hitRing(s.arcs, s.geom, x, y) : hitBlocks(s.blocks, x, y);
+  }
+  function setHover(i: number) {
+    const changed = i !== hover;
+    hover = i;
+    const s = scene;
+    const at = i >= 0 ? s?.shapes[i] : undefined;
+    onhover(
+      at && s
+        ? {
+            name: at.node.name,
+            path: pathOf(at.trail),
+            size: at.node.size,
+            share: share(s, at.node),
+            items: at.node.items,
+            modified: at.node.modified,
+          }
+        : null,
+    );
+    if (changed) schedule();
+  }
+  function move(e: PointerEvent) {
+    pointer = { x: e.offsetX, y: e.offsetY };
+    if (zoom) return;
+    const i = hit(e.offsetX, e.offsetY);
+    if (i !== hover) setHover(i);
+  }
+  function leave() {
+    pointer = null;
+    setHover(-1);
+  }
+  function click(e: MouseEvent) {
+    const i = hit(e.offsetX, e.offsetY);
+    if (i === CENTRE) return onup();
+    const s = scene?.shapes[i];
+    const path = s && shapePath(s);
+    if (!s || !path) return;
+    if (s.node.kind === "folder") ondrill(path[path.length - 1]);
+    else onselect(path);
+  }
+  function contextMenu(e: MouseEvent) {
+    e.preventDefault();
+    // The menu key sends the event to the chart itself: use the selection.
+    const keyboard = e.target !== canvas;
+    const i = keyboard ? (marked.exact ? marked.index : -1) : hit(e.offsetX, e.offsetY);
+    const s = scene?.shapes[i];
+    const path = s && shapePath(s);
+    if (!s || !path || (s.node.kind !== "folder" && s.node.kind !== "file")) return;
+    onselect(path);
+    const box = wrap!.getBoundingClientRect();
+    onmenu(path, keyboard ? box.left + box.width / 2 : e.clientX, keyboard ? box.top + box.height / 2 : e.clientY);
+  }
   // Wheel forward goes into the folder under the pointer, wheel back goes up one.
+  let lastWheel = 0;
   function wheel(e: WheelEvent) {
     const now = Date.now();
     if (now - lastWheel < 300) return;
-    if (e.deltaY < 0 && hover && hover.node.kind === "folder" && hover.node.id !== null) {
+    const node = scene?.shapes[hover]?.node;
+    if (e.deltaY < 0 && node?.kind === "folder" && node.id !== null) {
       lastWheel = now;
-      const id = hover.node.id;
-      hover = null;
-      ondrill(id);
+      ondrill(node.id);
     } else if (e.deltaY > 0) {
       lastWheel = now;
-      hover = null;
       onup();
     }
   }
-  function pick(node: CNode) {
-    if (node.id === null) return;
-    if (node.kind === "folder") ondrill(node.id);
-    else onselect(node.id);
+  const ARROWS: Record<string, Step> = { ArrowLeft: "prev", ArrowRight: "next", ArrowDown: "in", ArrowUp: "out" };
+  function key(e: KeyboardEvent) {
+    // Anything not handled here (Space, F5, Delete, Esc, Tab…) goes on to the view.
+    if (!scene || e.ctrlKey || e.altKey || e.metaKey) return;
+    const s = scene.shapes[marked.index];
+    if (ARROWS[e.key]) {
+      const next = scene.shapes[stepShape(scene.shapes, marked.index, ARROWS[e.key])];
+      const path = next && shapePath(next);
+      if (path) onselect(path);
+    } else if (e.key === "Enter" && marked.exact && s?.node.kind === "folder" && s.node.id !== null) {
+      if (!e.repeat) ondrill(s.node.id);
+    } else if (e.key === "Backspace") {
+      onup();
+    } else return;
+    e.preventDefault();
+    e.stopPropagation();
   }
-  function key(e: KeyboardEvent, node: CNode) {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      e.stopPropagation();
-      pick(node);
-    }
+  /** Buttons above the chart keep Enter for themselves. */
+  const keepEnter = (e: KeyboardEvent) => {
+    if (e.key === "Enter") e.stopPropagation();
+  };
+
+  function onVisibility() {
+    if (visible()) return invalidate();
+    // Nothing runs while hidden.
+    cancelAnimationFrame(raf);
+    raf = 0;
+    zoom = null;
   }
-  const fits = (b: { w: number; h: number }, name: string, f = font) => b.w > 10 + name.length * f * 0.6 && b.h > f + 8;
+
+  onMount(() => {
+    const root = getComputedStyle(document.documentElement);
+    fonts = {
+      font: root.getPropertyValue("--font-ui").trim() || fonts.font,
+      code: root.getPropertyValue("--font-code").trim() || fonts.code,
+    };
+    invalidate();
+    if (big) wrap?.focus();
+  });
+  onDestroy(() => {
+    cancelAnimationFrame(raf);
+    onhover(null);
+  });
+
+  const tip = $derived.by(() => {
+    if (!hovered || !pointer || scene?.mode !== "treemap") return null;
+    return {
+      left: Math.max(0, Math.min(pointer.x + 14, w - 220)),
+      top: pointer.y + 130 > h ? Math.max(0, pointer.y - 110) : pointer.y + 16,
+    };
+  });
 </script>
 
-<div class="chart" bind:this={box} bind:clientWidth={bw} bind:clientHeight={bh} onwheel={wheel} role="group" aria-label="Chart of {title}">
-  {#if data}
-    <svg viewBox={mode === "ring" ? `0 0 ${VIEW} ${VIEW}` : `0 0 ${Math.max(bw, 50)} ${Math.max(bh, 50)}`} role="img" aria-label="{mode === 'ring' ? 'Ring chart' : 'Treemap'} of {title}">
-      {#if mode === "ring"}
-        {#each arcs as a}
-          <path
-            d={a.path}
-            class="seg b{a.branch % 8} k-{a.node.kind}"
-            class:sel={a.node.id !== null && a.node.id === highlightId}
-            style:--depth={a.depth}
-            tabindex="0"
-            role="button"
-            aria-label={label(a.node)}
-            onmousemove={(e) => move(e, a.node, a.trail)}
-            onmouseleave={() => (hover = null)}
-            onclick={() => pick(a.node)}
-            onkeydown={(e) => key(e, a.node)}
-          />
-        {/each}
-        <g
-          class="centre"
-          role="button"
-          tabindex="0"
-          aria-label="Up one folder. Now showing {title}, {human(data.size)}"
-          onclick={onup}
-          onkeydown={(e) => {
-            if (e.key === "Enter") onup();
-          }}
-        >
-          <circle cx={VIEW / 2} cy={VIEW / 2} r="58" />
-          <text x={VIEW / 2} y={VIEW / 2 - 4} text-anchor="middle" class="ct">{title.length > 11 ? title.slice(0, 10) + "…" : title}</text>
-          <text x={VIEW / 2} y={VIEW / 2 + 14} text-anchor="middle" class="cs">{human(data.size)}</text>
-        </g>
-      {:else}
-        {#each blocks as b}
-          <g
-            class="blk"
-            tabindex="0"
-            role="button"
-            aria-label={label(b.node)}
-            onmousemove={(e) => move(e, b.node, b.trail)}
-            onmouseleave={() => (hover = null)}
-            onclick={() => pick(b.node)}
-            onkeydown={(e) => key(e, b.node)}
-          >
-            <rect
-              x={b.x + 0.5}
-              y={b.y + 0.5}
-              width={Math.max(0, b.w - 1)}
-              height={Math.max(0, b.h - 1)}
-              class="seg b{b.branch % 8} k-{b.node.kind}"
-              class:inner={b.depth === 1}
-              class:sel={b.node.id !== null && b.node.id === highlightId}
-            />
-            {#if b.depth === 0 && fits(b, b.node.name)}
-              <text x={b.x + 5} y={b.y + font + 2} class="bt" style:font-size={`${font}px`}>{b.node.name}</text>
-              {#if b.h > font * 2 + 14 && b.node.children.length === 0}
-                <text x={b.x + 5} y={b.y + font * 2 + 6} class="bt sz" style:font-size={`${font - 2}px`}>{human(b.node.size)}</text>
-              {:else if b.w > 10 + (b.node.name.length + human(b.node.size).length + 3) * font * 0.6}
-                <text x={b.x + 5 + (b.node.name.length + 2) * font * 0.62} y={b.y + font + 2} class="bt sz" style:font-size={`${font - 2}px`}>{human(b.node.size)}</text>
-              {/if}
-            {:else if b.depth === 1 && fits(b, b.node.name, font - 3) && b.h > font + 14}
-              <text x={b.x + 4} y={b.y + font} class="bt sm" style:font-size={`${font - 3}px`}>{b.node.name} · {human(b.node.size)}</text>
-            {/if}
-          </g>
-        {/each}
-      {/if}
-    </svg>
-    {#if hover}
-      <div class="tip" style:left={`${Math.min(hover.x + 12, (box?.clientWidth ?? 300) - 300)}px`} style:top={`${hover.y + 12}px`}>
-        <strong>{hover.node.name}</strong>
-        {#if hover.node.id !== null}<span class="pth">{fullPath(hover.trail)}</span>{/if}
-        <span>{human(hover.node.size)} · {pct(hover.node).toFixed(1)}%</span>
+<svelte:document onvisibilitychange={onVisibility} />
+
+<div class="chart" class:big>
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div class="tools" role="toolbar" tabindex="-1" aria-label="Chart options" onkeydown={keepEnter}>
+    <div class="seg" role="group" aria-label="Colour by">
+      <span class="by">Colour</span>
+      {#each COLOUR_MODES as m}
+        <button class:on={colours === m.id} aria-pressed={colours === m.id} onclick={() => oncolours(m.id)}>{m.label}</button>
+      {/each}
+    </div>
+    {#if mode === "treemap"}
+      <input
+        type="search"
+        placeholder="Filter by name"
+        aria-label="Filter the treemap by name"
+        bind:value={query}
+        onkeydown={(e) => {
+          if (e.key !== "Escape") return;
+          e.stopPropagation();
+          if (query) query = "";
+          else e.currentTarget.blur();
+        }}
+      />
+      {#if filtered}<span class="found" role="status">{filtered.count.toLocaleString()} match{filtered.count === 1 ? "" : "es"}</span>{/if}
+    {/if}
+  </div>
+  {#if mode === "ring"}
+    <p class="trail" title={data ? pathOf(hovered?.trail ?? []) : ""}>{data ? pathOf(hovered?.trail ?? []) : ""}</p>
+  {:else}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <nav class="trail" aria-label="Chart path" onkeydown={keepEnter}>
+      {#each data?.crumbs ?? [] as c, i}
+        {#if i > 0}<span aria-hidden="true">›</span>{/if}
+        <button disabled={i === (data?.crumbs.length ?? 0) - 1} onclick={() => ondrill(c.id)}>{c.name}</button>
+      {/each}
+    </nav>
+  {/if}
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+  <div
+    class="stage"
+    bind:this={wrap}
+    bind:clientWidth={w}
+    bind:clientHeight={h}
+    role="application"
+    tabindex="0"
+    aria-label={summary}
+    onkeydown={key}
+    oncontextmenu={contextMenu}
+  >
+    <canvas
+      bind:this={canvas}
+      aria-hidden="true"
+      class:point={hovered ? hovered.node.id !== null : hover === CENTRE && (data?.crumbs.length ?? 0) > 1}
+      onpointermove={move}
+      onpointerleave={leave}
+      onclick={click}
+      onwheel={wheel}
+    ></canvas>
+    {#if empty}<p class="none">{empty}</p>{/if}
+    {#if tip && hovered && scene}
+      <div class="tip" style:left={`${tip.left}px`} style:top={`${tip.top}px`}>
+        <strong>{hovered.node.name}</strong>
+        <span>{human(hovered.node.size)} · {percent(share(scene, hovered.node))}</span>
+        <span>{count(hovered.node.items)}</span>
+        <span>Modified {date(hovered.node.modified)}</span>
       </div>
     {/if}
-  {:else}
-    <p class="none">No chart for this folder.</p>
+  </div>
+  <span class="sr" aria-live="polite">{spoken}</span>
+  {#if keys.length}
+    <ul class="legend" aria-label="Colour legend">
+      {#each keys as k}<li><i style:background={k.colour}></i>{k.label}</li>{/each}
+    </ul>
   {/if}
 </div>
 
 <style>
-  /* Segment colors come from --c0..--c7 in tokens.css (color-blind-safe). */
   .chart {
-    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: none;
     min-width: 0;
-    min-height: 0;
-    flex: 1;
   }
-  svg {
+  .chart.big {
+    flex: 1;
+    min-height: 0;
+  }
+  .tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .seg {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .by,
+  .found {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .by {
+    margin-right: 4px;
+  }
+  .seg button {
+    all: unset;
+    box-sizing: border-box;
+    cursor: pointer;
+    padding: 3px 10px;
+    border: 1px solid var(--glass-border);
+    background: var(--field-bg);
+    color: var(--text-soft);
+    font-size: 12px;
+  }
+  .seg button:first-of-type {
+    border-radius: 999px 0 0 999px;
+  }
+  .seg button:last-of-type {
+    border-radius: 0 999px 999px 0;
+  }
+  .seg button:hover {
+    color: var(--text);
+    border-color: var(--hover-border);
+  }
+  .seg button.on {
+    background: var(--accent-bg);
+    border-color: var(--accent-bg);
+    color: var(--accent-on);
+    font-weight: 600;
+  }
+  .seg button:focus-visible,
+  .trail button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  input {
+    flex: 1;
+    min-width: 90px;
+    box-sizing: border-box;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--glass-border);
+    background: var(--field-bg);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+  }
+  .trail {
+    margin: 0;
+    height: 18px;
+    line-height: 18px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--text-soft);
+    font-family: var(--font-code);
+    font-size: 12px;
+  }
+  nav.trail {
+    display: flex;
+    gap: 4px;
+    height: auto;
+    overflow-x: auto;
+    padding: 2px;
+    flex: none;
+  }
+  .trail button {
+    all: unset;
+    cursor: pointer;
+    color: var(--accent);
+    flex: none;
+  }
+  .trail button:disabled {
+    cursor: default;
+    color: var(--text-soft);
+  }
+  .stage {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1;
+    min-width: 0;
+    border-radius: 8px;
+  }
+  .big .stage {
+    aspect-ratio: auto;
+    flex: 1;
+    min-height: 0;
+  }
+  .stage:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  /* Out of the flow, so the canvas never changes the size it is measured from. */
+  canvas {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     display: block;
   }
-  .seg {
-    stroke: var(--bg);
-    stroke-width: 1;
-    cursor: pointer;
-    /* Deeper rings are lighter, but never so light that they blend into the page. */
-    fill: color-mix(in srgb, var(--c) calc(100% - var(--depth, 0) * 9%), var(--panel));
-  }
-  .seg.inner {
-    fill: color-mix(in srgb, var(--c) 78%, var(--panel));
-  }
-  .chart :global(.b0) { --c: var(--c0); }
-  .chart :global(.b1) { --c: var(--c1); }
-  .chart :global(.b2) { --c: var(--c2); }
-  .chart :global(.b3) { --c: var(--c3); }
-  .chart :global(.b4) { --c: var(--c4); }
-  .chart :global(.b5) { --c: var(--c5); }
-  .chart :global(.b6) { --c: var(--c6); }
-  .chart :global(.b7) { --c: var(--c7); }
-  .chart :global(.k-other),
-  .chart :global(.k-unlisted) {
-    --c: var(--c-grey);
-    cursor: default;
-  }
-  .chart :global(.k-unlisted) {
-    stroke-dasharray: 3 2;
-  }
-  .seg:hover {
-    stroke: var(--text);
-    stroke-width: 2;
-  }
-  .seg:focus-visible {
-    stroke: var(--accent);
-    stroke-width: 3;
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-  .seg.sel {
-    stroke: var(--text);
-    stroke-width: 3;
-  }
-  .centre {
+  canvas.point {
     cursor: pointer;
   }
-  .centre circle {
-    fill: var(--bg);
-    stroke: var(--border);
-  }
-  .centre:focus-visible {
-    outline: none;
-  }
-  .centre:focus-visible circle {
-    stroke: var(--accent);
-    stroke-width: 3;
-  }
-  .ct {
-    fill: var(--text);
-    font-size: 16px;
-    font-weight: 600;
-  }
-  .cs {
-    fill: var(--text-soft);
-    font-family: var(--font-code);
-    font-size: 14px;
-  }
-  .bt {
-    fill: var(--chart-label);
-    font-size: 14px;
-    font-weight: 600;
+  .none {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 8px;
+    margin: 0;
+    text-align: center;
     pointer-events: none;
-    paint-order: stroke;
-    stroke: var(--chart-halo);
-    stroke-width: 3px;
+    color: var(--muted);
+    font-size: 13px;
   }
   .tip {
     position: absolute;
+    z-index: 1;
     pointer-events: none;
-    background: var(--raised);
-    color: var(--text);
-    border: 1px solid var(--border-strong);
-    border-radius: 8px;
-    padding: 6px 10px;
-    font-size: 13px;
+    box-sizing: border-box;
+    max-width: 220px;
     display: flex;
     flex-direction: column;
-    max-width: 360px;
-  }
-  .pth {
-    color: var(--muted);
-    font-family: var(--font-code);
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border-strong);
+    background: var(--solid-bg);
+    color: var(--text-soft);
     font-size: 12px;
-    overflow-wrap: anywhere;
   }
   .tip strong {
+    color: var(--text);
     overflow-wrap: anywhere;
   }
-  .bt.sz,
-  .bt.sm {
-    font-weight: 400;
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    color: var(--text-soft);
+    font-size: 12px;
   }
-  .none {
-    color: var(--muted);
-    font-size: 13px;
+  .legend li {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .legend i {
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 </style>

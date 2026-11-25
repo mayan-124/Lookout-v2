@@ -39,6 +39,49 @@ pub use fast::{fast_info, FastInfo};
 
 pub const NODE_CAP: usize = 1_200_000;
 pub const FILES_PER_FOLDER: usize = 40;
+/// Most segments one chart answer holds (plus its "Other" ones).
+pub const CHART_CAP: usize = 1500;
+/// [`ChartNode::cat`] of anything with no known file type.
+const CAT_OTHER: u8 = 7;
+
+/// File type for the chart's "by type" colours, from the name alone. Same
+/// order as `TYPES` in ui/src/chartcolors.ts: documents, images, video, audio,
+/// archives, code, apps, other.
+fn file_type(name: &[u8]) -> u8 {
+    let Some(dot) = name.iter().rposition(|&b| b == b'.') else {
+        return CAT_OTHER;
+    };
+    let ext = &name[dot + 1..];
+    let mut low = [0u8; 8];
+    if ext.is_empty() || ext.len() > low.len() {
+        return CAT_OTHER;
+    }
+    for (to, from) in low.iter_mut().zip(ext) {
+        *to = from.to_ascii_lowercase();
+    }
+    match &low[..ext.len()] {
+        b"txt" | b"md" | b"pdf" | b"doc" | b"docx" | b"docm" | b"odt" | b"rtf" | b"xls"
+        | b"xlsx" | b"xlsm" | b"ods" | b"csv" | b"ppt" | b"pptx" | b"odp" | b"epub" | b"tex"
+        | b"one" | b"msg" | b"eml" => 0,
+        b"jpg" | b"jpeg" | b"png" | b"gif" | b"bmp" | b"tif" | b"tiff" | b"webp" | b"heic"
+        | b"heif" | b"svg" | b"ico" | b"raw" | b"cr2" | b"nef" | b"arw" | b"dng" | b"psd"
+        | b"avif" => 1,
+        b"mp4" | b"mkv" | b"avi" | b"mov" | b"wmv" | b"flv" | b"webm" | b"m4v" | b"mpg"
+        | b"mpeg" | b"m2ts" | b"vob" | b"3gp" => 2,
+        b"mp3" | b"wav" | b"flac" | b"aac" | b"ogg" | b"m4a" | b"wma" | b"opus" | b"aiff"
+        | b"mid" => 3,
+        b"zip" | b"7z" | b"rar" | b"tar" | b"gz" | b"tgz" | b"bz2" | b"xz" | b"zst" | b"iso"
+        | b"cab" | b"img" | b"vhd" | b"vhdx" | b"vmdk" | b"wim" => 4,
+        b"rs" | b"py" | b"js" | b"mjs" | b"cjs" | b"ts" | b"tsx" | b"jsx" | b"java" | b"c"
+        | b"h" | b"cpp" | b"hpp" | b"cc" | b"cs" | b"go" | b"rb" | b"php" | b"swift" | b"kt"
+        | b"html" | b"htm" | b"css" | b"scss" | b"svelte" | b"vue" | b"json" | b"toml"
+        | b"yaml" | b"yml" | b"xml" | b"sql" | b"sh" | b"ps1" | b"bat" | b"cmd" | b"lua"
+        | b"ipynb" => 5,
+        b"exe" | b"dll" | b"msi" | b"msix" | b"appx" | b"sys" | b"apk" | b"jar" | b"scr"
+        | b"ocx" | b"drv" => 6,
+        _ => CAT_OTHER,
+    }
+}
 /// Files at least this big (size on disk) are remembered for the "largest
 /// files" and "old large files" tabs, up to [`BIG_CAP`] of the largest.
 pub const BIG_MIN: u64 = 1 << 20;
@@ -203,12 +246,19 @@ pub struct Row {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChartNode {
-    /// `None` for the grouped "smaller items" and "not listed" segments.
+    /// `None` for the grouped "Other" and "not listed" segments.
     pub id: Option<u32>,
     pub name: String,
     /// "folder", "file", "files" (the other-files row), "other" or "unlisted".
     pub kind: &'static str,
     pub size: u64,
+    /// Items inside a folder, 1 for a file, how many were grouped.
+    pub items: u32,
+    /// Unix seconds (a folder: the newest inside); 0 when unknown.
+    pub modified: u32,
+    /// File type (see [`file_type`]); for a folder, the type holding most of
+    /// the bytes of its listed files.
+    pub cat: u8,
     pub children: Vec<ChartNode>,
 }
 
@@ -374,17 +424,102 @@ impl Tree {
     }
 
     /// A nested size breakdown below `id` for the ring and treemap charts.
-    /// Items under 1.2% of the folder are grouped into "smaller items"; space
-    /// the tree has no rows for (limited detail) is shown as "not listed".
+    /// Items under 0.5% of their folder are grouped into "Other (N items)";
+    /// space the tree has no rows for (limited detail) is shown as "not
+    /// listed". Built level by level, so [`CHART_CAP`] drops the deepest
+    /// levels first. Reads names already in the tree, never the disk.
     pub fn chart(&self, id: u32, levels: u32) -> Option<ChartNode> {
-        let n = self.nodes.get(id as usize)?;
-        let total = n.size_disk;
-        Some(self.chart_node(id, levels, total))
+        self.nodes.get(id as usize)?;
+        // Slot 0 is the folder asked for; a parent's slot comes before its children's.
+        let mut slots = vec![self.chart_entry(id)];
+        let mut at = vec![(Some(id), 0usize, 0u32)]; // node, parent slot, level
+        let mut next = 0;
+        while next < slots.len() {
+            let (node, _, level) = at[next];
+            let parent = next;
+            next += 1;
+            let Some(node) = node else { continue };
+            let n = &self.nodes[node as usize];
+            if level >= levels || n.kind != 0 {
+                continue;
+            }
+            let mut kids: Vec<(u32, u64)> = Vec::new();
+            let mut cur = n.first_child;
+            while cur != NONE {
+                let c = &self.nodes[cur as usize];
+                if c.size_disk > 0 {
+                    kids.push((cur, c.size_disk));
+                }
+                cur = c.next;
+            }
+            kids.sort_by_key(|k| Reverse(k.1));
+            let listed: u64 = kids.iter().map(|k| k.1).sum();
+            let threshold = n.size_disk / 200; // 0.5% of the parent
+            let mut keep = kids.partition_point(|k| k.1 >= threshold);
+            // One small item is not worth hiding behind "Other".
+            if kids.len() - keep == 1 {
+                keep += 1;
+            }
+            if parent > 0 && slots.len() + keep + 2 > CHART_CAP {
+                continue;
+            }
+            for &(cid, _) in &kids[..keep] {
+                slots.push(self.chart_entry(cid));
+                at.push((Some(cid), parent, level + 1));
+            }
+            let grouped = &kids[keep..];
+            if !grouped.is_empty() {
+                let (mut count, mut size, mut modified) = (0u32, 0u64, 0u32);
+                for &(cid, s) in grouped {
+                    let c = &self.nodes[cid as usize];
+                    count = count.saturating_add(if c.kind == 2 { c.items } else { 1 });
+                    size += s;
+                    modified = modified.max(c.mtime);
+                }
+                slots.push(ChartNode {
+                    id: None,
+                    name: format!("Other ({count} items)"),
+                    kind: "other",
+                    size,
+                    items: count,
+                    modified,
+                    cat: CAT_OTHER,
+                    children: Vec::new(),
+                });
+                at.push((None, parent, level + 1));
+            }
+            let unlisted = n.size_disk.saturating_sub(listed);
+            if unlisted > threshold {
+                slots.push(ChartNode {
+                    id: None,
+                    name: "not listed (limited detail)".to_owned(),
+                    kind: "unlisted",
+                    size: unlisted,
+                    items: 0,
+                    modified: 0,
+                    cat: CAT_OTHER,
+                    children: Vec::new(),
+                });
+                at.push((None, parent, level + 1));
+            }
+        }
+        self.chart_folder_types(id, &mut slots, &at);
+        // Attach from the end: every child is complete before its parent.
+        while slots.len() > 1 {
+            let mut child = slots.pop()?;
+            child.children.reverse();
+            let (_, parent, _) = at[slots.len()];
+            slots[parent].children.push(child);
+        }
+        let mut root = slots.pop()?;
+        root.children.reverse();
+        Some(root)
     }
 
-    fn chart_node(&self, id: u32, levels: u32, focus_total: u64) -> ChartNode {
+    fn chart_entry(&self, id: u32) -> ChartNode {
         let n = &self.nodes[id as usize];
-        let mut node = ChartNode {
+        let name = &self.names[n.name_off as usize..n.name_off as usize + n.name_len as usize];
+        ChartNode {
             id: Some(id),
             name: if id == 0 {
                 self.root.to_string_lossy().into_owned()
@@ -399,53 +534,58 @@ impl Tree {
                 _ => "files",
             },
             size: n.size_disk,
-            children: Vec::new(),
-        };
-        if levels == 0 || n.kind != 0 {
-            return node;
-        }
-        let mut kids: Vec<(u32, u64)> = Vec::new();
-        let mut cur = n.first_child;
-        while cur != NONE {
-            let c = &self.nodes[cur as usize];
-            if c.size_disk > 0 {
-                kids.push((cur, c.size_disk));
-            }
-            cur = c.next;
-        }
-        kids.sort_by_key(|k| Reverse(k.1));
-        let listed: u64 = kids.iter().map(|k| k.1).sum();
-        let threshold = focus_total / 83; // about 1.2%
-        let (mut small_n, mut small_sum) = (0u64, 0u64);
-        for (cid, size) in kids {
-            if node.children.len() < 24 && size >= threshold {
-                node.children
-                    .push(self.chart_node(cid, levels - 1, focus_total));
+            items: n.items,
+            modified: n.mtime,
+            cat: if n.kind == 1 {
+                file_type(name)
             } else {
-                small_n += 1;
-                small_sum += size;
+                CAT_OTHER
+            },
+            children: Vec::new(),
+        }
+    }
+
+    /// Gives every folder of the chart the type holding most of its bytes, in
+    /// one pass over the nodes below it (children follow their parents).
+    fn chart_folder_types(
+        &self,
+        id: u32,
+        slots: &mut [ChartNode],
+        at: &[(Option<u32>, usize, u32)],
+    ) {
+        const OUT: u16 = u16::MAX;
+        let first = id as usize;
+        // For each node from `id` on: the deepest chart segment it is part of.
+        let mut slot_of = vec![OUT; self.nodes.len() - first];
+        for (slot, entry) in at.iter().enumerate() {
+            if let Some(node) = entry.0 {
+                slot_of[node as usize - first] = slot as u16;
             }
         }
-        if small_n > 0 {
-            node.children.push(ChartNode {
-                id: None,
-                name: format!("{small_n} smaller items"),
-                kind: "other",
-                size: small_sum,
-                children: Vec::new(),
-            });
+        let mut bytes = vec![[0u64; 8]; slots.len()];
+        for i in 0..slot_of.len() {
+            let n = &self.nodes[first + i];
+            if slot_of[i] == OUT && i > 0 && n.parent as usize >= first {
+                slot_of[i] = slot_of[n.parent as usize - first];
+            }
+            if n.kind == 1 && slot_of[i] != OUT {
+                let s = n.name_off as usize;
+                let cat = file_type(&self.names[s..s + n.name_len as usize]);
+                bytes[slot_of[i] as usize][cat as usize] += n.size_disk;
+            }
         }
-        let unlisted = n.size_disk.saturating_sub(listed);
-        if unlisted > threshold {
-            node.children.push(ChartNode {
-                id: None,
-                name: "not listed (limited detail)".to_owned(),
-                kind: "unlisted",
-                size: unlisted,
-                children: Vec::new(),
-            });
+        for slot in (0..slots.len()).rev() {
+            let own = bytes[slot];
+            if slot > 0 {
+                for (to, v) in bytes[at[slot].1].iter_mut().zip(own) {
+                    *to += v;
+                }
+            }
+            if slots[slot].kind == "folder" {
+                let best = (0..own.len()).max_by_key(|&c| own[c]);
+                slots[slot].cat = best.filter(|&c| own[c] > 0).map_or(CAT_OTHER, |c| c as u8);
+            }
         }
-        node
     }
 
     /// Remembered large files (largest first) that are at least `min_size` on
@@ -1982,6 +2122,57 @@ mod tests {
         );
         assert!(c.children.len() < 10);
         assert_eq!(c.children[0].name, "big");
+        let other = c.children.iter().find(|k| k.kind == "other").unwrap();
+        assert_eq!(other.name, "Other (30 items)");
+        assert_eq!(other.items, 30);
+    }
+
+    #[test]
+    fn the_chart_carries_dates_counts_and_file_types() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("mix/deep/er/film.MKV"), 900_000);
+        write(&dir.path().join("mix/note.txt"), 100_000);
+        let t = run(dir.path(), fast()).unwrap();
+        // One level: the type still comes from files far below the chart.
+        let c = t.chart(0, 1).unwrap();
+        let mix = &c.children[0];
+        assert_eq!((mix.name.as_str(), mix.cat), ("mix", 2));
+        assert_eq!(mix.items, 4, "two folders and two files");
+        assert!(mix.modified > 0);
+        assert_eq!(c.cat, 2);
+        let full = t.chart(mix.id.unwrap(), 4).unwrap();
+        let note = full.children.iter().find(|k| k.name == "note.txt").unwrap();
+        assert_eq!((note.cat, note.items), (0, 1));
+        assert_eq!(file_type(b"setup.exe"), 6);
+        assert_eq!(file_type(b".gitignore"), CAT_OTHER);
+        assert_eq!(file_type(b"no extension"), CAT_OTHER);
+        assert_eq!(file_type(b"x.averylongextension"), CAT_OTHER);
+    }
+
+    #[test]
+    fn a_wide_and_deep_chart_stays_within_its_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..40 {
+            for j in 0..45 {
+                write(&dir.path().join(format!("d{i}/e{j}/f.bin")), 5_000);
+            }
+        }
+        let t = run(dir.path(), fast()).unwrap();
+        let c = t.chart(0, 4).unwrap();
+        let mut seen = 0;
+        let mut open = vec![&c];
+        while let Some(n) = open.pop() {
+            seen += 1;
+            if !n.children.is_empty() {
+                let sum: u64 = n.children.iter().map(|k| k.size).sum();
+                assert_eq!(sum, n.size, "{} adds up", n.name);
+            }
+            open.extend(&n.children);
+        }
+        assert!(seen > 40, "the first level is always there");
+        assert!(seen <= CHART_CAP + 1, "{seen}");
+        let sizes: Vec<u64> = c.children.iter().map(|k| k.size).collect();
+        assert!(sizes.windows(2).all(|w| w[0] >= w[1]), "largest first");
     }
 
     #[test]
