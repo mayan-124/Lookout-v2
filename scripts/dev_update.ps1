@@ -1,7 +1,7 @@
 # One command to rebuild and reinstall Lookout for the current user (dev machines).
 #   powershell -File scripts\dev_update.ps1
 # Stops Lookout and its helpers, builds release, stages plugins + fast-scan helper,
-# copies the files over the install folder (settings, index and data are not touched), restarts.
+# (also the `lookout` command in <install>\cli), copies the files over the install folder (settings, index and data are not touched), restarts.
 $ErrorActionPreference = "Stop"
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $root = Split-Path -Parent $PSScriptRoot
@@ -17,7 +17,7 @@ try {
 
     $step = "build (release, incremental)"
     $env:CARGO_INCREMENTAL = "1"
-    cargo build --release -p lookout-clipboard -p lookout-files-tools -p lookout-semantic -p lookout-office-text -p lookout-screenshot -p lookout-fastscan
+    cargo build --release -p lookout-clipboard -p lookout-files-tools -p lookout-semantic -p lookout-office-text -p lookout-screenshot -p lookout-fastscan -p lookout-cli
     Run-Native "cargo build plugins"
     if (-not (Test-Path (Join-Path $root "ui\node_modules"))) {
         npm --prefix ui ci
@@ -34,7 +34,7 @@ try {
     New-Item -ItemType Directory -Force $installDir | Out-Null
     $rel = Join-Path $root "target\release"
     Copy-Item (Join-Path $rel "lookout.exe") $installDir -Force
-    foreach ($d in "plugins", "helpers") {
+    foreach ($d in "plugins", "helpers", "cli") {
         Copy-Item (Join-Path $rel $d) $installDir -Recurse -Force
     }
     foreach ($f in "LICENSE", "THIRD_PARTY_NOTICES.md") {

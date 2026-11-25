@@ -35,7 +35,7 @@ use crate::index_service::{
     apply_frecency, new_shared_index, unix_now, write, IndexConfig, IndexService, ReindexHook,
     ServiceError, SharedIndex,
 };
-use crate::item::Kind;
+use crate::item::{Item, Kind};
 use crate::names_store::{self, Persister};
 use crate::pause::PauseState;
 use crate::plugins::{HostConfig, PluginActions, PluginHost, PluginSource};
@@ -215,6 +215,8 @@ pub struct Lookout {
     timers: Arc<crate::timers::TimerService>,
     /// Results of the latest update that may get a quick key.
     keyable: Arc<Mutex<HashMap<String, crate::item::Item>>>,
+    /// The same sources the bar uses, for command-line searches (see `cli_search`).
+    cli_sources: Vec<Arc<dyn Source>>,
 }
 
 /// Adds `%LOCALAPPDATA%` and `%APPDATA%` (names only; contents are never read)
@@ -579,6 +581,7 @@ impl Lookout {
             *map.lock().unwrap_or_else(PoisonError::into_inner) = known;
             inner(update);
         });
+        let cli_sources = sources.clone();
         let engine =
             Engine::new(sources, wrapped, EngineConfig::default()).map_err(StartError::Engine)?;
 
@@ -614,6 +617,7 @@ impl Lookout {
             quick_keys,
             timers,
             keyable,
+            cli_sources,
         })
     }
 
@@ -965,6 +969,59 @@ impl Lookout {
         self.engine.submit_with(generation, text, skip)
     }
 
+    /// A search for the command line: the same sources, ranking and date/kind
+    /// words as the bar, but in its own short-lived engine, so it never
+    /// replaces the bar's results or the actions that belong to them. Waits
+    /// for every source (at most [`CLI_SEARCH_TIMEOUT`]).
+    pub fn cli_search(
+        &self,
+        text: &str,
+        kind: Option<lookout_cli::proto::KindFilter>,
+        limit: usize,
+    ) -> Vec<Item> {
+        let (tx, rx) = std::sync::mpsc::channel::<Update>();
+        let sink: Sink = Arc::new(move |u| {
+            let _ = tx.send(u);
+        });
+        let cfg = EngineConfig {
+            // With a kind filter, look further down the ranking before filtering.
+            max_results: if kind.is_some() { 200 } else { 50 },
+            ..EngineConfig::default()
+        };
+        let Ok(engine) = Engine::new(self.cli_sources.clone(), sink, cfg) else {
+            return Vec::new();
+        };
+        engine.submit(1, text);
+        let deadline = std::time::Instant::now() + CLI_SEARCH_TIMEOUT;
+        let mut last: Option<Update> = None;
+        while let Ok(u) =
+            rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        {
+            let done = u.done;
+            last = Some(u);
+            if done {
+                break;
+            }
+        }
+        drop(engine);
+        last.map(|u| u.items)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|i| kind.is_none_or(|k| matches_kind(i, k)))
+            .take(limit)
+            .collect()
+    }
+
+    /// Logs a command-line request like other actions: its kind and the length
+    /// of the query, never the query itself.
+    pub fn record_cli(&self, cmd: &str, query_len: usize, ok: bool) {
+        self.actions.record_external(
+            &format!("cli.{cmd}"),
+            &serde_json::json!({ "query_len": query_len }),
+            ok,
+        );
+    }
+
     pub fn status(&self) -> Status {
         let sem = self
             .semantic_status()
@@ -1226,6 +1283,22 @@ fn default_system() -> Arc<dyn ProcessBackend> {
 }
 
 /// The default action for each kind of result.
+/// How long a command-line search waits for slow sources.
+pub const CLI_SEARCH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Whether a result belongs under a `--kind` of the command line.
+pub fn matches_kind(item: &Item, kind: lookout_cli::proto::KindFilter) -> bool {
+    use lookout_cli::proto::KindFilter as K;
+    let ocr = item.metadata.get("ocr") == Some(&serde_json::Value::Bool(true));
+    match kind {
+        K::Files => matches!(item.kind, Kind::File | Kind::Folder) && item.source != "semantic",
+        K::Apps => item.kind == Kind::App,
+        K::Clipboard => item.kind == Kind::Clipboard,
+        K::Screens => item.kind == Kind::Screenshot || ocr,
+        K::Meaning => item.source == "semantic",
+    }
+}
+
 pub fn default_action(kind: &Kind) -> Option<&'static str> {
     match kind {
         Kind::File | Kind::Folder | Kind::App => Some(open::ID),
@@ -1345,6 +1418,57 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(5));
             }
         }
+    }
+
+    #[test]
+    fn command_line_search_returns_what_the_bar_returns_and_leaves_the_bar_alone() {
+        use lookout_cli::proto::KindFilter;
+        let f = start(|_| {});
+        f.wait_indexed();
+        for (g, q) in [
+            (1, "budget"),
+            (2, "notepad"),
+            (3, "bud"),
+            (4, "budget alpha"),
+        ] {
+            let bar: Vec<String> = f.ask(g, q).items.iter().map(|i| i.id.clone()).collect();
+            let cli: Vec<String> = f
+                .lookout
+                .cli_search(q, None, 50)
+                .iter()
+                .map(|i| i.id.clone())
+                .collect();
+            assert!(!bar.is_empty(), "{q}");
+            assert_eq!(bar, cli, "{q}");
+        }
+        // limit and kind
+        assert_eq!(f.lookout.cli_search("budget", None, 1).len(), 1);
+        let apps = f.lookout.cli_search("notepad", Some(KindFilter::Apps), 10);
+        assert!(!apps.is_empty() && apps.iter().all(|i| i.kind == Kind::App));
+        assert!(f
+            .lookout
+            .cli_search("budget", Some(KindFilter::Apps), 10)
+            .is_empty());
+        let files = f.lookout.cli_search("budget", Some(KindFilter::Files), 10);
+        assert_eq!(files.len(), 2);
+        assert!(f
+            .lookout
+            .cli_search("budget", Some(KindFilter::Clipboard), 10)
+            .is_empty());
+        // the bar's own results and generations were not touched
+        let seen = f.updates.lock().unwrap().len();
+        f.lookout.cli_search("budget", None, 5);
+        assert_eq!(f.updates.lock().unwrap().len(), seen);
+        assert!(f.lookout.query(5, "budget"));
+    }
+
+    #[test]
+    fn command_line_requests_are_logged_without_the_query() {
+        let f = start(|_| {});
+        f.lookout.record_cli("search", 12, true);
+        let rows = f.lookout.action_history(5).unwrap();
+        let row = rows.iter().find(|r| r.action_id == "cli.search").unwrap();
+        assert!(format!("{row:?}").contains("12"));
     }
 
     #[test]

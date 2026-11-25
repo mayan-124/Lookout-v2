@@ -1177,6 +1177,7 @@ struct PrivacyState {
     index_speed: lookout_core::settings::IndexSpeed,
     content_index_max_mb: u64,
     theme: lookout_core::settings::Theme,
+    cli_access: bool,
 }
 
 fn privacy_of(services: &Services, shared: &Shared) -> PrivacyState {
@@ -1201,6 +1202,7 @@ fn privacy_of(services: &Services, shared: &Shared) -> PrivacyState {
         index_speed: s.index_speed,
         content_index_max_mb: s.content_index_max_mb,
         theme: s.theme,
+        cli_access: s.cli_access,
     }
 }
 
@@ -1292,6 +1294,65 @@ async fn save_settings(
     };
     lock(&services.settings).apply(changes, &services.paths.settings())?;
     restart_lookout(&app);
+    Ok(privacy_of(&services, &shared))
+}
+
+// ---------------------------------------------------------- command-line access
+// The `lookout` command talks to the app over a local named pipe that exists
+// only while Settings > Privacy > Command line access is on (no thread, no
+// pipe otherwise). See the lookout-cli crate.
+
+/// The running-marker (always, so the command can say "off" instead of "not
+/// running") and the pipe listener (only while the setting is on).
+#[derive(Default)]
+struct CliAccess {
+    marker: Mutex<Option<lookout_cli::winpipe::RunningMarker>>,
+    listener: Mutex<Option<lookout_cli::winpipe::Listener>>,
+}
+
+fn apply_cli_access(app: &AppHandle, on: bool) -> Result<(), String> {
+    let access = app.state::<CliAccess>();
+    let mut slot = lock(&access.listener);
+    if let Some(old) = slot.take() {
+        old.stop();
+    }
+    if !on {
+        return Ok(());
+    }
+    let name = lookout_cli::winpipe::pipe_name()
+        .ok_or_else(|| "Could not read your Windows user id.".to_owned())?;
+    let handle = app.clone();
+    let backend = lookout_core::cliaccess::CliBackend::new(Arc::new(move || {
+        handle.state::<Services>().current()
+    }));
+    let listener = lookout_cli::winpipe::listen(&name, backend)
+        .map_err(|e| format!("Could not open the command-line pipe: {e}"))?;
+    *slot = Some(listener);
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_cli_access(
+    on: bool,
+    app: AppHandle,
+    services: State<'_, Services>,
+    shared: State<'_, Shared>,
+) -> Result<PrivacyState, String> {
+    {
+        let mut s = lock(&services.settings);
+        let mut next = s.clone();
+        next.cli_access = on;
+        next.save(&services.paths.settings())
+            .map_err(|e| format!("Could not save settings: {e}"))?;
+        *s = next;
+    }
+    if let Err(e) = apply_cli_access(&app, on) {
+        // Keep the setting honest: it says on only while the pipe exists.
+        let mut s = lock(&services.settings);
+        s.cli_access = false;
+        let _ = s.save(&services.paths.settings());
+        return Err(e);
+    }
     Ok(privacy_of(&services, &shared))
 }
 
@@ -1720,6 +1781,16 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     });
     restart_lookout(&handle);
 
+    // Command-line access: the marker always; the pipe and its thread only if the user turned it on.
+    app.manage(CliAccess::default());
+    *lock(&handle.state::<CliAccess>().marker) =
+        lookout_cli::winpipe::mark_running(lookout_cli::winpipe::RUNNING_MARKER_NAME);
+    if lock(&handle.state::<Services>().settings).cli_access {
+        if let Err(e) = apply_cli_access(&handle, true) {
+            eprintln!("lookout: {e}");
+        }
+    }
+
     // If the page never reports ready the hotkey would silently do nothing forever.
     let watchdog = handle.clone();
     std::thread::spawn(move || {
@@ -1824,6 +1895,7 @@ pub fn run() {
             pick_folder,
             apply_folders,
             set_paused,
+            set_cli_access,
             save_settings,
             set_grab_hotkey,
             delete_index,

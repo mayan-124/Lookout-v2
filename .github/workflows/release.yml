@@ -30,7 +30,7 @@ jobs:
 
       - name: Build and stage plugins
         run: |
-          cargo build --release -p lookout-clipboard -p lookout-files-tools -p lookout-semantic -p lookout-office-text -p lookout-screenshot -p lookout-fastscan
+          cargo build --release -p lookout-clipboard -p lookout-files-tools -p lookout-semantic -p lookout-office-text -p lookout-screenshot -p lookout-fastscan -p lookout-cli
           ./scripts/stage_plugins.ps1 release
 
       - name: Check staged plugins

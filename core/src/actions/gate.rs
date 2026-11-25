@@ -411,6 +411,16 @@ impl ActionEngine {
         }
     }
 
+    /// Logs a request that is not an action (a command-line search) in the same
+    /// log, with `params` only; nothing here can be undone.
+    pub fn record_external(&self, action_id: &str, params: &serde_json::Value, ok: bool) {
+        let now = unix_secs();
+        if let Ok(id) = self.log.begin(action_id, &[], params, now) {
+            let status = if ok { Status::Executed } else { Status::Failed };
+            let _ = self.log.finish(id, status, None, "", now);
+        }
+    }
+
     /// The newest `limit` log rows, newest first.
     pub fn history(&self, limit: usize) -> Result<Vec<Entry>, ActionError> {
         Ok(self.log.recent(limit)?)

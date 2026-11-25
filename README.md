@@ -56,6 +56,9 @@ Phase 3 adds search by what is *inside* things, with privacy controls:
 - first-run folder choice, per-folder exclusions, pause (tray item and `Ctrl+Alt+P`), a "Delete my index" button (`Ctrl+,` opens them)
 - everything Lookout stores about your files is encrypted at rest with a key that only your Windows account can unwrap (DPAPI), and secrets (API keys, private keys, card numbers, `password = ...`) are masked before text is indexed
 
+- **Command line**: `lookout search <words> [--limit N] [--json] [--kind files|apps|clipboard|screens|meaning]` and `lookout status` search the running app from a terminal, read-only, with the same results as the bar (see Command line below)
+- command-line access is off by default; when off there is no pipe and no listener thread
+
 Phase 4 adds plugins: separate processes behind a JSON-RPC API (`docs/plugins.md`), run through the same preview, confirmation and undo as every other action. Two ship with Lookout, both **off until you accept their permissions** (`Ctrl+,`, Plugins):
 
 - **Clipboard history** (type `clip`, `clip <words>`, `clip clear`): opt-in history of text you copy. Secrets are masked before anything is stored (the stored text is the masked text), history is encrypted with the same key as the index, nothing is recorded while Lookout is paused or when a program (password manager) asks not to be recorded, and the number of clips and retention time are settings.
@@ -64,6 +67,26 @@ Phase 4 adds plugins: separate processes behind a JSON-RPC API (`docs/plugins.md
 Plugin limits are real: Lookout does not sandbox files or the network for plugins in v1. Read `docs/plugins.md` before installing a third-party plugin.
 
 The tests that read real screenshots with Windows OCR skip themselves if the machine has no OCR language installed, so they may pass without checking anything on CI (see `docs/decisions.md`).
+
+## Command line
+
+`lookout.exe` searches the **running** Lookout app from a terminal (like `mdfind` on a Mac). It is read-only: it cannot open, run, copy or change anything.
+
+1. Turn it on: Settings > Privacy > **Command line access**. It is off by default. Any program running as you can search your files and screen text through it, so leave it off unless you need it. Turning it off removes the pipe at once.
+2. Use it (the installer puts it in the `cli` folder next to the app):
+
+```text
+lookout search invoice from last week --limit 5
+lookout search "meeting notes" --kind files --json
+lookout status [--json]
+lookout --version
+lookout --help
+```
+
+- `search` runs the same search as the bar, including the date and kind words. Default 10 results, at most 50. Plain output is one line per result: kind, title, then the path (or the subtitle), separated by tabs. `--json` prints one object per line with the fields `kind`, `title`, `subtitle`, `path`, `score` and, when known, `modified` (Unix seconds). Secrets are masked as in the app.
+- Exit codes: 0 ok, 1 error, 2 Lookout is not running, 3 command-line access is off, 4 request refused (over 4 KB or more than 5 per second).
+- How it is locked down: a local named pipe (no network port) that only your Windows account can open; the command reads nothing from disk itself and never sees the index key. Each request is logged like other actions, with only the length of the query.
+- Tip: Lookout does not touch your `PATH`. To type `lookout` anywhere, add the install folder's `cli` directory (for a per-user install, `%LOCALAPPDATA%\Lookout\cli`) to your user `PATH` yourself.
 
 ## Tested scale
 
@@ -165,6 +188,7 @@ core/      lookout-core: item model, query parsing, ranking, name index, crawler
            watcher, sources (calculator, units, apps, files, ports), frecency, query
            engine, action engine (gate, undo log, open, kill port)
 ui/        Svelte + TypeScript frontend; ui/src-tauri is the thin Tauri 2 shell
+cli/       lookout-cli: the `lookout` command, its wire format and the named pipe shared with the app
 bench/     budget benchmarks (latency, query, memory)
 plugins/   clipboard, files-tools (plugin processes, built as separate crates); capture is a later phase
 docs/      architecture notes and decisions

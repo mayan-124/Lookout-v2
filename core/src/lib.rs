@@ -16,6 +16,7 @@ pub mod apps;
 pub mod calc;
 pub mod cleanup;
 pub mod cli;
+pub mod cliaccess;
 pub mod content;
 pub mod crypto;
 #[cfg(windows)]

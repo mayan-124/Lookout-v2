@@ -23,6 +23,7 @@
     index_speed: "gentle" | "balanced" | "fast";
     content_index_max_mb: number;
     theme: ThemePref;
+    cli_access: boolean;
   }
 
   // Manual update check: nothing runs until the user clicks; nothing downloads until the second click.
@@ -267,6 +268,19 @@
   async function setPaused(paused: boolean) {
     await invoke("set_paused", { paused });
     if (info) info.paused = paused;
+  }
+
+  let cliMessage = $state("");
+  async function setCliAccess(el: HTMLInputElement) {
+    cliMessage = "";
+    try {
+      const s = await invoke<PrivacyState>("set_cli_access", { on: el.checked });
+      if (info) info.cli_access = s.cli_access;
+    } catch (e) {
+      el.checked = false;
+      if (info) info.cli_access = false;
+      cliMessage = errorText(e);
+    }
   }
 
   let grabMessage = $state("");
@@ -530,6 +544,20 @@
             Everything is encrypted with a key that only your Windows account can unlock. Secrets such as API keys,
             private keys and card numbers are masked before text is stored.
           </p>
+          <h3 class="label-caps">Command line access</h3>
+          <label class="field">
+            {@render field("Let the lookout command search", "Any program running as you can search your files and screen text through this. Off unless you need it.")}
+            <span class="switch">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={info?.cli_access ?? false}
+                onchange={(e) => setCliAccess(e.currentTarget)}
+              />
+              <span class="track"></span>
+            </span>
+          </label>
+          {#if cliMessage}<p class="hint">{cliMessage}</p>{/if}
         {:else if section === "speed"}
           <h2 id="priv-title">Speed</h2>
           <label class="field">

@@ -1,6 +1,6 @@
 # Copies the built plugins and their manifests next to lookout.exe:
 #   target\<profile>\plugins\<folder>\plugin.json + the plugin exe
-# Build first: cargo build [--release] -p lookout-clipboard -p lookout-files-tools -p lookout-semantic -p lookout-office-text -p lookout-screenshot -p lookout-fastscan (never with --features review)
+# Build first: cargo build [--release] -p lookout-clipboard -p lookout-files-tools -p lookout-semantic -p lookout-office-text -p lookout-screenshot -p lookout-fastscan -p lookout-cli (never with --features review)
 param([string]$Profile = "release")
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -25,3 +25,9 @@ $helperDest = Join-Path $target "helpers\fastscan"
 New-Item -ItemType Directory -Force $helperDest | Out-Null
 Copy-Item (Join-Path $target "lookout-fastscan.exe") $helperDest -Force
 Write-Host "staged fastscan helper in $helperDest"
+# The `lookout` command (built as lookout-cli.exe because the app is already lookout.exe):
+#   target\<profile>\cli\lookout.exe
+$cliDest = Join-Path $target "cli"
+New-Item -ItemType Directory -Force $cliDest | Out-Null
+Copy-Item (Join-Path $target "lookout-cli.exe") (Join-Path $cliDest "lookout.exe") -Force
+Write-Host "staged command line tool in $cliDest"

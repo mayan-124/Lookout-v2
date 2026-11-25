@@ -1,0 +1,33 @@
+[package]
+name = "lookout-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# The library holds the wire format, argument parsing and the named-pipe code
+# that both the command and the app use. The command is built as
+# `lookout-cli.exe` and staged as `cli\lookout.exe` (the app itself is `lookout.exe`).
+[lib]
+name = "lookout_cli"
+
+[[bin]]
+name = "lookout-cli"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

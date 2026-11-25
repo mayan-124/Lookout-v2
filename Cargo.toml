@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "bench", "ui/src-tauri", "plugins/clipboard", "plugins/files-tools", "plugins/semantic", "plugins/office-text", "plugins/screenshot", "helpers/fastscan"]
+members = ["core", "cli", "bench", "ui/src-tauri", "plugins/clipboard", "plugins/files-tools", "plugins/semantic", "plugins/office-text", "plugins/screenshot", "helpers/fastscan"]
 
 [workspace.package]
 version = "0.0.1"
@@ -9,6 +9,7 @@ publish = false
 
 [workspace.dependencies]
 lookout-core = { path = "core" }
+lookout-cli = { path = "cli" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

@@ -112,6 +112,9 @@ pub struct Settings {
     pub theme: Theme,
     /// The window stays on top and does not hide when it loses focus.
     pub pinned: bool,
+    /// Lets programs running as this Windows user search through the `lookout`
+    /// command (a local named pipe). Off unless the user turns it on.
+    pub cli_access: bool,
     /// Last window position (physical pixels) per monitor, keyed by
     /// [`monitor_key`]. A monitor that is gone simply has no use.
     pub window_positions: std::collections::BTreeMap<String, (i32, i32)>,
@@ -178,6 +181,7 @@ impl Default for Settings {
             snapshot_max_entries: 300_000,
             content_index_max_mb: DEFAULT_CONTENT_INDEX_MB,
             theme: Theme::default(),
+            cli_access: false,
             pinned: false,
             window_positions: std::collections::BTreeMap::new(),
         }
@@ -470,6 +474,11 @@ mod tests {
     }
 
     #[test]
+    fn command_line_access_is_off_by_default() {
+        assert!(!Settings::default().cli_access);
+    }
+
+    #[test]
     fn scheduled_rescan_is_opt_in() {
         // A rescan briefly holds two indexes; see docs/decisions.md for the memory numbers.
         assert_eq!(Settings::default().rescan_hours, 0);
@@ -501,6 +510,7 @@ mod tests {
             content_index_max_mb: 500,
             theme: Theme::Dark,
             pinned: true,
+            cli_access: true,
             window_positions: [("M|0,0|1x1".to_owned(), (5, 6))].into(),
         };
         s.save(&path).unwrap();
