@@ -34,5 +34,9 @@ tauri-plugin-dialog = "2"
 open = { version = "5", features = ["shellexecute-on-windows"] }
 tauri-plugin-updater = "2"
 
+# Already in the tree through wry; named here to call ICoreWebView2Controller::SetIsVisible.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+
 [lints]
 workspace = true

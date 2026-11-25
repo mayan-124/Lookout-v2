@@ -343,6 +343,7 @@ fn show_bar(app: &AppHandle) -> Result<(), BarError> {
     let t0 = Instant::now();
     let window = bar_window(app)?;
     position_bar(app, &window);
+    set_webview_visible(&window, true);
     window.show()?;
     window.set_focus()?;
     let native_ms = ms(t0.elapsed());
@@ -355,9 +356,22 @@ fn show_bar(app: &AppHandle) -> Result<(), BarError> {
     Ok(())
 }
 
+/// Tells WebView2 whether the page is on screen. Hiding the host window alone does not:
+/// the page keeps reporting `visible`, so its timers, animations and the GPU process keep running.
+#[cfg(windows)]
+fn set_webview_visible(window: &WebviewWindow, visible: bool) {
+    let _ = window.with_webview(move |wv| {
+        // SAFETY: the controller is valid for the closure's duration (main thread).
+        let _ = unsafe { wv.controller().SetIsVisible(visible) };
+    });
+}
+#[cfg(not(windows))]
+fn set_webview_visible(_window: &WebviewWindow, _visible: bool) {}
+
 fn hide_bar_window(app: &AppHandle) {
     *lock(&app.state::<Shared>().hidden_at) = Some(Instant::now());
     if let Ok(window) = bar_window(app) {
+        set_webview_visible(&window, false);
         if let Err(e) = window.hide() {
             eprintln!("lookout: could not hide bar: {e}");
         }
@@ -386,7 +400,13 @@ fn hide_bar(app: AppHandle) {
 }
 
 #[tauri::command]
-fn frontend_ready(shared: State<Shared>) {
+fn frontend_ready(app: AppHandle, shared: State<Shared>) {
+    // The bar starts hidden: stop the page rendering until the first show.
+    if let Ok(w) = bar_window(&app) {
+        if !w.is_visible().unwrap_or(true) {
+            set_webview_visible(&w, false);
+        }
+    }
     if !shared.frontend_ready.swap(true, Ordering::AcqRel) {
         eprintln!(
             "lookout: frontend ready {:.0} ms after launch",

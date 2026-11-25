@@ -2398,6 +2398,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-updater",
  "thiserror 2.0.21",
+ "webview2-com",
 ]
 
 [[package]]
