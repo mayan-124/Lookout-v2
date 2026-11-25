@@ -36,42 +36,59 @@
   --dur-slow: 200ms;
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 
+  /* Palette "Graphite". Every color lives in this file. */
+  /* accent choices offered in Settings (look.svelte.ts reads these) */
+  --pick-yellow: #FFD43B;
+  --pick-mint: #7FE9D0;
+  --pick-blue: #9DB8FF;
+  --pick-violet: #D2A8FF;
+
   /* accent: one color, chosen in Settings */
-  --accent-pick: #7fe9d0;
+  --accent-pick: var(--pick-yellow);
   --accent: var(--accent-pick);
   --accent-bg: var(--accent-pick);
-  --accent-on: #0a1210;
+  --accent-on: #111214;
+  --accent-on-line: color-mix(in srgb, var(--accent-on) 50%, transparent);
   --accent-soft: color-mix(in srgb, var(--accent-pick) 13%, transparent);
   --accent-line: color-mix(in srgb, var(--accent-pick) 50%, transparent);
   --match-text: var(--accent-pick);
   --match-bg: color-mix(in srgb, var(--accent-pick) 22%, transparent);
 
   /* No outer card: the window is transparent and only floating glass pieces draw. */
-  --solid-bg: #161b24;
+  --solid-bg: #181a1d;
 
-  /* glass panel: the shadow stays inside the window bounds */
-  /* a dark base keeps the tint readable over any desktop, the gradient sits on it */
+  /* panel: the shadow stays inside the window bounds */
+  /* a near-opaque base keeps text behind from showing through, the tints sit on it */
+  --base: rgba(17, 18, 20, 0.96);
   --glass-bg:
     linear-gradient(
       135deg,
-      rgba(59, 91, 219, 0.38),
-      rgba(16, 20, 44, 0.3) 55%,
-      rgba(194, 65, 122, 0.32)
+      rgba(73, 80, 87, 0.38),
+      rgba(17, 18, 20, 0.96) 55%,
+      rgba(134, 142, 150, 0.26)
     ),
-    rgba(13, 16, 34, 0.96);
-  /* dock and hints: a touch more opaque */
-  --glass-bg-dock:
-    linear-gradient(
-      135deg,
-      rgba(59, 91, 219, 0.38),
-      rgba(16, 20, 44, 0.3) 55%,
-      rgba(194, 65, 122, 0.32)
-    ),
-    rgba(13, 16, 34, 0.96);
-  --glass-blur: blur(24px) saturate(160%);
+    var(--base);
+  --glass-bg-dock: var(--glass-bg);
   --glass-border: rgba(255, 255, 255, 0.22);
   --glass-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 4px 14px rgba(0, 0, 0, 0.28);
+
+  /* controls */
+  --btn-bg: rgba(255, 255, 255, 0.06);
+  --btn-bg-hover: rgba(255, 255, 255, 0.13);
+  --hover-border: rgba(255, 255, 255, 0.4);
+  --chip-on-border: #ffffff;
+  --chip-on-glow: rgba(255, 255, 255, 0.35);
+  --field-bg: rgba(17, 18, 20, 0.7);
+  --code-bg: rgba(0, 0, 0, 0.25);
+  --lightbox-scrim: rgba(10, 11, 12, 0.6);
+  /* data URIs cannot read variables: chevron = --text-soft, check = --accent-on */
+  --icon-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%23E3E8F5' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5'/%3E%3C/svg%3E");
+  --icon-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%23111214' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 6.2 5 8.7l4.5-5'/%3E%3C/svg%3E");
+
+  /* native scrollbars, radios, progress bars */
+  scrollbar-color: var(--accent-line) transparent;
+  accent-color: var(--accent);
 
   /* text */
   --text: #ffffff;
@@ -91,32 +108,26 @@
   --toggle-off: rgba(255, 255, 255, 0.16);
   --scrim: rgba(0, 0, 0, 0.55);
 
-  /* Disk chart: color-blind-safe hues. */
-  --c0: #56b4e9;
-  --c1: #2fcf9f;
-  --c2: #e58fc3;
-  --c3: #9d9dff;
-  --c4: #b4cf3a;
-  --c5: #e0787a;
-  --c6: #38c7d8;
-  --c7: #b9a2d8;
+  /* Disk chart: color-blind-safe hues, softened for graphite. */
+  --c0: #66afd9;
+  --c1: #41bd98;
+  --c2: #dc98c1;
+  --c3: #a8a8f4;
+  --c4: #aabf4a;
+  --c5: #d58385;
+  --c6: #4ab9c6;
+  --c7: #baa8d2;
   --c-grey: #7c8494;
   --chart-label: #ffffff;
   --chart-halo: rgba(0, 0, 0, 0.6);
 }
 
-/* Glass effect off, or backdrop-filter unsupported: flat solid panels, no
-   gradient, no blur. */
+/* Glass effect off: flat solid panels, no gradient. */
 :root[data-glass="solid"] {
   --glass-bg: var(--solid-bg);
   --glass-bg-dock: var(--solid-bg);
-  --glass-blur: none;
   --glass-border: rgba(255, 255, 255, 0.14);
   --glass-shadow: none;
-}
-/* Hidden window: no blurred layers to composite. */
-:root[data-shown="false"] {
-  --glass-blur: none;
 }
 
 /* Reduced motion: no animation, no transitions. */

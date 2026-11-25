@@ -2,28 +2,40 @@
 // Stored only in this window's localStorage; they are not part of the saved
 // settings file. Applied to <html> as a CSS variable and data attributes that
 // tokens.css reads.
+import tokens from "./tokens.css?raw";
+
+// The color values are defined in tokens.css only.
+function pick(token: string): string {
+  return tokens.match(new RegExp(`--pick-${token}:\\s*(#[0-9a-fA-F]{6})`))![1];
+}
+
 export const ACCENTS = [
-  { name: "Mint", value: "#7FE9D0" },
-  { name: "Blue", value: "#9DB8FF" },
-  { name: "Amber", value: "#FFC27A" },
-  { name: "Violet", value: "#D2A8FF" },
-] as const;
+  { name: "Yellow", value: pick("yellow") },
+  { name: "Mint", value: pick("mint") },
+  { name: "Blue", value: pick("blue") },
+  { name: "Violet", value: pick("violet") },
+];
+/** The default before the Graphite palette. Saved without a choice, it moves to the new default. */
+const OLD_DEFAULT = pick("mint");
 
 const KEY = "lookout.look";
 const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 interface Stored {
   accent: string;
+  accentChosen: boolean; // picked in Settings
   glass: boolean;
   reduceMotion: boolean | null; // null: follow Windows
 }
 
 function load(): Stored {
-  const base: Stored = { accent: ACCENTS[0].value, glass: true, reduceMotion: null };
+  const base: Stored = { accent: ACCENTS[0].value, accentChosen: false, glass: true, reduceMotion: null };
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? "null");
     if (raw && typeof raw === "object") {
-      if (ACCENTS.some((a) => a.value === raw.accent)) base.accent = raw.accent;
+      base.accentChosen = raw.accentChosen === true;
+      const kept = base.accentChosen || raw.accent !== OLD_DEFAULT;
+      if (kept && ACCENTS.some((a) => a.value === raw.accent)) base.accent = raw.accent;
       if (typeof raw.glass === "boolean") base.glass = raw.glass;
       if (typeof raw.reduceMotion === "boolean") base.reduceMotion = raw.reduceMotion;
     }
@@ -36,18 +48,23 @@ function load(): Stored {
 const saved = load();
 export const look = $state({
   accent: saved.accent,
+  accentChosen: saved.accentChosen,
   glass: saved.glass,
   reduceMotion: saved.reduceMotion as boolean | null,
-  /** Effective values, after Windows preferences and platform support. */
+  /** Effective value, after the Windows preference. */
   reduced: false,
-  glassActive: false,
 });
 
 function persist() {
   try {
     localStorage.setItem(
       KEY,
-      JSON.stringify({ accent: look.accent, glass: look.glass, reduceMotion: look.reduceMotion }),
+      JSON.stringify({
+        accent: look.accent,
+        accentChosen: look.accentChosen,
+        glass: look.glass,
+        reduceMotion: look.reduceMotion,
+      }),
     );
   } catch {
     /* not saved */
@@ -59,14 +76,9 @@ function applyMotion() {
   document.documentElement.dataset.motion = look.reduced ? "reduced" : "full";
 }
 
-/** The glass look is CSS only. Off, or backdrop-filter unsupported, gives flat solid panels. */
-const blurSupported =
-  typeof CSS !== "undefined" &&
-  (CSS.supports("backdrop-filter", "blur(1px)") || CSS.supports("-webkit-backdrop-filter", "blur(1px)"));
+/** The glass look is CSS only. Off gives flat solid panels. */
 function applyGlass() {
-  const on = look.glass && blurSupported;
-  look.glassActive = on;
-  document.documentElement.dataset.glass = on ? "on" : "solid";
+  document.documentElement.dataset.glass = look.glass ? "on" : "solid";
 }
 
 function applyAccent() {
@@ -75,6 +87,7 @@ function applyAccent() {
 
 export function setAccent(value: string) {
   look.accent = value;
+  look.accentChosen = true;
   applyAccent();
   persist();
 }

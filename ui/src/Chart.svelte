@@ -163,7 +163,7 @@
 </div>
 
 <style>
-  /* Segment colors come from --c0..--c7 in app.css (color-blind-safe, none near the amber accent). */
+  /* Segment colors come from --c0..--c7 in tokens.css (color-blind-safe). */
   .chart {
     position: relative;
     min-width: 0;

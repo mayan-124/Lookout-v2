@@ -964,14 +964,14 @@
     padding: 5px 16px;
     border-radius: 999px;
     border: 1px solid var(--glass-border);
-    background: rgba(13, 16, 34, 0.7);
+    background: var(--field-bg);
     color: var(--text-soft);
     font-size: 13px;
   }
   .tabs button:hover,
   .toggle button:hover {
     color: var(--text);
-    border-color: rgba(255, 255, 255, 0.4);
+    border-color: var(--hover-border);
   }
   .tabs button.on,
   .toggle button.on {
@@ -1038,11 +1038,11 @@
     cursor: pointer;
     color: var(--text-soft);
     border: 1px solid var(--glass-border);
-    background: rgba(13, 16, 34, 0.7);
+    background: var(--field-bg);
   }
   .xbtn:hover {
     color: var(--text);
-    border-color: rgba(255, 255, 255, 0.4);
+    border-color: var(--hover-border);
   }
   .xbtn:focus-visible {
     outline: 2px solid var(--accent);
@@ -1057,7 +1057,7 @@
     z-index: 20;
     padding: 16px;
     display: flex;
-    background: rgba(5, 7, 16, 0.6);
+    background: var(--lightbox-scrim);
     animation: fadein 160ms ease-out;
   }
   .lbox {
@@ -1070,7 +1070,7 @@
     padding: 12px;
     border-radius: 14px;
     border: 1px solid var(--glass-border);
-    background: rgba(13, 16, 34, 0.96);
+    background: var(--base);
     animation: pop 160ms ease-out;
   }
   .lbbar {
@@ -1231,8 +1231,11 @@
     border-radius: 8px;
     cursor: default;
   }
+  li[role="treeitem"]:hover {
+    background: var(--accent-soft);
+  }
   li.selected {
-    background: var(--raised);
+    background: var(--accent-soft);
     border-color: var(--accent);
   }
   .c-name {
@@ -1318,7 +1321,7 @@
     cursor: pointer;
   }
   .menu button:hover {
-    background: var(--panel);
+    background: var(--accent-soft);
   }
   .menu button:focus-visible {
     outline: 2px solid var(--accent);

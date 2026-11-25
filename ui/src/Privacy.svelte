@@ -455,7 +455,7 @@
             </div>
           </div>
           <div class="field">
-            {@render field("Glass effect", "Frosted glass panels. Off gives flat solid panels with no blur.")}
+            {@render field("Glass effect", "Tinted gradient panels. Off gives flat solid panels.")}
             <label class="switch">
               <input type="checkbox" role="switch" checked={look.glass} onchange={(e) => setGlass(e.currentTarget.checked)} />
               <span class="track"></span>
@@ -722,7 +722,7 @@
     cursor: pointer;
   }
   .item:hover {
-    background: var(--raised);
+    background: var(--accent-soft);
     color: var(--text);
   }
   .item.on {

@@ -886,10 +886,6 @@
     begin(() => invoke<Prepared>("prepare_action", { action: "copy_clip", id: i.id }));
   }
 
-  // Blurred layers are only composited while the window is on screen.
-  $effect(() => {
-    document.documentElement.dataset.shown = visible ? "true" : "false";
-  });
   const dur = (n: number) => (look.reduced ? 0 : n);
 </script>
 
@@ -1408,8 +1404,6 @@
   /* The glass panel every surface shares. Flat and unblurred when glass is off. */
   .glass {
     background: var(--glass-bg);
-    -webkit-backdrop-filter: var(--glass-blur);
-    backdrop-filter: var(--glass-blur);
     border: 1px solid var(--glass-border);
     box-shadow: var(--glass-shadow);
   }
@@ -1488,12 +1482,12 @@
   }
   .chip:hover {
     color: var(--text);
-    border-color: rgba(255, 255, 255, 0.4);
+    border-color: var(--hover-border);
   }
   .chip.on {
     background: var(--accent-bg);
-    border-color: #fff;
-    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35);
+    border-color: var(--chip-on-border);
+    box-shadow: 0 0 0 1px var(--chip-on-glow);
     color: var(--accent-on);
     font-weight: 600;
   }
@@ -1768,6 +1762,10 @@
     background: var(--accent-soft);
     border-color: var(--accent);
   }
+  /* secondary text is too faint on the highlight */
+  .row.selected .meta {
+    color: var(--text-soft);
+  }
 
   .icon {
     flex: none;
@@ -1880,6 +1878,9 @@
     color: var(--match-text);
     font-weight: inherit;
   }
+  .icon.ring {
+    color: var(--accent);
+  }
   .icon.ring svg {
     width: 22px;
     height: 22px;
@@ -1937,7 +1938,7 @@
   }
   .fchip:hover {
     color: var(--text);
-    border-color: rgba(255, 255, 255, 0.4);
+    border-color: var(--hover-border);
   }
   .fchip .x {
     opacity: 0.6;

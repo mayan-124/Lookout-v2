@@ -198,7 +198,7 @@
     font-size: 12px;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    background: rgba(0, 0, 0, 0.25);
+    background: var(--code-bg);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 8px;
