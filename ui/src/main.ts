@@ -1,7 +1,8 @@
 import { mount } from "svelte";
 import "./tokens.css";
 import "./app.css";
-import "./look.svelte";
+import { loadAppearance } from "./look.svelte";
 import App from "./App.svelte";
 
-mount(App, { target: document.getElementById("app")! });
+// The saved theme is applied before the first paint.
+loadAppearance().finally(() => mount(App, { target: document.getElementById("app")! }));

@@ -50,14 +50,31 @@ impl IndexSpeed {
     }
 }
 
-/// Colour theme of the window. Auto follows Windows (light or dark mode).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Theme {
-    #[default]
-    Auto,
-    Light,
-    Dark,
+/// Colour theme of the window. The window owns the list of themes and falls
+/// back to its default for an id it does not know.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Appearance {
+    pub theme: String,
+    /// Custom accent as `#RRGGBB`; none uses the theme's own.
+    #[serde(default)]
+    pub accent: Option<String>,
+}
+
+impl Appearance {
+    fn check(&self) -> Result<(), String> {
+        let id = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
+        if self.theme.is_empty() || self.theme.len() > 32 || !self.theme.chars().all(id) {
+            return Err("Unknown theme.".to_owned());
+        }
+        let hex = |a: &str| {
+            a.strip_prefix('#')
+                .is_some_and(|h| h.len() == 6 && h.chars().all(|c| c.is_ascii_hexdigit()))
+        };
+        if !self.accent.as_deref().is_none_or(hex) {
+            return Err("Accent colour: use the form #RRGGBB.".to_owned());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -108,8 +125,8 @@ pub struct Settings {
     /// Name search is not affected. The settings screen allows no less than
     /// [`MIN_CONTENT_INDEX_MB`].
     pub content_index_max_mb: u64,
-    /// Light, dark, or follow Windows (the default).
-    pub theme: Theme,
+    /// Theme and accent; none until the window has saved its first choice.
+    pub appearance: Option<Appearance>,
     /// The window stays on top and does not hide when it loses focus.
     pub pinned: bool,
     /// Lets programs running as this Windows user search through the `lookout`
@@ -151,7 +168,6 @@ pub struct Changes {
     pub rescan_hours: i64,
     pub index_speed: IndexSpeed,
     pub content_index_max_mb: i64,
-    pub theme: Theme,
 }
 
 fn in_range(v: i64, lo: u64, hi: u64) -> bool {
@@ -180,7 +196,7 @@ impl Default for Settings {
             index_speed: IndexSpeed::default(),
             snapshot_max_entries: 300_000,
             content_index_max_mb: DEFAULT_CONTENT_INDEX_MB,
-            theme: Theme::default(),
+            appearance: None,
             cli_access: false,
             pinned: false,
             window_positions: std::collections::BTreeMap::new(),
@@ -261,8 +277,18 @@ impl Settings {
         next.index_speed = c.index_speed;
         next.content_index_max_mb =
             u64::try_from(c.content_index_max_mb).map_err(|e| e.to_string())?;
-        next.theme = c.theme;
         next.first_run_done = true;
+        next.save(path)
+            .map_err(|e| format!("Could not save settings: {e}"))?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Validates and saves the theme choice; on any error nothing changes.
+    pub fn set_appearance(&mut self, a: Appearance, path: &Path) -> Result<(), String> {
+        a.check()?;
+        let mut next = self.clone();
+        next.appearance = Some(a);
         next.save(path)
             .map_err(|e| format!("Could not save settings: {e}"))?;
         *self = next;
@@ -375,47 +401,48 @@ mod tests {
             rescan_hours: 12,
             index_speed: IndexSpeed::Fast,
             content_index_max_mb: 500,
-            theme: Theme::Light,
         }
     }
 
     #[test]
-    fn theme_defaults_to_auto_and_old_files_without_it_load_as_auto() {
+    fn old_files_load_without_an_appearance_and_drop_the_old_theme_word() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        std::fs::write(&path, r#"{"idle_secs": 7}"#).unwrap();
+        std::fs::write(&path, r#"{"idle_secs": 7, "theme": "auto"}"#).unwrap();
         let s = Settings::load(&path).unwrap();
-        assert_eq!(s.theme, Theme::Auto);
+        assert_eq!(s.appearance, None);
         assert_eq!(s.idle_secs, 7);
     }
 
     #[test]
-    fn theme_is_saved_with_the_other_settings_or_not_at_all() {
+    fn appearance_is_saved_loaded_and_kept_by_the_settings_save() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         let mut s = Settings::default();
-        s.save(&path).unwrap();
-        // A bad value in the same Save leaves the theme unchanged on disk.
-        let bad = Changes {
-            idle_secs: -1,
-            theme: Theme::Dark,
-            ..changes()
+        let chosen = Appearance {
+            theme: "matrix".into(),
+            accent: Some("#D2A8FF".into()),
         };
-        assert!(s.apply(bad, &path).is_err());
-        assert_eq!(Settings::load(&path).unwrap().theme, Theme::Auto);
-        // A good Save stores it, and the file spells it as a lowercase word.
-        s.apply(
-            Changes {
-                theme: Theme::Dark,
-                ..changes()
-            },
-            &path,
-        )
-        .unwrap();
-        assert_eq!(Settings::load(&path).unwrap().theme, Theme::Dark);
-        assert!(std::fs::read_to_string(&path)
-            .unwrap()
-            .contains(r#""theme": "dark""#));
+        let saved = |path: &Path| Settings::load(path).unwrap().appearance;
+        s.set_appearance(chosen.clone(), &path).unwrap();
+        assert_eq!(saved(&path), Some(chosen.clone()));
+        s.apply(changes(), &path).unwrap();
+        assert_eq!(saved(&path), Some(chosen.clone()));
+        // Bad values change nothing.
+        for (theme, accent) in [("", None), ("Neon Grid", None), ("matrix", Some("red"))] {
+            let bad = Appearance {
+                theme: theme.into(),
+                accent: accent.map(str::to_owned),
+            };
+            assert!(s.set_appearance(bad, &path).is_err());
+            assert_eq!(saved(&path), Some(chosen.clone()));
+        }
+        let theme_accent = Appearance {
+            accent: None,
+            ..chosen
+        };
+        s.set_appearance(theme_accent.clone(), &path).unwrap();
+        assert_eq!(saved(&path), Some(theme_accent));
     }
 
     #[test]
@@ -508,7 +535,10 @@ mod tests {
             index_speed: IndexSpeed::Fast,
             snapshot_max_entries: 1234,
             content_index_max_mb: 500,
-            theme: Theme::Dark,
+            appearance: Some(Appearance {
+                theme: "plasma".into(),
+                accent: None,
+            }),
             pinned: true,
             cli_access: true,
             window_positions: [("M|0,0|1x1".to_owned(), (5, 6))].into(),

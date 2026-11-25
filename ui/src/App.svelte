@@ -8,7 +8,6 @@
   import { flip } from "svelte/animate";
   import { fade, fly } from "svelte/transition";
   import PreviewPanel from "./Preview.svelte";
-  import { applyTheme, type ThemePref } from "./theme";
   import Orb from "./Orb.svelte";
   import { look } from "./look.svelte";
 
@@ -405,9 +404,8 @@
   let openHotkey = $state("");
   async function loadHotkey() {
     try {
-      const s = await invoke<{ open_hotkey: string; theme: ThemePref }>("privacy_state");
+      const s = await invoke<{ open_hotkey: string }>("privacy_state");
       openHotkey = s.open_hotkey;
-      applyTheme(s.theme);
     } catch {
       openHotkey = "";
     }

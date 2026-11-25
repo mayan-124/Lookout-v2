@@ -1,10 +1,10 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { onDestroy, onMount } from "svelte";
+  import { onMount } from "svelte";
   import Plugins from "./Plugins.svelte";
   import Health from "./Health.svelte";
-  import { applyTheme, type ThemePref } from "./theme";
-  import { ACCENTS, look, setAccent, setGlass, setReduceMotion } from "./look.svelte";
+  import { ACCENT_PRESETS, THEMES, normalizeHex, themeById } from "./theme";
+  import { look, previewAccent, setAccent, setGlass, setReduceMotion, setTheme } from "./look.svelte";
   import { getVersion } from "@tauri-apps/api/app";
   import { check, type Update } from "@tauri-apps/plugin-updater";
 
@@ -22,7 +22,6 @@
     rescan_hours: number;
     index_speed: "gentle" | "balanced" | "fast";
     content_index_max_mb: number;
-    theme: ThemePref;
     cli_access: boolean;
   }
 
@@ -148,13 +147,39 @@
   let rescanHours = $state(0);
   let maxMb = $state(2048);
   let speed: "gentle" | "balanced" | "fast" = $state("balanced");
-  let theme: ThemePref = $state("auto");
-  // The theme last saved. Choosing a theme previews it live; closing reverts to this.
-  let savedTheme: ThemePref = "auto";
   let first: HTMLButtonElement | undefined = $state();
 
-  $effect(() => applyTheme(theme));
-  onDestroy(() => applyTheme(savedTheme));
+  // Appearance applies and saves as it is picked; it is not part of Save.
+  // The accent as chosen (the theme's own when there is no custom one).
+  const chosenAccent = $derived(look.accent ?? themeById(look.theme).accent);
+  const presetPicked = $derived(ACCENT_PRESETS.some((a) => a.value === look.accent));
+  let hexText = $state("");
+  let hexError = $state("");
+  $effect(() => {
+    hexText = chosenAccent;
+    hexError = "";
+  });
+  function enterHex() {
+    const value = normalizeHex(hexText);
+    if (!value) {
+      hexError = "Enter a color as #RRGGBB.";
+      return;
+    }
+    hexError = "";
+    hexText = value;
+    setAccent(value);
+  }
+  // Arrow keys move and pick within a radio group.
+  function radioKeys(e: KeyboardEvent) {
+    const step = ["ArrowRight", "ArrowDown"].includes(e.key) ? 1 : ["ArrowLeft", "ArrowUp"].includes(e.key) ? -1 : 0;
+    const from = e.target as HTMLElement;
+    if (!step || from.getAttribute("role") !== "radio") return;
+    e.preventDefault();
+    const all = [...from.closest('[role="radiogroup"]')!.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+    const next = all[(all.indexOf(from as HTMLButtonElement) + step + all.length) % all.length];
+    next.focus();
+    next.click();
+  }
 
   let discarding = $state(false);
 
@@ -178,8 +203,7 @@
         idleSecs !== i.idle_secs ||
         rescanHours !== i.rescan_hours ||
         maxMb !== i.content_index_max_mb ||
-        speed !== i.index_speed ||
-        theme !== i.theme)
+        speed !== i.index_speed)
     );
   });
 
@@ -200,8 +224,6 @@
     rescanHours = s.rescan_hours;
     maxMb = s.content_index_max_mb;
     speed = s.index_speed;
-    theme = s.theme;
-    savedTheme = s.theme;
   }
 
   onMount(async () => {
@@ -253,7 +275,6 @@
             rescanHours,
             speed,
             contentIndexMaxMb: maxMb,
-            theme,
           },
         }),
       );
@@ -333,10 +354,10 @@
     }
     try {
       // Keep unsaved edits in the other fields: only the hotkey comes from the answer.
-      const keep = { roots: [...roots], excluded: [...excluded], idleSecs, rescanHours, maxMb, speed, theme };
+      const keep = { roots: [...roots], excluded: [...excluded], idleSecs, rescanHours, maxMb, speed };
       const s = await invoke<PrivacyState>("set_grab_hotkey", { wanted: combo });
       load(s);
-      ({ roots, excluded, idleSecs, rescanHours, maxMb, speed, theme } = keep);
+      ({ roots, excluded, idleSecs, rescanHours, maxMb, speed } = keep);
       grabMessage = `Saved: ${combo}. Active now.`;
     } catch (err) {
       grabMessage = errorText(err);
@@ -429,30 +450,80 @@
           <h2 id="priv-title">General</h2>
           <div class="scard">
           <h3 class="stitle">Appearance</h3>
-          <label class="field">
-            {@render field("Appearance", "Auto follows Windows light or dark mode. The choice applies as you pick it.")}
-            <select bind:value={theme}>
-              <option value="auto">Auto (follow Windows)</option>
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
-            </select>
-          </label>
-          <div class="field">
-            {@render field("Accent color", "The one highlight color. Applies as you pick it.")}
-            <div class="swatches" role="radiogroup" aria-label="Accent color">
-              {#each ACCENTS as a}
+          <div class="field stack">
+            {@render field("Theme", "Applies as you pick it.")}
+            <!-- svelte-ignore a11y_interactive_supports_focus (the radios take focus) -->
+            <div class="themes" role="radiogroup" aria-label="Theme" onkeydown={radioKeys}>
+              {#each THEMES as t (t.id)}
                 <button
                   type="button"
-                  class="swatch"
+                  class="theme"
                   role="radio"
-                  aria-checked={look.accent === a.value}
-                  aria-label={a.name}
-                  title={a.name}
-                  style:background={a.value}
-                  onclick={() => setAccent(a.value)}
-                ></button>
+                  aria-checked={look.theme === t.id}
+                  tabindex={look.theme === t.id ? 0 : -1}
+                  onclick={() => setTheme(t.id)}
+                >
+                  <span>{t.name}</span>
+                  <span class="dots" aria-hidden="true">
+                    {#each [t.base, t.tint1, t.tint2, t.accent] as color}
+                      <i style:background={color}></i>
+                    {/each}
+                  </span>
+                </button>
               {/each}
             </div>
+          </div>
+          <div class="field stack">
+            {@render field("Accent", "The highlight color.")}
+            <div class="accents">
+              <!-- svelte-ignore a11y_interactive_supports_focus (the radios take focus) -->
+              <div class="swatches" role="radiogroup" aria-label="Accent color" onkeydown={radioKeys}>
+                <button
+                  type="button"
+                  class="btn small themeaccent"
+                  role="radio"
+                  aria-checked={look.accent === null}
+                  tabindex={presetPicked ? -1 : 0}
+                  onclick={() => setAccent(null)}>Theme accent</button
+                >
+                {#each ACCENT_PRESETS as a}
+                  <button
+                    type="button"
+                    class="swatch"
+                    role="radio"
+                    aria-checked={look.accent === a.value}
+                    tabindex={look.accent === a.value ? 0 : -1}
+                    aria-label={a.name}
+                    title={a.name}
+                    style:background={a.value}
+                    onclick={() => setAccent(a.value)}
+                  ></button>
+                {/each}
+              </div>
+              <input
+                type="color"
+                class="picker"
+                aria-label="Custom accent color"
+                title="Custom color"
+                value={chosenAccent.toLowerCase()}
+                oninput={(e) => previewAccent(e.currentTarget.value)}
+                onchange={(e) => setAccent(e.currentTarget.value)}
+              />
+              <input
+                type="text"
+                class="code hex"
+                maxlength="7"
+                spellcheck="false"
+                aria-label="Custom accent hex value"
+                aria-invalid={!!hexError}
+                bind:value={hexText}
+                onkeydown={(e) => e.key === "Enter" && enterHex()}
+                onchange={enterHex}
+              />
+            </div>
+            {#if hexError}<span class="err" role="alert">{hexError}</span>{/if}
+            {#if look.lightened}<span class="hint" role="status">Lightened so it stays readable on this theme.</span>{/if}
+            {#if look.saveError}<span class="err" role="alert">Not saved: {look.saveError}</span>{/if}
           </div>
           <div class="field">
             {@render field("Glass effect", "Tinted gradient panels. Off gives flat solid panels.")}
@@ -817,9 +888,74 @@
     padding: 10px 0;
     border-bottom: 1px solid var(--border);
   }
+  .field.stack {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .themes {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .theme {
+    all: unset;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 12px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-md);
+    background: var(--btn-bg);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+  }
+  .theme:hover {
+    background: var(--btn-bg-hover);
+  }
+  .theme[aria-checked="true"],
+  .themeaccent[aria-checked="true"] {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .theme:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .dots {
+    display: flex;
+    gap: 6px;
+  }
+  .dots i {
+    width: 12px;
+    height: 12px;
+    border: 1px solid var(--hover-border);
+    border-radius: 50%;
+  }
+  .accents {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
   .swatches {
     display: flex;
+    align-items: center;
     gap: 10px;
+  }
+  .picker {
+    box-sizing: border-box;
+    width: 40px;
+    height: 30px;
+    padding: 2px;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--r-sm);
+    background: var(--field-bg);
+    cursor: pointer;
+  }
+  .hex {
+    width: 100px;
   }
   .swatch {
     all: unset;

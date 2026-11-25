@@ -53,6 +53,8 @@ Phase 3 adds search by what is *inside* things, with privacy controls:
 - time filters: `invoice yesterday`, `report last week`, `taxes in march`, `notes last 3 days`, or just `yesterday` for recently changed files
 - file kinds with a date: `pdf last week`, `images from July`, `screenshots this month`, `docs last 7 days` (matched on modified time, offline, no AI); each understood word shows as a label you can click to remove
 - a "Search for the exact words instead" row follows any query where words were read as a date or kind, so a file literally named `last week report` is still one click away
+- eight colour themes (Settings > General > Appearance), applied and saved as you click them; new installs start with Neon Grid
+- accent colour: the theme's own, one of four presets, or any custom colour (lightened automatically if it would be hard to read)
 - first-run folder choice, per-folder exclusions, pause (tray item and `Ctrl+Alt+P`), a "Delete my index" button (`Ctrl+,` opens them)
 - everything Lookout stores about your files is encrypted at rest with a key that only your Windows account can unwrap (DPAPI), and secrets (API keys, private keys, card numbers, `password = ...`) are masked before text is indexed
 

@@ -17,7 +17,9 @@ use lookout_core::engine::Sink;
 use lookout_core::latency::{self, Sample};
 use lookout_core::lookout::{Lookout, StartOptions, Status};
 use lookout_core::pause::PauseState;
-use lookout_core::settings::{monitor_key, position_on_monitor, Settings, DEFAULT_HOTKEY};
+use lookout_core::settings::{
+    monitor_key, position_on_monitor, Appearance, Settings, DEFAULT_HOTKEY,
+};
 use lookout_core::storage::{DataPaths, Storage};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -1196,7 +1198,6 @@ struct PrivacyState {
     rescan_hours: u32,
     index_speed: lookout_core::settings::IndexSpeed,
     content_index_max_mb: u64,
-    theme: lookout_core::settings::Theme,
     cli_access: bool,
 }
 
@@ -1221,9 +1222,30 @@ fn privacy_of(services: &Services, shared: &Shared) -> PrivacyState {
         rescan_hours: s.rescan_hours,
         index_speed: s.index_speed,
         content_index_max_mb: s.content_index_max_mb,
-        theme: s.theme,
         cli_access: s.cli_access,
     }
+}
+
+#[derive(serde::Serialize)]
+struct AppearanceState {
+    appearance: Option<Appearance>,
+    /// Set up before: an install without a saved theme then keeps its old palette.
+    existing: bool,
+}
+
+#[tauri::command]
+fn get_appearance(services: State<Services>) -> AppearanceState {
+    let s = lock(&services.settings);
+    AppearanceState {
+        appearance: s.appearance.clone(),
+        existing: !s.needs_first_run(),
+    }
+}
+
+/// Not async: quick picks are then saved in the order they were made.
+#[tauri::command]
+fn set_appearance(appearance: Appearance, services: State<Services>) -> Result<(), String> {
+    lock(&services.settings).set_appearance(appearance, &services.paths.settings())
 }
 
 #[tauri::command]
@@ -1284,7 +1306,6 @@ struct SaveArgs {
     rescan_hours: i64,
     speed: lookout_core::settings::IndexSpeed,
     content_index_max_mb: i64,
-    theme: lookout_core::settings::Theme,
 }
 
 #[tauri::command]
@@ -1310,7 +1331,6 @@ async fn save_settings(
         rescan_hours: args.rescan_hours,
         index_speed: args.speed,
         content_index_max_mb: args.content_index_max_mb,
-        theme: args.theme,
     };
     lock(&services.settings).apply(changes, &services.paths.settings())?;
     restart_lookout(&app);
@@ -1938,6 +1958,8 @@ pub fn run() {
             quickkey_delete,
             index_status,
             privacy_state,
+            get_appearance,
+            set_appearance,
             pick_folder,
             apply_folders,
             set_paused,

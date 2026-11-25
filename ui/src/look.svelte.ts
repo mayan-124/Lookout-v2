@@ -1,56 +1,32 @@
-// Look and feel preferences: accent color, glass effect, reduced motion.
-// Stored only in this window's localStorage; they are not part of the saved
-// settings file. Applied to <html> as a CSS variable and data attributes that
-// tokens.css reads.
-import tokens from "./tokens.css?raw";
-
-// The color values are defined in tokens.css only.
-function pick(token: string): string {
-  return tokens.match(new RegExp(`--pick-${token}:\\s*(#[0-9a-fA-F]{6})`))![1];
-}
-
-export const ACCENTS = [
-  { name: "Yellow", value: pick("yellow") },
-  { name: "Mint", value: pick("mint") },
-  { name: "Blue", value: pick("blue") },
-  { name: "Violet", value: pick("violet") },
-];
-/** The default before the Graphite palette. Saved without a choice, it moves to the new default. */
-const OLD_DEFAULT = pick("mint");
+// Look and feel. Theme and accent are saved in the settings file; glass and
+// reduced motion stay in this window's localStorage. Colors come from theme.ts;
+// glass and motion are data attributes on <html> that tokens.css reads.
+import { invoke } from "@tauri-apps/api/core";
+import { applyTheme, DEFAULT_THEME, initialAppearance, normalizeHex, type Appearance } from "./theme";
 
 const KEY = "lookout.look";
 const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
 
-interface Stored {
-  accent: string;
-  accentChosen: boolean; // picked in Settings
-  glass: boolean;
-  reduceMotion: boolean | null; // null: follow Windows
-}
-
-function load(): Stored {
-  const base: Stored = { accent: ACCENTS[0].value, accentChosen: false, glass: true, reduceMotion: null };
+/** Everything stored, including the accent earlier versions kept here. */
+function stored(): Record<string, unknown> | null {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? "null");
-    if (raw && typeof raw === "object") {
-      base.accentChosen = raw.accentChosen === true;
-      const kept = base.accentChosen || raw.accent !== OLD_DEFAULT;
-      if (kept && ACCENTS.some((a) => a.value === raw.accent)) base.accent = raw.accent;
-      if (typeof raw.glass === "boolean") base.glass = raw.glass;
-      if (typeof raw.reduceMotion === "boolean") base.reduceMotion = raw.reduceMotion;
-    }
+    return raw && typeof raw === "object" ? raw : null;
   } catch {
-    /* storage unavailable: defaults */
+    return null; // storage unavailable: defaults
   }
-  return base;
 }
 
-const saved = load();
+const old = stored();
 export const look = $state({
-  accent: saved.accent,
-  accentChosen: saved.accentChosen,
-  glass: saved.glass,
-  reduceMotion: saved.reduceMotion as boolean | null,
+  theme: DEFAULT_THEME,
+  /** Custom accent; null uses the theme's. */
+  accent: null as string | null,
+  /** True when the accent was too dark for the theme and is shown lighter. */
+  lightened: false,
+  saveError: "",
+  glass: typeof old?.glass === "boolean" ? old.glass : true,
+  reduceMotion: (typeof old?.reduceMotion === "boolean" ? old.reduceMotion : null) as boolean | null, // null: follow Windows
   /** Effective value, after the Windows preference. */
   reduced: false,
 });
@@ -59,12 +35,7 @@ function persist() {
   try {
     localStorage.setItem(
       KEY,
-      JSON.stringify({
-        accent: look.accent,
-        accentChosen: look.accentChosen,
-        glass: look.glass,
-        reduceMotion: look.reduceMotion,
-      }),
+      JSON.stringify({ ...stored(), glass: look.glass, reduceMotion: look.reduceMotion }),
     );
   } catch {
     /* not saved */
@@ -81,15 +52,35 @@ function applyGlass() {
   document.documentElement.dataset.glass = look.glass ? "on" : "solid";
 }
 
-function applyAccent() {
-  document.documentElement.style.setProperty("--accent-pick", look.accent);
+function paint() {
+  const shown = applyTheme(document.documentElement, look.theme, look.accent);
+  look.theme = shown.theme.id;
+  look.lightened = shown.lightened;
 }
 
-export function setAccent(value: string) {
-  look.accent = value;
-  look.accentChosen = true;
-  applyAccent();
-  persist();
+async function saveAppearance() {
+  const appearance: Appearance = { theme: look.theme, accent: look.accent };
+  try {
+    await invoke("set_appearance", { appearance });
+    look.saveError = "";
+  } catch (e) {
+    look.saveError = String(e);
+  }
+}
+
+export function setTheme(id: string) {
+  look.theme = id;
+  paint();
+  saveAppearance();
+}
+/** Shows an accent without saving it (while the color picker is open). */
+export function previewAccent(value: string | null) {
+  look.accent = normalizeHex(value);
+  paint();
+}
+export function setAccent(value: string | null) {
+  previewAccent(value);
+  saveAppearance();
 }
 export function setGlass(on: boolean) {
   look.glass = on;
@@ -102,7 +93,21 @@ export function setReduceMotion(on: boolean) {
   applyMotion();
 }
 
-applyAccent();
+/** Applies the saved theme; main.ts draws nothing until this is done. */
+export async function loadAppearance() {
+  try {
+    const r = await invoke<{ appearance: Appearance | null; existing: boolean }>("get_appearance");
+    const a = r.appearance ?? initialAppearance(old, r.existing);
+    look.theme = a.theme;
+    look.accent = normalizeHex(a.accent);
+    paint();
+    if (!r.appearance) saveAppearance();
+  } catch {
+    /* the default theme stays */
+  }
+}
+
+paint();
 applyMotion();
 applyGlass();
 motionQuery.addEventListener("change", applyMotion);

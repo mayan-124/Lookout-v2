@@ -34,6 +34,10 @@ jobs:
         run: npm run check
         working-directory: ui
 
+      - name: Frontend tests
+        run: npm test
+        working-directory: ui
+
       # The Tauri macros embed ui/dist, so the frontend must be built before Rust lint/build.
       - name: Build frontend
         run: npm run build

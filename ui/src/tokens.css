@@ -1,6 +1,7 @@
-/* Design tokens: the one place for colors, radii, spacing, type, motion and
-   shadows. The window is transparent; floating glass panels are the only visible pieces. Always dark. look.svelte.ts sets --accent-pick, data-glass and data-motion on
-   <html>. No web fonts, no network. */
+/* Design tokens: derived colors, radii, spacing, type, motion and shadows.
+   The window is transparent; floating glass panels are the only visible pieces.
+   Always dark. look.svelte.ts sets the theme colors, data-glass and data-motion
+   on <html>. No web fonts, no network. */
 :root {
   color-scheme: dark;
   --font-ui: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
@@ -36,97 +37,69 @@
   --dur-slow: 200ms;
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 
-  /* Palette "Graphite". Every color lives in this file. */
-  /* accent choices offered in Settings (look.svelte.ts reads these) */
-  --pick-yellow: #FFD43B;
-  --pick-mint: #7FE9D0;
-  --pick-blue: #9DB8FF;
-  --pick-violet: #D2A8FF;
-
-  /* accent: one color, chosen in Settings */
-  --accent-pick: var(--pick-yellow);
-  --accent: var(--accent-pick);
-  --accent-bg: var(--accent-pick);
-  --accent-on: #111214;
+  /* Colors. theme.ts holds every color value and sets these on <html>:
+     --base --tint1 --tint2 --accent --accent-on --glass-border --text
+     --text-soft --muted --shade --danger --success --c0..--c7 --c-grey
+     --icon-chevron --icon-check. Everything below is derived from them. */
+  --accent-bg: var(--accent);
   --accent-on-line: color-mix(in srgb, var(--accent-on) 50%, transparent);
-  --accent-soft: color-mix(in srgb, var(--accent-pick) 13%, transparent);
-  --accent-line: color-mix(in srgb, var(--accent-pick) 50%, transparent);
-  --match-text: var(--accent-pick);
-  --match-bg: color-mix(in srgb, var(--accent-pick) 22%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent) 13%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 50%, transparent);
+  --match-text: var(--accent);
 
   /* No outer card: the window is transparent and only floating glass pieces draw. */
-  --solid-bg: #181a1d;
+  --solid-bg: color-mix(in srgb, var(--base) 95%, var(--text));
 
   /* panel: the shadow stays inside the window bounds */
   /* a near-opaque base keeps text behind from showing through, the tints sit on it */
-  --base: rgba(17, 18, 20, 0.96);
+  --panel-base: color-mix(in srgb, var(--base) 96%, transparent);
   --glass-bg:
     linear-gradient(
       135deg,
-      rgba(73, 80, 87, 0.38),
-      rgba(17, 18, 20, 0.96) 55%,
-      rgba(134, 142, 150, 0.26)
+      color-mix(in srgb, var(--tint1) 38%, transparent),
+      var(--panel-base) 55%,
+      color-mix(in srgb, var(--tint2) 26%, transparent)
     ),
-    var(--base);
+    var(--panel-base);
   --glass-bg-dock: var(--glass-bg);
-  --glass-border: rgba(255, 255, 255, 0.22);
   --glass-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 4px 14px rgba(0, 0, 0, 0.28);
+    inset 0 1px 0 color-mix(in srgb, var(--text) 16%, transparent),
+    0 4px 14px color-mix(in srgb, var(--shade) 28%, transparent);
 
   /* controls */
-  --btn-bg: rgba(255, 255, 255, 0.06);
-  --btn-bg-hover: rgba(255, 255, 255, 0.13);
-  --hover-border: rgba(255, 255, 255, 0.4);
-  --chip-on-border: #ffffff;
-  --chip-on-glow: rgba(255, 255, 255, 0.35);
-  --field-bg: rgba(17, 18, 20, 0.7);
-  --code-bg: rgba(0, 0, 0, 0.25);
-  --lightbox-scrim: rgba(10, 11, 12, 0.6);
-  /* data URIs cannot read variables: chevron = --text-soft, check = --accent-on */
-  --icon-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%23E3E8F5' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5'/%3E%3C/svg%3E");
-  --icon-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%23111214' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 6.2 5 8.7l4.5-5'/%3E%3C/svg%3E");
+  --btn-bg: color-mix(in srgb, var(--text) 6%, transparent);
+  --btn-bg-hover: color-mix(in srgb, var(--text) 13%, transparent);
+  --hover-border: color-mix(in srgb, var(--text) 40%, transparent);
+  --chip-on-border: var(--text);
+  --chip-on-glow: color-mix(in srgb, var(--text) 35%, transparent);
+  --field-bg: color-mix(in srgb, var(--base) 70%, transparent);
+  --code-bg: color-mix(in srgb, var(--shade) 25%, transparent);
+  --lightbox-scrim: color-mix(in srgb, var(--base) 60%, transparent);
 
   /* native scrollbars, radios, progress bars */
   scrollbar-color: var(--accent-line) transparent;
   accent-color: var(--accent);
 
-  /* text */
-  --text: #ffffff;
-  --text-soft: #e3e8f5;
-  --text-3: #d5dbec;
-  --muted: #9aa3bd;
-  --hairline: rgba(255, 255, 255, 0.12);
+  --hairline: color-mix(in srgb, var(--text) 12%, transparent);
 
   /* surfaces drawn over the glass */
   --bg: var(--solid-bg);
-  --panel: rgba(255, 255, 255, 0.04);
-  --raised: rgba(255, 255, 255, 0.07);
+  --panel: color-mix(in srgb, var(--text) 4%, transparent);
+  --raised: color-mix(in srgb, var(--text) 7%, transparent);
   --border: var(--hairline);
-  --border-strong: rgba(255, 255, 255, 0.18);
-  --success: #3fb950;
-  --danger: #ff6b63;
-  --toggle-off: rgba(255, 255, 255, 0.16);
-  --scrim: rgba(0, 0, 0, 0.55);
+  --border-strong: color-mix(in srgb, var(--text) 18%, transparent);
+  --toggle-off: color-mix(in srgb, var(--text) 16%, transparent);
+  --scrim: color-mix(in srgb, var(--shade) 55%, transparent);
 
-  /* Disk chart: color-blind-safe hues, softened for graphite. */
-  --c0: #66afd9;
-  --c1: #41bd98;
-  --c2: #dc98c1;
-  --c3: #a8a8f4;
-  --c4: #aabf4a;
-  --c5: #d58385;
-  --c6: #4ab9c6;
-  --c7: #baa8d2;
-  --c-grey: #7c8494;
-  --chart-label: #ffffff;
-  --chart-halo: rgba(0, 0, 0, 0.6);
+  /* Disk chart labels */
+  --chart-label: var(--text);
+  --chart-halo: color-mix(in srgb, var(--shade) 60%, transparent);
 }
 
-/* Glass effect off: flat solid panels, no gradient. */
+/* Glass effect off: flat solid panels, a shade lighter than the base. */
 :root[data-glass="solid"] {
   --glass-bg: var(--solid-bg);
   --glass-bg-dock: var(--solid-bg);
-  --glass-border: rgba(255, 255, 255, 0.14);
   --glass-shadow: none;
 }
 
