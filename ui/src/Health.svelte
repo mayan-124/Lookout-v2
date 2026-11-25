@@ -37,8 +37,21 @@
 
   onMount(() => {
     load();
-    const t = setInterval(load, 1000);
-    return () => clearInterval(t);
+    let t: ReturnType<typeof setInterval> | undefined;
+    const sync = () => {
+      if (t !== undefined) clearInterval(t);
+      t = undefined;
+      if (document.visibilityState === "visible") {
+        load();
+        t = setInterval(load, 1000);
+      }
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      if (t !== undefined) clearInterval(t);
+      document.removeEventListener("visibilitychange", sync);
+    };
   });
 
   const mb = (b: number) => `${(b / 1048576).toLocaleString(undefined, { maximumFractionDigits: 1 })} MB`;

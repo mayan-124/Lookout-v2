@@ -2,7 +2,8 @@
 //! the encrypted list of running timers, and the one background thread that
 //! sleeps until the nearest end time and shows a notification. There is no
 //! polling: with no timer the thread waits without a timeout, with timers it
-//! waits for exactly the nearest one. Pausing indexing or hiding the window
+//! waits for the nearest one (at most 30 s at a time, so a resume from sleep
+//! is noticed; end times are wall-clock). Pausing indexing or hiding the window
 //! does not touch it.
 
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -548,7 +549,13 @@ fn run(sh: &Shared) {
                 let _unused = sh.cv.wait(st).unwrap_or_else(PoisonError::into_inner);
             }
             Some(end) => {
-                let wait = u64::try_from((end - now_ms()).max(1)).unwrap_or(1);
+                // The condvar clock stops while the PC sleeps, the end time is
+                // wall-clock. Waking at most every 30 s while a timer is pending
+                // bounds the lateness after a resume; with none pending we sleep
+                // until poked.
+                let wait = u64::try_from((end - now_ms()).max(1))
+                    .unwrap_or(1)
+                    .min(30_000);
                 let _unused = sh
                     .cv
                     .wait_timeout(st, Duration::from_millis(wait))

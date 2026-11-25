@@ -825,7 +825,7 @@
   {#if exp && tab === "tree" && finished}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="lbback" onclick={() => (exp = false)}>
-      <div class="lbox" role="dialog" aria-label="Chart" onclick={(e) => e.stopPropagation()}>
+      <div class="lbox" role="dialog" tabindex="-1" aria-label="Chart" onclick={(e) => e.stopPropagation()}>
         <div class="lbbar">
           <div class="toggle" role="group" aria-label="Chart type">
             <button class:on={chartMode === "ring"} aria-pressed={chartMode === "ring"} onclick={() => { chartMode = "ring"; loadChart(); }}>Ring</button>

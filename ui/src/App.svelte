@@ -622,11 +622,21 @@
     const unlistenResults = listen<Update>("query-results", (e) => onUpdate(e.payload));
     // Only report ready once the listeners exist, so no show event is lost.
     Promise.all([unlistenShown, unlistenResults]).then(() => invoke("frontend_ready"));
-    const poll = setInterval(() => {
-      if (document.visibilityState === "visible") refreshStatus();
-    }, 1000);
+    // The status refresh runs only while the window is visible: no timer at all when hidden.
+    let poll: ReturnType<typeof setInterval> | undefined;
+    const syncPoll = () => {
+      if (poll !== undefined) clearInterval(poll);
+      poll = undefined;
+      if (document.visibilityState === "visible") {
+        refreshStatus();
+        poll = setInterval(refreshStatus, 1000);
+      }
+    };
+    syncPoll();
+    document.addEventListener("visibilitychange", syncPoll);
     return () => {
-      clearInterval(poll);
+      if (poll !== undefined) clearInterval(poll);
+      document.removeEventListener("visibilitychange", syncPoll);
       unlistenShown.then((f) => f());
       unlistenResults.then((f) => f());
     };
