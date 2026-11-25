@@ -170,6 +170,10 @@ pub struct Status {
     pub read_total: u64,
     pub ocr_done: u64,
     pub ocr_total: u64,
+    /// File reading is holding back because the user is at the keyboard or mouse.
+    pub waiting_for_idle: bool,
+    /// File reading will stop again at the next keyboard or mouse input.
+    pub pauses_on_activity: bool,
 }
 
 struct SemanticRuntime {
@@ -1060,6 +1064,13 @@ impl Lookout {
             read_total: stat(|s| &s.read_total),
             ocr_done: stat(|s| &s.ocr_done),
             ocr_total: stat(|s| &s.ocr_total),
+            waiting_for_idle: self.content.as_ref().is_some_and(|c| {
+                c.stats.state.load(Ordering::Acquire) == crate::content::service::STATE_WAITING_IDLE
+            }),
+            pauses_on_activity: self
+                .content
+                .as_ref()
+                .is_some_and(|c| c.idle_secs > 0 && !c.stats.boost.load(Ordering::Acquire)),
         }
     }
 

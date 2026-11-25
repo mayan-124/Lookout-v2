@@ -3,8 +3,9 @@
   import { onMount } from "svelte";
   import Plugins from "./Plugins.svelte";
   import Health from "./Health.svelte";
-  import { ACCENT_PRESETS, THEMES, normalizeHex, themeById } from "./theme";
-  import { look, previewAccent, setAccent, setGlass, setReduceMotion, setTheme } from "./look.svelte";
+  import ThemePicker from "./ThemePicker.svelte";
+  import { captureCombo } from "./hotkey";
+  import { look, setGlass, setReduceMotion } from "./look.svelte";
   import { getVersion } from "@tauri-apps/api/app";
   import { check, type Update } from "@tauri-apps/plugin-updater";
 
@@ -131,7 +132,7 @@
     "password-manager folders",
   ];
 
-  let { onclose }: { onclose: () => void } = $props();
+  let { onclose, onsetup }: { onclose: () => void; onsetup: () => void } = $props();
 
   let skipList: string[] = $state([]);
   invoke<string[]>("skip_list").then((l) => (skipList = l)).catch(() => {});
@@ -149,38 +150,6 @@
   let speed: "gentle" | "balanced" | "fast" = $state("balanced");
   let first: HTMLButtonElement | undefined = $state();
 
-  // Appearance applies and saves as it is picked; it is not part of Save.
-  // The accent as chosen (the theme's own when there is no custom one).
-  const chosenAccent = $derived(look.accent ?? themeById(look.theme).accent);
-  const presetPicked = $derived(ACCENT_PRESETS.some((a) => a.value === look.accent));
-  let hexText = $state("");
-  let hexError = $state("");
-  $effect(() => {
-    hexText = chosenAccent;
-    hexError = "";
-  });
-  function enterHex() {
-    const value = normalizeHex(hexText);
-    if (!value) {
-      hexError = "Enter a color as #RRGGBB.";
-      return;
-    }
-    hexError = "";
-    hexText = value;
-    setAccent(value);
-  }
-  // Arrow keys move and pick within a radio group.
-  function radioKeys(e: KeyboardEvent) {
-    const step = ["ArrowRight", "ArrowDown"].includes(e.key) ? 1 : ["ArrowLeft", "ArrowUp"].includes(e.key) ? -1 : 0;
-    const from = e.target as HTMLElement;
-    if (!step || from.getAttribute("role") !== "radio") return;
-    e.preventDefault();
-    const all = [...from.closest('[role="radiogroup"]')!.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
-    const next = all[(all.indexOf(from as HTMLButtonElement) + step + all.length) % all.length];
-    next.focus();
-    next.click();
-  }
-
   let discarding = $state(false);
 
   const LIMITS = { idle: [0, 3600], rescan: [0, 720], mb: [100, 1_000_000] } as const;
@@ -197,7 +166,6 @@
     const i = info as PrivacyState | null;
     return (
       !!i &&
-      !i.needs_setup &&
       (roots.join("|") !== i.roots.join("|") ||
         excluded.join("|") !== i.excluded_folders.join("|") ||
         idleSecs !== i.idle_secs ||
@@ -246,20 +214,6 @@
     }
   }
 
-  // First start: only the folder choice exists.
-  async function save() {
-    busy = true;
-    message = "";
-    try {
-      load(await invoke<PrivacyState>("apply_folders", { roots, excluded }));
-      message = roots.length > 0 ? "Saved. Getting these folders ready for search." : "Saved. No folders will be searched.";
-      if (!info?.needs_setup) onclose();
-    } catch (e) {
-      message = errorText(e);
-    }
-    busy = false;
-  }
-
   // The one Save in Settings: one call that checks everything, then applies it all or nothing.
   async function saveAll() {
     if (invalid) return;
@@ -279,7 +233,7 @@
         }),
       );
       message = "Saved.";
-      if (!info?.needs_setup) onclose();
+      onclose();
     } catch (e) {
       message = errorText(e);
     }
@@ -326,32 +280,15 @@
 
   let grabMessage = $state("");
 
-  function comboFrom(e: KeyboardEvent): string | null {
-    let key: string | null = null;
-    if (/^Key[A-Z]$/.test(e.code)) key = e.code.slice(3);
-    else if (/^Digit[0-9]$/.test(e.code)) key = e.code.slice(5);
-    else if (/^F([1-9]|1[0-9]|2[0-4])$/.test(e.code)) key = e.code;
-    else if (e.code === "Space") key = "Space";
-    if (!key) return null;
-    const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Super"].filter(Boolean);
-    if (mods.length === 0) {
-      grabMessage = "Hold Ctrl, Alt, Shift or Win together with the key.";
-      return null;
-    }
-    return [...mods, key].join("+");
-  }
-
   async function grabKeydown(e: KeyboardEvent) {
-    if (e.key === "Tab" || e.key === "Escape") return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return;
-    grabMessage = "";
-    const combo = comboFrom(e);
-    if (!combo) {
-      if (!grabMessage) grabMessage = "Use a letter, digit, F-key or Space with a modifier.";
+    const got = captureCombo(e);
+    if (!got) return;
+    if ("hint" in got) {
+      grabMessage = got.hint;
       return;
     }
+    grabMessage = "";
+    const combo = got.combo;
     try {
       // Keep unsaved edits in the other fields: only the hotkey comes from the answer.
       const keep = { roots: [...roots], excluded: [...excluded], idleSecs, rescanHours, maxMb, speed };
@@ -399,365 +336,264 @@
 {/snippet}
 
 <section class="settings" aria-labelledby="priv-title">
-  {#if info?.needs_setup}
-    <div class="body setup">
-      <h2 id="priv-title">Choose which folders Lookout may search</h2>
-      <p class="hint">
-        Nothing is read until you choose folders. Everything stays on this PC, encrypted with a key that only
-        your Windows account can unlock.
-      </p>
-      {#if info.open_hotkey}
-        <p class="hint">Open Lookout any time with <kbd>{info.open_hotkey}</kbd>.</p>
-      {/if}
+  <div class="layout">
+    <nav class="menu" aria-label="Settings sections">
+      {#each SECTIONS as [id, name]}
+        <button
+          class="item"
+          class:on={section === id}
+          class:danger={id === "delete"}
+          aria-current={section === id ? "page" : undefined}
+          onclick={() => (section = id)}>{name}</button
+        >
+      {/each}
+    </nav>
 
-      <h3 class="label-caps">Folders to search</h3>
-      {@render folderList(roots, "No folders chosen", (p) => (roots = roots.filter((r) => r !== p)), "Remove")}
-      <button bind:this={first} class="btn" onclick={() => add("roots")}>Add folder…</button>
-
-      <h3 class="label-caps">Folders to skip</h3>
-      {@render folderList(excluded, "No exclusions", (p) => (excluded = excluded.filter((r) => r !== p)), "Stop excluding")}
-      <button class="btn" onclick={() => add("excluded")}>Exclude folder…</button>
-    </div>
-    <div class="savebar">
-      <span class="msg" role="status">{message}</span>
-      <button
-        class="btn"
-        disabled={busy}
-        onclick={() => {
-          roots = [];
-          excluded = [];
-          save();
-        }}>Skip for now</button
-      >
-      <button class="btn primary" disabled={busy} onclick={save}>Start</button>
-    </div>
-  {:else}
-    <div class="layout">
-      <nav class="menu" aria-label="Settings sections">
-        {#each SECTIONS as [id, name]}
-          <button
-            class="item"
-            class:on={section === id}
-            class:danger={id === "delete"}
-            aria-current={section === id ? "page" : undefined}
-            onclick={() => (section = id)}>{name}</button
-          >
-        {/each}
-      </nav>
-
-      <div class="body">
-        {#if section === "general"}
-          <h2 id="priv-title">General</h2>
-          <div class="scard">
-          <h3 class="stitle">Appearance</h3>
-          <div class="field stack">
-            {@render field("Theme", "Applies as you pick it.")}
-            <!-- svelte-ignore a11y_interactive_supports_focus (the radios take focus) -->
-            <div class="themes" role="radiogroup" aria-label="Theme" onkeydown={radioKeys}>
-              {#each THEMES as t (t.id)}
-                <button
-                  type="button"
-                  class="theme"
-                  role="radio"
-                  aria-checked={look.theme === t.id}
-                  tabindex={look.theme === t.id ? 0 : -1}
-                  onclick={() => setTheme(t.id)}
-                >
-                  <span>{t.name}</span>
-                  <span class="dots" aria-hidden="true">
-                    {#each [t.base, t.tint1, t.tint2, t.accent] as color}
-                      <i style:background={color}></i>
-                    {/each}
-                  </span>
-                </button>
-              {/each}
-            </div>
+    <div class="body">
+      {#if section === "general"}
+        <h2 id="priv-title">General</h2>
+        <div class="scard">
+        <h3 class="stitle">Appearance</h3>
+        <ThemePicker />
+        <div class="field">
+          {@render field("Glass effect", "Tinted gradient panels. Off gives flat solid panels.")}
+          <label class="switch">
+            <input type="checkbox" role="switch" checked={look.glass} onchange={(e) => setGlass(e.currentTarget.checked)} />
+            <span class="track"></span>
+          </label>
+        </div>
+        <div class="field">
+          {@render field("Reduce motion", "Stops the orb and result animations. On by default when Windows animations are off.")}
+          <label class="switch">
+            <input type="checkbox" role="switch" checked={look.reduced} onchange={(e) => setReduceMotion(e.currentTarget.checked)} />
+            <span class="track"></span>
+          </label>
+        </div>
+        </div>
+        <div class="scard">
+        <h3 class="stitle">Setup</h3>
+        <div class="field">
+          {@render field("First-run setup", dirty ? "Save or discard your changes first." : "Folders, shortcuts and theme, step by step.")}
+          <button class="btn" disabled={dirty} onclick={onsetup}>Run setup again</button>
+        </div>
+        </div>
+        <div class="scard">
+        <h3 class="stitle">Updates</h3>
+        <div class="field">
+          {@render field("Updates", `Version ${appVersion}. Connects to the internet only when you click a button here, and only receives files.`)}
+          <button class="btn" disabled={updBusy} onclick={checkUpdates}>Check for updates</button>
+        </div>
+        {#if upd}
+          <div class="field">
+            {@render field(`Version ${upd.version} is available`, upd.body ?? "")}
+            <button class="btn primary" disabled={updBusy} onclick={installUpdate}>Download and install</button>
           </div>
-          <div class="field stack">
-            {@render field("Accent", "The highlight color.")}
-            <div class="accents">
-              <!-- svelte-ignore a11y_interactive_supports_focus (the radios take focus) -->
-              <div class="swatches" role="radiogroup" aria-label="Accent color" onkeydown={radioKeys}>
-                <button
-                  type="button"
-                  class="btn small themeaccent"
-                  role="radio"
-                  aria-checked={look.accent === null}
-                  tabindex={presetPicked ? -1 : 0}
-                  onclick={() => setAccent(null)}>Theme accent</button
-                >
-                {#each ACCENT_PRESETS as a}
-                  <button
-                    type="button"
-                    class="swatch"
-                    role="radio"
-                    aria-checked={look.accent === a.value}
-                    tabindex={look.accent === a.value ? 0 : -1}
-                    aria-label={a.name}
-                    title={a.name}
-                    style:background={a.value}
-                    onclick={() => setAccent(a.value)}
-                  ></button>
-                {/each}
-              </div>
-              <input
-                type="color"
-                class="picker"
-                aria-label="Custom accent color"
-                title="Custom color"
-                value={chosenAccent.toLowerCase()}
-                oninput={(e) => previewAccent(e.currentTarget.value)}
-                onchange={(e) => setAccent(e.currentTarget.value)}
-              />
+        {/if}
+        {#if updMsg}<p role="status">{updMsg}</p>{/if}
+        </div>
+        <div class="scard">
+        <h3 class="stitle">Quick keys</h3>
+        <div class="field">
+          {@render field("Quick keys", "A short word for an app, file, folder, web address or system action. Type the word and a space in search to put it on top. To use an app or system action, select its result and click Set quick key.")}
+        </div>
+        {#each qkeys as k (k.alias)}
+          <div class="field">
+            <span class="fl">
+              <span class="ft"><code>{k.alias}</code> · {k.title}</span>
+              <span class="hint">{k.kind}{k.subtitle ? ` · ${k.subtitle}` : ""}</span>
+            </span>
+            {#if qkEditing === k.alias}
               <input
                 type="text"
-                class="code hex"
-                maxlength="7"
-                spellcheck="false"
-                aria-label="Custom accent hex value"
-                aria-invalid={!!hexError}
-                bind:value={hexText}
-                onkeydown={(e) => e.key === "Enter" && enterHex()}
-                onchange={enterHex}
+                class="code"
+                maxlength="8"
+                bind:value={qkEditAlias}
+                aria-label="New quick key"
+                onkeydown={(e) => e.key === "Enter" && saveEdit(k.alias)}
               />
-            </div>
-            {#if hexError}<span class="err" role="alert">{hexError}</span>{/if}
-            {#if look.lightened}<span class="hint" role="status">Lightened so it stays readable on this theme.</span>{/if}
-            {#if look.saveError}<span class="err" role="alert">Not saved: {look.saveError}</span>{/if}
+              <button class="btn small primary" onclick={() => saveEdit(k.alias)}>Save</button>
+              <button class="btn small" onclick={() => (qkEditing = null)}>Cancel</button>
+            {:else}
+              <button class="btn small" onclick={() => ((qkEditing = k.alias), (qkEditAlias = k.alias), (qkError = ""))}>Edit</button>
+              <button class="btn small danger" onclick={() => deleteKey(k.alias)}>Delete</button>
+            {/if}
           </div>
-          <div class="field">
-            {@render field("Glass effect", "Tinted gradient panels. Off gives flat solid panels.")}
-            <label class="switch">
-              <input type="checkbox" role="switch" checked={look.glass} onchange={(e) => setGlass(e.currentTarget.checked)} />
-              <span class="track"></span>
-            </label>
-          </div>
-          <div class="field">
-            {@render field("Reduce motion", "Stops the orb and result animations. On by default when Windows animations are off.")}
-            <label class="switch">
-              <input type="checkbox" role="switch" checked={look.reduced} onchange={(e) => setReduceMotion(e.currentTarget.checked)} />
-              <span class="track"></span>
-            </label>
-          </div>
-          </div>
-          <div class="scard">
-          <h3 class="stitle">Updates</h3>
-          <div class="field">
-            {@render field("Updates", `Version ${appVersion}. Connects to the internet only when you click a button here, and only receives files.`)}
-            <button class="btn" disabled={updBusy} onclick={checkUpdates}>Check for updates</button>
-          </div>
-          {#if upd}
-            <div class="field">
-              {@render field(`Version ${upd.version} is available`, upd.body ?? "")}
-              <button class="btn primary" disabled={updBusy} onclick={installUpdate}>Download and install</button>
-            </div>
-          {/if}
-          {#if updMsg}<p role="status">{updMsg}</p>{/if}
-          </div>
-          <div class="scard">
-          <h3 class="stitle">Quick keys</h3>
-          <div class="field">
-            {@render field("Quick keys", "A short word for an app, file, folder, web address or system action. Type the word and a space in search to put it on top. To use an app or system action, select its result and click Set quick key.")}
-          </div>
-          {#each qkeys as k (k.alias)}
-            <div class="field">
-              <span class="fl">
-                <span class="ft"><code>{k.alias}</code> · {k.title}</span>
-                <span class="hint">{k.kind}{k.subtitle ? ` · ${k.subtitle}` : ""}</span>
-              </span>
-              {#if qkEditing === k.alias}
-                <input
-                  type="text"
-                  class="code"
-                  maxlength="8"
-                  bind:value={qkEditAlias}
-                  aria-label="New quick key"
-                  onkeydown={(e) => e.key === "Enter" && saveEdit(k.alias)}
-                />
-                <button class="btn small primary" onclick={() => saveEdit(k.alias)}>Save</button>
-                <button class="btn small" onclick={() => (qkEditing = null)}>Cancel</button>
-              {:else}
-                <button class="btn small" onclick={() => ((qkEditing = k.alias), (qkEditAlias = k.alias), (qkError = ""))}>Edit</button>
-                <button class="btn small danger" onclick={() => deleteKey(k.alias)}>Delete</button>
-              {/if}
-            </div>
-          {/each}
-          <div class="field">
-            <input type="text" class="code" maxlength="8" placeholder="Quick key" bind:value={qkAlias} aria-label="Quick key" />
-            <input type="text" placeholder="Folder, file path or web address" bind:value={qkTarget} aria-label="Target" onkeydown={(e) => e.key === "Enter" && addKey()} />
-            <button class="btn small primary" onclick={addKey}>Add</button>
-          </div>
-          {#if qkError}<p class="danger-text" role="alert">{qkError}</p>{/if}
-          </div>
-        {:else if section === "folders"}
-          <h2 id="priv-title">Folders</h2>
-          <h3 class="label-caps">Folders to search</h3>
-          <p class="hint">Lookout only reads files inside these folders.</p>
-          {@render folderList(roots, "No folders chosen", (p) => (roots = roots.filter((r) => r !== p)), "Remove")}
-          <button bind:this={first} class="btn" onclick={() => add("roots")}>Add folder…</button>
+        {/each}
+        <div class="field">
+          <input type="text" class="code" maxlength="8" placeholder="Quick key" bind:value={qkAlias} aria-label="Quick key" />
+          <input type="text" placeholder="Folder, file path or web address" bind:value={qkTarget} aria-label="Target" onkeydown={(e) => e.key === "Enter" && addKey()} />
+          <button class="btn small primary" onclick={addKey}>Add</button>
+        </div>
+        {#if qkError}<p class="danger-text" role="alert">{qkError}</p>{/if}
+        </div>
+      {:else if section === "folders"}
+        <h2 id="priv-title">Folders</h2>
+        <h3 class="label-caps">Folders to search</h3>
+        <p class="hint">Lookout only reads files inside these folders.</p>
+        {@render folderList(roots, "No folders chosen", (p) => (roots = roots.filter((r) => r !== p)), "Remove")}
+        <button bind:this={first} class="btn" onclick={() => add("roots")}>Add folder…</button>
 
-          <h3 class="label-caps">Folders to skip</h3>
-          <p class="hint">Names, file text and text in pictures in these folders are never read.</p>
-          {@render folderList(excluded, "No exclusions", (p) => (excluded = excluded.filter((r) => r !== p)), "Stop excluding")}
-          <button class="btn" onclick={() => add("excluded")}>Exclude folder…</button>
+        <h3 class="label-caps">Folders to skip</h3>
+        <p class="hint">Names, file text and text in pictures in these folders are never read.</p>
+        {@render folderList(excluded, "No exclusions", (p) => (excluded = excluded.filter((r) => r !== p)), "Stop excluding")}
+        <button class="btn" onclick={() => add("excluded")}>Exclude folder…</button>
 
-          <h3 class="label-caps">Always skipped</h3>
-          <p class="hint">These are never read, whatever you choose above.</p>
-          <div class="tags">{#each ALWAYS_SKIPPED as t}<span class="tag">{t}</span>{/each}</div>
-          <h3 class="label-caps">Not read inside AppData</h3>
-          <p class="hint">
-            AppData\Local and AppData\Roaming can be found by name, but the contents of these
-            cache and log folders are not read. The folders' own names stay searchable.
-          </p>
-          <div class="tags">{#each skipList as t}<span class="tag">{t}</span>{/each}</div>
+        <h3 class="label-caps">Always skipped</h3>
+        <p class="hint">These are never read, whatever you choose above.</p>
+        <div class="tags">{#each ALWAYS_SKIPPED as t}<span class="tag">{t}</span>{/each}</div>
+        <h3 class="label-caps">Not read inside AppData</h3>
+        <p class="hint">
+          AppData\Local and AppData\Roaming can be found by name, but the contents of these
+          cache and log folders are not read. The folders' own names stay searchable.
+        </p>
+        <div class="tags">{#each skipList as t}<span class="tag">{t}</span>{/each}</div>
 
-          <h3 class="label-caps">Pause</h3>
-          <label class="field">
-            {@render field("Pause all background work", "Stops preparing files, reading file text and reading text in pictures until you turn it back on.")}
-            <span class="switch">
-              <input
-                type="checkbox"
-                role="switch"
-                checked={info?.paused ?? false}
-                onchange={(e) => setPaused(e.currentTarget.checked)}
-              />
-              <span class="track"></span>
-            </span>
-          </label>
-        {:else if section === "privacy"}
-          <h2 id="priv-title">Privacy</h2>
-          <h3 class="label-caps">What is stored</h3>
-          <p class="hint">
-            Search data: file names, text from your files, your usage history and the undo log. Nothing leaves this PC.
-          </p>
-          <h3 class="label-caps">How it is protected</h3>
-          <p class="hint">
-            Everything is encrypted with a key that only your Windows account can unlock. Secrets such as API keys,
-            private keys and card numbers are masked before text is stored.
-          </p>
-          <h3 class="label-caps">What Lookout reads</h3>
-          <label class="field">
-            {@render field("Index file contents", "Reads the text inside your files so you can search for words in them.")}
-            <span class="switch">
-              <input
-                type="checkbox"
-                role="switch"
-                checked={info?.index_contents ?? false}
-                onchange={(e) => setContentOption("index_contents", e.currentTarget)}
-              />
-              <span class="track"></span>
-            </span>
-          </label>
-          <label class="field">
-            {@render field("Read text in pictures (OCR)", "Finds words inside images and screenshots so they can be searched.")}
-            <span class="switch">
-              <input
-                type="checkbox"
-                role="switch"
-                checked={info?.ocr ?? false}
-                onchange={(e) => setContentOption("ocr", e.currentTarget)}
-              />
-              <span class="track"></span>
-            </span>
-          </label>
-          {#if contentMessage}<p class="hint" role="alert">{contentMessage}</p>{/if}
-          <h3 class="label-caps">Command line access</h3>
-          <label class="field">
-            {@render field("Let the lookout command search", "Any program running as you can search your files and screen text through this. Off unless you need it.")}
-            <span class="switch">
-              <input
-                type="checkbox"
-                role="switch"
-                checked={info?.cli_access ?? false}
-                onchange={(e) => setCliAccess(e.currentTarget)}
-              />
-              <span class="track"></span>
-            </span>
-          </label>
-          {#if cliMessage}<p class="hint">{cliMessage}</p>{/if}
-        {:else if section === "speed"}
-          <h2 id="priv-title">Speed</h2>
-          <label class="field">
-            {@render field("Background speed", "Only applies while you are idle.")}
-            <select bind:value={speed}>
-              <option value="gentle">Gentle</option>
-              <option value="balanced">Balanced</option>
-              <option value="fast">Fast</option>
-            </select>
-          </label>
-          <label class="field">
-            {@render field("Wait before reading", "Seconds you must be idle before file text is read.")}
-            <span class="num">
-              <input type="number" bind:value={idleSecs} aria-invalid={!!idleError} aria-describedby="e-idle" />
-              <span id="e-idle" class="err" role="alert">{idleError}</span>
-            </span>
-          </label>
-          <label class="field">
-            {@render field("Check for changes every", "Hours between full checks. 0 means never.")}
-            <span class="num">
-              <input type="number" bind:value={rescanHours} aria-invalid={!!rescanError} aria-describedby="e-rescan" />
-              <span id="e-rescan" class="err" role="alert">{rescanError}</span>
-            </span>
-          </label>
-          <label class="field">
-            {@render field("File text size limit", "Most disk space for saved file text, in MB (at least 100).")}
-            <span class="num">
-              <input type="number" bind:value={maxMb} aria-invalid={!!mbError} aria-describedby="e-mb" />
-              <span id="e-mb" class="err" role="alert">{mbError}</span>
-            </span>
-          </label>
-          <p class="note">
-            Gentle works at most 10% of the time. Balanced (default) up to 25%. Fast up to 60%, under one CPU core.
-          </p>
-        {:else if section === "addons"}
-          <h2 id="priv-title">Add-ons</h2>
-          <Plugins />
-        {:else if section === "shortcuts"}
-          <h2 id="priv-title">Shortcuts</h2>
-          <div class="field">
-            {@render field("Read text from the screen", "Click the box, then press the new combination.")}
-            <input class="code" type="text" readonly value={info?.grab_hotkey ?? ""} onkeydown={grabKeydown} aria-label="Grab text hotkey" />
-          </div>
-          {#if grabMessage}<p class="note" role="status">{grabMessage}</p>{/if}
-          <div class="field">
-            {@render field("Pause", "Pauses and resumes background work from anywhere.")}
-            {#if info?.pause_hotkey}<kbd>{info.pause_hotkey}</kbd>{/if}
-          </div>
-        {:else if section === "status"}
-          <h2 id="priv-title">Status</h2>
-          <Health />
-        {:else}
-          <h2 id="priv-title" class="danger-text">Delete my data</h2>
-          {#if confirmingDelete}
-            <p class="warning" role="alert">
-              This deletes your saved file names, file text, usage history, the undo log and the encryption key.
-              Your files are not touched. You will be asked to choose folders again.
-            </p>
-            <div class="row">
-              <button class="btn" onclick={() => (confirmingDelete = false)}>Cancel</button>
-              <button class="btn danger" disabled={busy} onclick={deleteIndex}>Delete everything</button>
-            </div>
-          {:else}
-            <p class="hint">Removes the search data Lookout stored about your files. Your files are not touched.</p>
-            <p><button class="btn danger" onclick={() => (confirmingDelete = true)}>Delete my search data…</button></p>
-          {/if}
-        {/if}
-      </div>
-    </div>
-    <div class="savebar">
-      {#if discarding}
-        <span class="msg" role="alertdialog" aria-label="Discard changes?">Discard changes?</span>
-        <button class="btn" onclick={() => (discarding = false)}>Keep editing</button>
-        <button class="btn danger" onclick={onclose}>Discard</button>
+        <h3 class="label-caps">Pause</h3>
+        <label class="field">
+          {@render field("Pause all background work", "Stops preparing files, reading file text and reading text in pictures until you turn it back on.")}
+          <span class="switch">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={info?.paused ?? false}
+              onchange={(e) => setPaused(e.currentTarget.checked)}
+            />
+            <span class="track"></span>
+          </span>
+        </label>
+      {:else if section === "privacy"}
+        <h2 id="priv-title">Privacy</h2>
+        <h3 class="label-caps">What is stored</h3>
+        <p class="hint">
+          Search data: file names, text from your files, your usage history and the undo log. Nothing leaves this PC.
+        </p>
+        <h3 class="label-caps">How it is protected</h3>
+        <p class="hint">
+          Everything is encrypted with a key that only your Windows account can unlock. Secrets such as API keys,
+          private keys and card numbers are masked before text is stored.
+        </p>
+        <h3 class="label-caps">What Lookout reads</h3>
+        <label class="field">
+          {@render field("Index file contents", "Reads the text inside your files so you can search for words in them.")}
+          <span class="switch">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={info?.index_contents ?? false}
+              onchange={(e) => setContentOption("index_contents", e.currentTarget)}
+            />
+            <span class="track"></span>
+          </span>
+        </label>
+        <label class="field">
+          {@render field("Read text in pictures (OCR)", "Finds words inside images and screenshots so they can be searched.")}
+          <span class="switch">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={info?.ocr ?? false}
+              onchange={(e) => setContentOption("ocr", e.currentTarget)}
+            />
+            <span class="track"></span>
+          </span>
+        </label>
+        {#if contentMessage}<p class="hint" role="alert">{contentMessage}</p>{/if}
+        <h3 class="label-caps">Command line access</h3>
+        <label class="field">
+          {@render field("Let the lookout command search", "Any program running as you can search your files and screen text through this. Off unless you need it.")}
+          <span class="switch">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={info?.cli_access ?? false}
+              onchange={(e) => setCliAccess(e.currentTarget)}
+            />
+            <span class="track"></span>
+          </span>
+        </label>
+        {#if cliMessage}<p class="hint">{cliMessage}</p>{/if}
+      {:else if section === "speed"}
+        <h2 id="priv-title">Speed</h2>
+        <label class="field">
+          {@render field("Background speed", "Only applies while you are idle.")}
+          <select bind:value={speed}>
+            <option value="gentle">Gentle</option>
+            <option value="balanced">Balanced</option>
+            <option value="fast">Fast</option>
+          </select>
+        </label>
+        <label class="field">
+          {@render field("Wait before reading", "Seconds you must be idle before file text is read.")}
+          <span class="num">
+            <input type="number" bind:value={idleSecs} aria-invalid={!!idleError} aria-describedby="e-idle" />
+            <span id="e-idle" class="err" role="alert">{idleError}</span>
+          </span>
+        </label>
+        <label class="field">
+          {@render field("Check for changes every", "Hours between full checks. 0 means never.")}
+          <span class="num">
+            <input type="number" bind:value={rescanHours} aria-invalid={!!rescanError} aria-describedby="e-rescan" />
+            <span id="e-rescan" class="err" role="alert">{rescanError}</span>
+          </span>
+        </label>
+        <label class="field">
+          {@render field("File text size limit", "Most disk space for saved file text, in MB (at least 100).")}
+          <span class="num">
+            <input type="number" bind:value={maxMb} aria-invalid={!!mbError} aria-describedby="e-mb" />
+            <span id="e-mb" class="err" role="alert">{mbError}</span>
+          </span>
+        </label>
+        <p class="note">
+          Gentle works at most 10% of the time. Balanced (default) up to 25%. Fast up to 60%, under one CPU core.
+        </p>
+      {:else if section === "addons"}
+        <h2 id="priv-title">Add-ons</h2>
+        <Plugins />
+      {:else if section === "shortcuts"}
+        <h2 id="priv-title">Shortcuts</h2>
+        <div class="field">
+          {@render field("Read text from the screen", "Click the box, then press the new combination.")}
+          <input class="code" type="text" readonly value={info?.grab_hotkey ?? ""} onkeydown={grabKeydown} aria-label="Grab text hotkey" />
+        </div>
+        {#if grabMessage}<p class="note" role="status">{grabMessage}</p>{/if}
+        <div class="field">
+          {@render field("Pause", "Pauses and resumes background work from anywhere.")}
+          {#if info?.pause_hotkey}<kbd>{info.pause_hotkey}</kbd>{/if}
+        </div>
+      {:else if section === "status"}
+        <h2 id="priv-title">Status</h2>
+        <Health />
       {:else}
-        <span class="msg" role="status">
-          {#if invalid && section !== "speed"}Some numbers in Speed are not valid.{:else}{message}{/if}
-        </span>
-        <button class="btn" onclick={requestClose}>Close <kbd>Esc</kbd></button>
-        <button class="btn primary" disabled={busy || invalid} onclick={saveAll}>Save</button>
+        <h2 id="priv-title" class="danger-text">Delete my data</h2>
+        {#if confirmingDelete}
+          <p class="warning" role="alert">
+            This deletes your saved file names, file text, usage history, the undo log and the encryption key.
+            Your files are not touched. You will be asked to choose folders again.
+          </p>
+          <div class="row">
+            <button class="btn" onclick={() => (confirmingDelete = false)}>Cancel</button>
+            <button class="btn danger" disabled={busy} onclick={deleteIndex}>Delete everything</button>
+          </div>
+        {:else}
+          <p class="hint">Removes the search data Lookout stored about your files. Your files are not touched.</p>
+          <p><button class="btn danger" onclick={() => (confirmingDelete = true)}>Delete my search data…</button></p>
+        {/if}
       {/if}
     </div>
-  {/if}
+  </div>
+  <div class="savebar">
+    {#if discarding}
+      <span class="msg" role="alertdialog" aria-label="Discard changes?">Discard changes?</span>
+      <button class="btn" onclick={() => (discarding = false)}>Keep editing</button>
+      <button class="btn danger" onclick={onclose}>Discard</button>
+    {:else}
+      <span class="msg" role="status">
+        {#if invalid && section !== "speed"}Some numbers in Speed are not valid.{:else}{message}{/if}
+      </span>
+      <button class="btn" onclick={requestClose}>Close <kbd>Esc</kbd></button>
+      <button class="btn primary" disabled={busy || invalid} onclick={saveAll}>Save</button>
+    {/if}
+  </div>
 </section>
 
 <style>
@@ -837,9 +673,6 @@
   .scard .field:last-child {
     border-bottom: 0;
   }
-  .body.setup {
-    padding-top: 16px;
-  }
   h2 {
     margin: 0 0 8px;
     font-size: 20px;
@@ -887,92 +720,6 @@
     gap: 20px;
     padding: 10px 0;
     border-bottom: 1px solid var(--border);
-  }
-  .field.stack {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-  }
-  .themes {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 8px;
-  }
-  .theme {
-    all: unset;
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 8px 12px;
-    border: 1px solid var(--hairline);
-    border-radius: var(--r-md);
-    background: var(--btn-bg);
-    font-size: var(--fs-sm);
-    cursor: pointer;
-  }
-  .theme:hover {
-    background: var(--btn-bg-hover);
-  }
-  .theme[aria-checked="true"],
-  .themeaccent[aria-checked="true"] {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent);
-  }
-  .theme:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  .dots {
-    display: flex;
-    gap: 6px;
-  }
-  .dots i {
-    width: 12px;
-    height: 12px;
-    border: 1px solid var(--hover-border);
-    border-radius: 50%;
-  }
-  .accents {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 10px;
-  }
-  .swatches {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .picker {
-    box-sizing: border-box;
-    width: 40px;
-    height: 30px;
-    padding: 2px;
-    border: 1px solid var(--glass-border);
-    border-radius: var(--r-sm);
-    background: var(--field-bg);
-    cursor: pointer;
-  }
-  .hex {
-    width: 100px;
-  }
-  .swatch {
-    all: unset;
-    box-sizing: border-box;
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    cursor: pointer;
-    border: 2px solid transparent;
-  }
-  .swatch[aria-checked="true"] {
-    border-color: var(--text);
-    box-shadow: 0 0 0 2px var(--solid-bg) inset;
-  }
-  .swatch:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
   }
   .fl {
     display: flex;

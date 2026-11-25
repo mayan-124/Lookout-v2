@@ -62,6 +62,8 @@ struct Shared {
     pause_item: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
     pause_shortcut: Mutex<Option<Shortcut>>,
     grab_shortcut: Mutex<Option<Shortcut>>,
+    /// The registered hotkey that opens the bar (the fallback, if that is what took).
+    open_shortcut: Mutex<Option<Shortcut>>,
     /// True while a screen-text grab is running, so the hotkey cannot start a second.
     grabbing: AtomicBool,
     /// A native folder dialog is open: the bar must not hide when it loses focus.
@@ -455,6 +457,15 @@ fn frontend_ready(app: AppHandle, shared: State<Shared>) {
             "lookout: frontend ready {:.0} ms after launch",
             ms(shared.started.elapsed())
         );
+        // A new install opens the bar once so the setup is seen.
+        let first_run = app
+            .try_state::<Services>()
+            .is_some_and(|s| lock(&s.settings).needs_first_run());
+        if first_run && lock(&shared.samples_tx).is_none() {
+            if let Err(e) = show_bar(&app) {
+                eprintln!("lookout: could not show the setup: {e}");
+            }
+        }
     }
 }
 
@@ -659,7 +670,16 @@ fn can_undo(services: State<Services>) -> bool {
 
 #[tauri::command]
 fn index_status(services: State<Services>) -> Option<Status> {
-    services.current().map(|l| l.status())
+    let mut status = services.current().map(|l| l.status())?;
+    // Skipping the setup does not restart search, so the settings have the answer.
+    status.needs_setup = lock(&services.settings).needs_first_run();
+    Some(status)
+}
+
+/// The rows of the help view (a fixed table in the app).
+#[tauri::command]
+fn help_entries() -> &'static [lookout_core::help::Help] {
+    lookout_core::help::entries()
 }
 
 // ---------------------------------------------------------------- disk usage
@@ -1320,31 +1340,55 @@ async fn pick_folder(app: AppHandle, shared: State<'_, Shared>) -> Result<Option
         .map(|p| p.to_string_lossy().into_owned()))
 }
 
-/// Saves the user's folder choice and restarts indexing with it. An empty
-/// list is a valid choice ("index nothing"); the first-run question is then answered.
+/// The setup's folder checklist: Documents, Desktop, Downloads and Pictures
+/// (those that exist), then any other folder already chosen.
 #[tauri::command]
-async fn apply_folders(
+fn setup_folders(
+    app: AppHandle,
+    services: State<Services>,
+) -> Vec<lookout_core::setup::FolderChoice> {
+    let paths = app.path();
+    let suggested: Vec<std::path::PathBuf> = [
+        paths.document_dir(),
+        paths.desktop_dir(),
+        paths.download_dir(),
+        paths.picture_dir(),
+    ]
+    .into_iter()
+    .filter_map(Result::ok)
+    .collect();
+    let chosen = lock(&services.settings).index_roots.clone();
+    lookout_core::setup::folder_choices(&suggested, &chosen)
+}
+
+/// The setup's "Start indexing": saves the folders and content options and
+/// starts indexing with them.
+#[tauri::command]
+async fn setup_start(
     roots: Vec<String>,
-    excluded: Vec<String>,
+    index_contents: bool,
+    ocr: bool,
     app: AppHandle,
     services: State<'_, Services>,
     shared: State<'_, Shared>,
 ) -> Result<PrivacyState, String> {
-    let roots: Vec<std::path::PathBuf> = roots
-        .into_iter()
-        .map(std::path::PathBuf::from)
-        .filter(|p| p.is_dir())
-        .collect();
-    {
-        let mut s = lock(&services.settings);
-        s.index_roots = roots;
-        s.excluded_folders = excluded.into_iter().map(std::path::PathBuf::from).collect();
-        s.first_run_done = true;
-        s.save(&services.paths.settings())
-            .map_err(|e| format!("could not save settings: {e}"))?;
+    let roots = roots.into_iter().map(std::path::PathBuf::from).collect();
+    let restart = lock(&services.settings).apply_setup(
+        roots,
+        index_contents,
+        ocr,
+        &services.paths.settings(),
+    )?;
+    if restart {
+        restart_lookout(&app);
     }
-    restart_lookout(&app);
     Ok(privacy_of(&services, &shared))
+}
+
+/// The setup was finished or skipped.
+#[tauri::command]
+fn setup_finish(services: State<Services>) -> Result<(), String> {
+    lock(&services.settings).finish_setup(&services.paths.settings())
 }
 
 /// The Settings Save: checks every value, saves once, then restarts indexing
@@ -1504,6 +1548,50 @@ fn set_grab_hotkey(
         s.grab_hotkey = wanted.trim().to_owned();
         s.save(&services.paths.settings())
             .map_err(|e| format!("could not save settings: {e}"))?;
+    }
+    Ok(privacy_of(&services, &shared))
+}
+
+/// Changes the hotkey that opens the bar, without a restart. If the new combo
+/// cannot be registered, the old one stays active and saved.
+#[tauri::command]
+fn set_open_hotkey(
+    wanted: String,
+    app: AppHandle,
+    services: State<'_, Services>,
+    shared: State<'_, Shared>,
+) -> Result<PrivacyState, String> {
+    let wanted = wanted.trim().to_owned();
+    let shortcut = Shortcut::from_str(&wanted)
+        .map_err(|e| format!("'{wanted}' is not a valid key combination: {e}"))?;
+    if shortcut.mods.is_empty() {
+        return Err("Include Ctrl, Alt, Shift or Win in the combination.".to_owned());
+    }
+    let gs = app.global_shortcut();
+    let old = *lock(&shared.open_shortcut);
+    if old != Some(shortcut) {
+        gs.register(shortcut).map_err(|_| {
+            format!("{wanted} is in use. Close the app that uses it, or pick another.")
+        })?;
+    }
+    {
+        let mut s = lock(&services.settings);
+        let mut next = s.clone();
+        next.hotkey = wanted.clone();
+        if let Err(e) = next.save(&services.paths.settings()) {
+            if old != Some(shortcut) {
+                let _ = gs.unregister(shortcut);
+            }
+            return Err(format!("Could not save settings: {e}"));
+        }
+        *s = next;
+    }
+    if let Some(old) = old.filter(|o| *o != shortcut) {
+        let _ = gs.unregister(old);
+    }
+    *lock(&shared.open_shortcut) = Some(shortcut);
+    if let Some(tray) = app.tray_by_id("lookout") {
+        let _ = tray.set_tooltip(Some(format!("Lookout - press {wanted}")));
     }
     Ok(privacy_of(&services, &shared))
 }
@@ -1709,17 +1797,24 @@ fn start_grab(app: &AppHandle) {
 /// human-readable status for the tray tooltip and whether any hotkey is active.
 fn register_hotkey(app: &AppHandle, wanted: &str) -> (String, bool) {
     let gs = app.global_shortcut();
+    let keep = |combo: &str| {
+        *lock(&app.state::<Shared>().open_shortcut) = Shortcut::from_str(combo).ok();
+    };
     match gs.register(wanted) {
-        Ok(()) => return (format!("Lookout - press {wanted}"), true),
+        Ok(()) => {
+            keep(wanted);
+            return (format!("Lookout - press {wanted}"), true);
+        }
         Err(e) => eprintln!("lookout: cannot register hotkey '{wanted}': {e}"),
     }
     if wanted != DEFAULT_HOTKEY {
         match gs.register(DEFAULT_HOTKEY) {
             Ok(()) => {
+                keep(DEFAULT_HOTKEY);
                 return (
                     format!("Lookout - '{wanted}' unavailable, using {DEFAULT_HOTKEY}"),
                     true,
-                )
+                );
             }
             Err(e) => eprintln!("lookout: cannot register fallback hotkey: {e}"),
         }
@@ -1792,6 +1887,13 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             Settings::default()
         }
     };
+
+    // An install that already has folders never sees the setup.
+    if settings.mark_configured_done() {
+        if let Err(e) = settings.save(&settings_path) {
+            eprintln!("lookout: could not save settings: {e}");
+        }
+    }
 
     // Developer flags that name folders (or generate an index) stand in for the first-run choice.
     if !flags.index_roots.is_empty() || flags.synthetic_index.is_some() {
@@ -1956,6 +2058,7 @@ pub fn run() {
             pause_item: Mutex::new(None),
             pause_shortcut: Mutex::new(None),
             grab_shortcut: Mutex::new(None),
+            open_shortcut: Mutex::new(None),
             grabbing: AtomicBool::new(false),
             dialog_open: AtomicBool::new(false),
             actions: ActionTracker::default(),
@@ -2013,7 +2116,11 @@ pub fn run() {
             get_appearance,
             set_appearance,
             pick_folder,
-            apply_folders,
+            help_entries,
+            setup_folders,
+            setup_start,
+            setup_finish,
+            set_open_hotkey,
             set_paused,
             set_cli_access,
             set_content_options,

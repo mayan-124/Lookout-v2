@@ -10,6 +10,10 @@
   import PreviewPanel from "./Preview.svelte";
   import Orb from "./Orb.svelte";
   import { look } from "./look.svelte";
+  import Setup from "./Setup.svelte";
+  import Help, { type HelpRow } from "./Help.svelte";
+  import { FOLDER_STEP, chooseFoldersTarget, isHelpQuery, stepOnShow } from "./setupflow";
+  import { indexLine, type IndexCounts } from "./indexstatus";
 
   type Kind = string | { custom: string };
   interface Item {
@@ -50,20 +54,12 @@
   type Card =
     | { phase: "confirm"; prepared: Prepared; presented: boolean; busy: boolean; error: string }
     | { phase: "result"; ok: boolean; message: string; undoable: boolean };
-  interface Status {
-    files: number;
+  interface Status extends IndexCounts {
     folders: number;
     apps: number;
-    roots: number;
-    indexing: boolean;
-    paused: boolean;
     needs_setup: boolean;
     semantic_done: number;
     semantic_total: number;
-    read_done: number;
-    read_total: number;
-    ocr_done: number;
-    ocr_total: number;
   }
 
   // The orb animates only while the window is on screen.
@@ -425,6 +421,50 @@
     else closePanel();
   }
 
+  // The first-run setup: the open step, or null. It never blocks the bar.
+  let setup: number | null = $state(null);
+  let setupView: ReturnType<typeof Setup> | undefined = $state();
+  const showSetup = $derived(setup !== null && query.trim() === "" && !panel && !disk && !card);
+
+  function endSetup() {
+    setup = null;
+    if (status) status.needs_setup = false;
+    invoke("setup_finish").catch((e) => (notice = errorText(e)));
+    tick().then(() => input?.focus());
+  }
+  function trySetupExample(text: string) {
+    endSetup();
+    tryExample(text);
+  }
+  function setupChanged() {
+    refreshStatus();
+    loadHotkey();
+  }
+  function runSetupAgain() {
+    panel = false;
+    setup = 1;
+  }
+
+  const noFolders = $derived(indexLine(status).state === "nofolders");
+  function chooseFolders() {
+    if (chooseFoldersTarget(!!status?.needs_setup) === "settings") {
+      panel = true; // opens on the Folders page
+      return;
+    }
+    query = "";
+    run("");
+    setup = FOLDER_STEP;
+  }
+
+  // The help view: a fixed table, asked for the first time it is shown.
+  let helpRows: HelpRow[] = $state([]);
+  let helpSelected = $state(0);
+  const showHelp = $derived(isHelpQuery(query) && !panel && !disk && !card);
+  async function loadHelp() {
+    if (helpRows.length > 0) return;
+    helpRows = await invoke<HelpRow[]>("help_entries").catch(() => []);
+  }
+
   function closePanel() {
     panel = false;
     refreshStatus();
@@ -444,6 +484,15 @@
       selected = 0;
       lane = 0;
       loadHome();
+      return;
+    }
+    if (isHelpQuery(text)) {
+      all = [];
+      filters = null;
+      done = true;
+      selected = 0;
+      helpSelected = 0;
+      loadHelp();
       return;
     }
     done = false;
@@ -584,7 +633,7 @@
         !cleared &&
         hidden_secs !== null &&
         hidden_secs < RESTORE_SECS &&
-        (query.trim() !== "" || panel || disk);
+        (query.trim() !== "" || panel || disk || setup !== null);
       notice = "";
       visible = true;
       // A confirm card is never brought back: its preview must be seen fresh.
@@ -606,10 +655,16 @@
       }
       cleared = false;
       input?.focus();
-      // First run: ask which folders may be indexed before anything is.
       loadHotkey();
-      refreshStatus().then(() => {
-        if (status?.needs_setup) panel = true;
+      // First run: the setup. Not awaited, so showing the bar stays as quick.
+      refreshStatus().then(async () => {
+        const wasOpen = setup !== null;
+        setup = stepOnShow(setup, !!status?.needs_setup, restore);
+        // A panel that was already open takes the focus back; a new one does that itself.
+        if (wasOpen && showSetup) {
+          await tick();
+          setupView?.focus();
+        }
       });
       // Two frames: the first commits the DOM change, the second proves the
       // compositor presented it. The backend turns this into "visible" latency.
@@ -657,10 +712,7 @@
     if (panel) {
       if (e.key === "Escape") {
         e.preventDefault();
-        if (status?.needs_setup) {
-          cleared = true;
-          hideBar();
-        } else leavePanel();
+        leavePanel();
       }
       return;
     }
@@ -674,6 +726,32 @@
       }
       return;
     }
+    if (showSetup) {
+      // The setup's controls keep their own keys. Esc skips; typing searches.
+      if (e.key === "Escape") {
+        e.preventDefault();
+        endSetup();
+        return;
+      }
+      const field = e.target instanceof HTMLInputElement && e.target.type === "text";
+      if (!field && e.key.length === 1 && e.key !== " " && !e.ctrlKey && !e.altKey && !e.metaKey) input?.focus();
+      return;
+    }
+    if (showHelp) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const n = helpRows.length;
+        if (n > 0) helpSelected = (helpSelected + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+        return;
+      }
+      if (e.key === "Enter") {
+        if (e.target !== input) return; // a focused row clicks itself
+        e.preventDefault();
+        const row = helpRows[helpSelected];
+        if (row && !e.repeat) tryExample(row.fill);
+        return;
+      }
+    }
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && query === "") {
       // With text in the box, Ctrl+Z stays the text field's own undo.
       e.preventDefault();
@@ -682,6 +760,8 @@
     }
     switch (e.key) {
       case "Tab":
+        // Away from the search box, on help and with no folders, Tab moves focus.
+        if (e.target !== input || showHelp || (noFolders && items.length === 0)) break;
         if (!e.shiftKey && PATHLIKE.test(query)) {
           e.preventDefault();
           completePath();
@@ -712,9 +792,11 @@
         move(-1);
         break;
       case "Enter":
+        if (e.target instanceof HTMLButtonElement) break; // the button's own click
         e.preventDefault();
         if (isDiskCommand(query)) openDisk();
         else if (!e.repeat && understood && selected === items.length) exactWords();
+        else if (!e.repeat && noFolders && done && items.length === 0) chooseFolders();
         else if (!e.repeat) activate(items[selected]);
         break;
     }
@@ -791,7 +873,8 @@
   // Subtitle text; running timers show the live time left.
   const subOf = (i: Item) =>
     isRunning(i) ? `${leftText(secsLeft(i))} left · ends at ${endClock(i.metadata!.end_ms as number)}` : i.subtitle;
-  const home = $derived(query.trim() === "" && !panel && !disk && !card);
+  const home = $derived(query.trim() === "" && !panel && !disk && !card && setup === null);
+  const idx = $derived(indexLine(status));
   const cur = $derived(items[selected] as Item | undefined);
   const previewSource = $derived(previewable(cur) ? { path: pathOf(cur)! } : null);
 
@@ -1010,7 +1093,7 @@
         aria-activedescendant={items.length > 0 && items[selected] ? `result-${selected}` : undefined}
         aria-label="Search"
       />
-      {#if query.trim() !== "" && !panel && !disk && !card}
+      {#if query.trim() !== "" && !panel && !disk && !card && !showHelp}
         <span class="count" aria-live="polite">{items.length} {items.length === 1 ? "result" : "results"}</span>
       {/if}
       <button
@@ -1025,7 +1108,7 @@
       <kbd aria-hidden="true" data-tauri-drag-region>Esc</kbd>
     </div>
 
-    {#if !panel && !disk && !card}
+    {#if !panel && !disk && !card && !showHelp && !showSetup}
       <div class="chips" role="tablist" aria-label="Filter results">
         {#each LANES as l, n}
           <button
@@ -1046,10 +1129,18 @@
     </div>
 
     <div class="stage">
-      {#if disk}
+      {#if setup !== null && !panel}
+        <!-- Stays while a search is typed, so ticked folders are not lost. -->
+        <div class="setupwrap glass" hidden={!showSetup}>
+          <Setup bind:this={setupView} bind:step={setup} onclose={endSetup} ontry={trySetupExample} onchanged={setupChanged} />
+        </div>
+      {/if}
+      {#if showSetup}
+        <!-- drawn above -->
+      {:else if disk}
         <div class="page glass diskpage"><Disk onclose={closeDisk} /></div>
       {:else if panel}
-        <div class="page glass"><Privacy bind:this={privacy} onclose={closePanel} /></div>
+        <div class="page glass"><Privacy bind:this={privacy} onclose={closePanel} onsetup={runSetupAgain} /></div>
       {:else if card?.phase === "confirm"}
         {@const p = card.prepared}
         <div
@@ -1098,12 +1189,16 @@
             {/if}
           </div>
         </section>
+      {:else if showHelp}
+        <div class="card glass">
+          <Help rows={helpRows} bind:selected={helpSelected} onpick={tryExample} />
+        </div>
       {:else if home}
         <div class="home" out:fade={{ duration: dur(70) }}>
           <section class="card glass pick" aria-label="Pick up where you left off">
             <h3 class="label-caps">Pick up where you left off</h3>
             {#if recent.length === 0}
-              <p class="empty">Nothing here yet. Search, or add folders.</p>
+              <p class="empty">{noFolders ? "Nothing here yet. Choose folders to search." : "Nothing here yet. Type to search."}</p>
             {:else}
               <ul class="recent">
                 {#each recent as r, n (r.item.id)}
@@ -1140,12 +1235,14 @@
             </ul>
             <div class="idx">
               <div>
-                <strong>{status ? fmt(status.apps) : "…"} apps · {status ? fmt(status.files) : "…"} files</strong>
-                <span class="sub"
-                  >{#if status?.paused}Paused{:else if status?.indexing}Preparing files…{:else}Add folders to search files{/if}</span
-                >
+                <strong>{idx.text}</strong>
+                <span class="sub">{status ? fmt(status.apps) : "…"} apps</span>
               </div>
-              <button class="btn small primary" onclick={() => (panel = true)}>Choose</button>
+              {#if noFolders}
+                <button class="btn small primary" onclick={chooseFolders}>Choose folders to search</button>
+              {:else}
+                <button class="btn small" onclick={() => (panel = true)}>Folders</button>
+              {/if}
             </div>
           </section>
         </div>
@@ -1280,7 +1377,15 @@
               {#if understood}
                 <ul id="results" class="results" role="listbox">{@render exactRow()}</ul>
               {/if}
-              {#if done}<p class="empty">No results for “{query.trim()}”</p>{/if}
+              {#if done}
+                <p class="empty">No results for “{query.trim()}”</p>
+                {#if noFolders}
+                  <div class="nofolders">
+                    <span>Lookout has no folders to search yet.</span>
+                    <button class="btn primary" onclick={chooseFolders}>Choose folders to search <kbd>Enter</kbd></button>
+                  </div>
+                {/if}
+              {/if}
             {/if}
           </div>
 
@@ -1354,11 +1459,18 @@
     {/if}
 
     <footer>
-      {#if notice}
-        <span class="warn">{notice}</span>
-      {:else}
-        Enter open · Space preview · Tab next lane · Ctrl+1–5 sections · Esc back{#if openHotkey} · {openHotkey} opens Lookout{/if}
-      {/if}
+      {#if status}<span>{idx.text}</span>{/if}
+      <span>
+        {#if notice}
+          <span class="warn">{notice}</span>
+        {:else if showSetup}
+          Tab next · Enter choose · Esc skip setup
+        {:else if showHelp}
+          ↑↓ pick · Enter try it · Esc back
+        {:else}
+          Enter open · Space preview · Tab next lane · Ctrl+1–5 sections · Esc back{#if openHotkey} · {openHotkey} opens Lookout{/if}
+        {/if}
+      </span>
     </footer>
     </div>
   </div>
@@ -1596,8 +1708,25 @@
   .side h3 {
     margin: 0;
   }
+  .setupwrap {
+    justify-self: center;
+    box-sizing: border-box;
+    width: min(640px, 100%);
+    border-radius: var(--r-tile);
+    overflow: hidden;
+  }
+  .nofolders {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    padding: 0 22px 20px;
+    color: var(--text-soft);
+    font-size: var(--fs-md);
+  }
   .idx {
     margin-top: auto;
+    flex-wrap: wrap;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -2052,6 +2181,10 @@
   }
 
   footer {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
     flex: none;
     align-self: center;
     box-sizing: border-box;

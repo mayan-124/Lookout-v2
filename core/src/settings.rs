@@ -96,8 +96,8 @@ pub struct Settings {
     /// memory, which can exceed the idle memory budget; 24 is a sensible opt-in.
     pub rescan_hours: u32,
     pub ranking: RankingWeights,
-    /// Set once the user has gone through the first-run folder choice (even
-    /// if they chose no folders). Until then Lookout asks.
+    /// Set once the user has finished or skipped the first-run setup (even
+    /// without choosing folders). Until then Lookout shows it.
     pub first_run_done: bool,
     /// Folders (and everything below them) that are never indexed: not their
     /// names, not their contents, not OCR of their images.
@@ -221,6 +221,52 @@ impl Settings {
     /// first-run choice. A Phase 2 settings file that already lists folders counts as chosen.
     pub fn needs_first_run(&self) -> bool {
         !self.first_run_done && self.index_roots.is_empty()
+    }
+
+    /// An install that already lists folders never sees the setup: marks it
+    /// done. True if that changed anything.
+    pub fn mark_configured_done(&mut self) -> bool {
+        let change = !self.first_run_done && !self.index_roots.is_empty();
+        self.first_run_done |= change;
+        change
+    }
+
+    /// The setup was finished or skipped; on any error nothing changes.
+    pub fn finish_setup(&mut self, path: &Path) -> Result<(), String> {
+        if self.first_run_done {
+            return Ok(());
+        }
+        let mut next = self.clone();
+        next.first_run_done = true;
+        next.save(path)
+            .map_err(|e| format!("Could not save settings: {e}"))?;
+        *self = next;
+        Ok(())
+    }
+
+    /// The setup's "Start indexing": saves the folders and the two content
+    /// options. A folder must exist unless it was chosen before (a drive that
+    /// is away stays chosen). True if indexing has to restart.
+    pub fn apply_setup(
+        &mut self,
+        roots: Vec<PathBuf>,
+        index_contents: bool,
+        ocr: bool,
+        path: &Path,
+    ) -> Result<bool, String> {
+        let mut next = self.clone();
+        next.index_roots = roots
+            .into_iter()
+            .filter(|p| p.is_dir() || self.index_roots.contains(p))
+            .collect();
+        next.index_contents = index_contents;
+        next.ocr = ocr;
+        let restart = next != *self;
+        next.first_run_done = true;
+        next.save(path)
+            .map_err(|e| format!("Could not save settings: {e}"))?;
+        *self = next;
+        Ok(restart)
     }
 
     /// Loads settings. If the file is missing or broken, the copy kept from the
@@ -366,6 +412,57 @@ mod tests {
             ..Settings::default()
         };
         assert!(!phase2.needs_first_run());
+    }
+
+    #[test]
+    fn existing_installs_with_folders_are_marked_done_and_skip_the_setup() {
+        let mut fresh = Settings::default();
+        assert!(!fresh.mark_configured_done());
+        assert!(fresh.needs_first_run(), "no folders, not done: show it");
+        let mut configured = Settings {
+            index_roots: vec![PathBuf::from(r"D:\Work")],
+            ..Settings::default()
+        };
+        assert!(!configured.needs_first_run());
+        assert!(configured.mark_configured_done());
+        assert!(configured.first_run_done && !configured.mark_configured_done());
+        // Removing every folder later does not bring the setup back.
+        configured.index_roots.clear();
+        assert!(!configured.needs_first_run());
+    }
+
+    #[test]
+    fn skipping_the_setup_is_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut s = Settings::default();
+        s.finish_setup(&path).unwrap();
+        assert!(!Settings::load(&path).unwrap().needs_first_run());
+    }
+
+    #[test]
+    fn setup_saves_folders_and_options_and_can_run_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let docs = dir.path().to_path_buf();
+        let gone = dir.path().join("missing");
+        let mut s = Settings::default();
+        assert!(s
+            .apply_setup(vec![docs.clone(), gone.clone()], false, true, &path)
+            .unwrap());
+        assert_eq!(s.index_roots, std::slice::from_ref(&docs));
+        assert!(!s.index_contents && s.ocr && s.first_run_done);
+        assert_eq!(Settings::load(&path).unwrap(), s);
+        // Again with the same choices: nothing to restart.
+        assert!(!s
+            .apply_setup(vec![docs.clone()], false, true, &path)
+            .unwrap());
+        // A chosen folder that is away for now stays chosen.
+        s.index_roots.push(gone.clone());
+        assert!(!s
+            .apply_setup(vec![docs, gone.clone()], false, true, &path)
+            .unwrap());
+        assert!(s.index_roots.contains(&gone));
     }
 
     #[test]
