@@ -339,6 +339,17 @@ impl ContentStore {
         Ok(())
     }
 
+    /// Frees what searching keeps in memory (term dictionaries, stored blocks) by
+    /// reopening the readers; the next search reads them again.
+    pub fn drop_caches(&self) {
+        let guard = self.open.read().unwrap_or_else(PoisonError::into_inner);
+        if let Some(o) = guard.as_ref() {
+            if let Err(e) = o.reader.reload() {
+                eprintln!("lookout: could not release the content index caches: {e}");
+            }
+        }
+    }
+
     /// Drops everything held open (so the folder can be deleted on Windows).
     pub fn close(&self) {
         *self.writer.lock().unwrap_or_else(PoisonError::into_inner) = None;

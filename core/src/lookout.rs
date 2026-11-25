@@ -959,6 +959,14 @@ impl Lookout {
         Ok(())
     }
 
+    /// Gives back memory that is only a cache: for when the bar has been hidden a while.
+    pub fn trim_memory(&self) {
+        if let Some(c) = &self.content {
+            c.store.drop_caches();
+        }
+        crate::memory::release_free_heap();
+    }
+
     /// Starts a query; see [`Engine::submit`].
     pub fn query(&self, generation: u64, text: &str) -> bool {
         self.engine.submit(generation, text)

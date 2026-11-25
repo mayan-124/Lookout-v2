@@ -29,6 +29,9 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const BAR: &str = "bar";
 
+/// Hidden this long, the memory searching left behind is given back. A quicker reopen keeps it.
+const TRIM_AFTER: Duration = Duration::from_secs(30);
+
 /// How long to wait for the frontend before telling the user it failed to load.
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -360,24 +363,62 @@ fn show_bar(app: &AppHandle) -> Result<(), BarError> {
 
 /// Tells WebView2 whether the page is on screen. Hiding the host window alone does not:
 /// the page keeps reporting `visible`, so its timers, animations and the GPU process keep running.
+/// A hidden page is also asked to use less memory.
 #[cfg(windows)]
 fn set_webview_visible(window: &WebviewWindow, visible: bool) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+    };
+    use windows_core::Interface;
     let _ = window.with_webview(move |wv| {
+        let level = if visible {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+        } else {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+        };
         // SAFETY: the controller is valid for the closure's duration (main thread).
-        let _ = unsafe { wv.controller().SetIsVisible(visible) };
+        unsafe {
+            let controller = wv.controller();
+            let _ = controller.SetIsVisible(visible);
+            // Missing on old WebView2 runtimes: then only the visibility is set.
+            if let Ok(page) = controller
+                .CoreWebView2()
+                .and_then(|p| p.cast::<ICoreWebView2_19>())
+            {
+                let _ = page.SetMemoryUsageTargetLevel(level);
+            }
+        }
     });
 }
 #[cfg(not(windows))]
 fn set_webview_visible(_window: &WebviewWindow, _visible: bool) {}
 
 fn hide_bar_window(app: &AppHandle) {
-    *lock(&app.state::<Shared>().hidden_at) = Some(Instant::now());
+    let hidden = Instant::now();
+    *lock(&app.state::<Shared>().hidden_at) = Some(hidden);
+    trim_memory_later(app.clone(), hidden);
     if let Ok(window) = bar_window(app) {
         set_webview_visible(&window, false);
         if let Err(e) = window.hide() {
             eprintln!("lookout: could not hide bar: {e}");
         }
     }
+}
+
+/// One short-lived thread per hide, no repeating timer. It does nothing if the
+/// bar was shown again in the meantime.
+fn trim_memory_later(app: AppHandle, hidden: Instant) {
+    std::thread::spawn(move || {
+        std::thread::sleep(TRIM_AFTER);
+        let still_hidden = *lock(&app.state::<Shared>().hidden_at) == Some(hidden)
+            && bar_window(&app).is_ok_and(|w| !w.is_visible().unwrap_or(true));
+        if still_hidden {
+            if let Some(lookout) = app.try_state::<Services>().and_then(|s| s.current()) {
+                lookout.trim_memory();
+            }
+        }
+    });
 }
 
 fn toggle_bar(app: &AppHandle) {

@@ -30,6 +30,7 @@ pub mod index_service;
 pub mod item;
 pub mod latency;
 pub mod lookout;
+pub mod memory;
 pub mod name_index;
 pub mod names_store;
 pub mod notify;
