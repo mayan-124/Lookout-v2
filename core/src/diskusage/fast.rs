@@ -374,6 +374,7 @@ struct Acc {
     cloud: u64,
     links: u64,
     link_bytes: u64,
+    types: Split,
 }
 
 type BigItem = Reverse<(u64, u64, u32, u64, String)>;
@@ -430,6 +431,9 @@ impl Builder {
             (disk, logical) = (0, 0);
         }
         let big = !dup && disk >= self.big_floor;
+        if disk > 0 {
+            a.types[usize::from(file_type(name.as_bytes()))] += disk;
+        }
         a.files += 1;
         a.disk += disk;
         a.logical += logical;
@@ -607,6 +611,7 @@ fn build_tree(
     let mut tree = Tree {
         nodes: Vec::new(),
         names: Vec::new(),
+        splits: Vec::new(),
         root: root.to_path_buf(),
         stats: TreeStats::default(),
         scanned_at: 0,
@@ -661,6 +666,7 @@ fn build_tree(
             rest_disk: acc.rest_disk,
             rest_logical: acc.rest_logical,
             rest_new: acc.rest_new,
+            types: acc.types,
             ..Listing::default()
         };
         let job = Job {
@@ -716,6 +722,7 @@ fn build_tree(
         .map_or(0, |d| d.as_secs());
     tree.nodes.shrink_to_fit();
     tree.names.shrink_to_fit();
+    tree.splits.shrink_to_fit();
     progress.helper_peak.store(b.helper_peak, Ordering::Relaxed);
     Ok(tree)
 }
@@ -787,5 +794,51 @@ pub(super) fn scan_fast(
             }
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_file_table_stream_gives_folder_types() {
+        fn name(s: &mut Vec<u8>, n: &str) {
+            s.extend((n.len() as u16).to_le_bytes());
+            s.extend(n.as_bytes());
+        }
+        let mut s = b"LKFS\x01".to_vec();
+        s.extend(4096u32.to_le_bytes());
+        s.extend(0u64.to_le_bytes());
+        // Folder 10 "sub" in the root (record 5).
+        s.push(1);
+        s.extend(10u64.to_le_bytes());
+        s.extend(5u64.to_le_bytes());
+        s.extend(0u32.to_le_bytes());
+        s.push(0);
+        name(&mut s, "sub");
+        let files = [
+            (5u64, 4096u64, "a.pdf"),
+            (10, 8192, "b.zip"),
+            (10, 4096, "c"),
+        ];
+        for (parent, bytes, file) in files {
+            s.push(2);
+            s.extend(parent.to_le_bytes());
+            s.extend(bytes.to_le_bytes());
+            s.extend(bytes.to_le_bytes());
+            s.extend(0u32.to_le_bytes());
+            s.push(0);
+            name(&mut s, file);
+        }
+        s.push(3);
+        s.extend([0u8; 16]);
+        let (opts, progress) = (ScanOptions::default(), Progress::default());
+        let b = read_stream(&mut s.as_slice(), &opts, &progress).expect("stream");
+        let t = build_tree(b, Path::new(r"C:\"), &opts, &progress).expect("tree");
+        let c = t.chart(0, 3).expect("chart");
+        assert_eq!(c.split, [4096, 0, 0, 0, 8192, 0, 0, 4096]);
+        let sub = c.children.iter().find(|k| k.name == "sub").expect("sub");
+        assert_eq!((sub.cat, sub.split), (4, [0, 0, 0, 0, 8192, 0, 0, 4096]));
     }
 }

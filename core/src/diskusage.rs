@@ -10,7 +10,8 @@
 //! opens a file, so cloud placeholders are not downloaded. Folders that are
 //! junctions, symlinks or cloud placeholders are listed but not entered.
 //!
-//! Memory: every folder gets a 48-byte node; each folder keeps only its
+//! Memory: every folder gets a 48-byte node, plus a 64-byte [`Split`] (bytes
+//! per file type) if it holds any data; each folder keeps only its
 //! [`FILES_PER_FOLDER`] largest files as nodes plus one "other files" row, so a
 //! drive with millions of files costs about as much as its folder count. Past
 //! [`NODE_CAP`] nodes deeper folders get no node of their own: their sizes still
@@ -43,12 +44,14 @@ pub const FILES_PER_FOLDER: usize = 40;
 pub const CHART_CAP: usize = 1500;
 /// [`ChartNode::cat`] of anything with no known file type.
 const CAT_OTHER: u8 = 7;
+/// Bytes on disk per file type, in the order of [`file_type`].
+pub type Split = [u64; 8];
 
-/// File type for the chart's "by type" colours, from the name alone. Same
-/// order as `TYPES` in ui/src/chartcolors.ts: documents, images, video, audio,
-/// archives, code, apps, other.
-fn file_type(name: &[u8]) -> u8 {
-    let Some(dot) = name.iter().rposition(|&b| b == b'.') else {
+/// File type for the chart's "by type" colours, from the extension of a UTF-8
+/// or UTF-16 name alone. Same order as `TYPES` in ui/src/chartcolors.ts:
+/// documents, images, video, audio, archives, code, apps, other.
+fn file_type<C: Copy + PartialEq + From<u8> + TryInto<u8>>(name: &[C]) -> u8 {
+    let Some(dot) = name.iter().rposition(|&c| c == C::from(b'.')) else {
         return CAT_OTHER;
     };
     let ext = &name[dot + 1..];
@@ -56,8 +59,11 @@ fn file_type(name: &[u8]) -> u8 {
     if ext.is_empty() || ext.len() > low.len() {
         return CAT_OTHER;
     }
-    for (to, from) in low.iter_mut().zip(ext) {
-        *to = from.to_ascii_lowercase();
+    for (to, &from) in low.iter_mut().zip(ext) {
+        let Ok(b) = from.try_into() else {
+            return CAT_OTHER;
+        };
+        *to = b.to_ascii_lowercase();
     }
     match &low[..ext.len()] {
         b"txt" | b"md" | b"pdf" | b"doc" | b"docx" | b"docm" | b"odt" | b"rtf" | b"xls"
@@ -82,6 +88,24 @@ fn file_type(name: &[u8]) -> u8 {
         _ => CAT_OTHER,
     }
 }
+
+fn add_to(to: &mut Split, from: &Split) {
+    for (t, f) in to.iter_mut().zip(from) {
+        *t = t.saturating_add(*f);
+    }
+}
+
+/// The type holding the most bytes (the first of equals); "other" for none.
+fn dominant(s: &Split) -> u8 {
+    let mut best = (CAT_OTHER, 0);
+    for (cat, &bytes) in (0u8..).zip(s) {
+        if bytes > best.1 {
+            best = (cat, bytes);
+        }
+    }
+    best.0
+}
+
 /// Files at least this big (size on disk) are remembered for the "largest
 /// files" and "old large files" tabs, up to [`BIG_CAP`] of the largest.
 pub const BIG_MIN: u64 = 1 << 20;
@@ -128,6 +152,9 @@ struct Node {
     logical: u64,
     items: u32,
     mtime: u32,
+    /// Index into [`Tree::splits`] for a folder or "other files" row that holds
+    /// data; [`NONE`] otherwise (a file's type comes from its name).
+    split: u32,
 }
 
 const NONE: u32 = u32::MAX;
@@ -194,6 +221,8 @@ pub struct BigFile {
 pub struct Tree {
     nodes: Vec<Node>,
     names: Vec<u8>,
+    /// Bytes per file type, for the nodes whose `split` points here.
+    splits: Vec<Split>,
     root: PathBuf,
     pub stats: TreeStats,
     /// Unix seconds when the scan finished.
@@ -256,9 +285,10 @@ pub struct ChartNode {
     pub items: u32,
     /// Unix seconds (a folder: the newest inside); 0 when unknown.
     pub modified: u32,
-    /// File type (see [`file_type`]); for a folder, the type holding most of
-    /// the bytes of its listed files.
+    /// File type (see [`file_type`]) holding the most bytes.
     pub cat: u8,
+    /// Bytes per file type; adds up to `size`.
+    pub split: Split,
     pub children: Vec<ChartNode>,
 }
 
@@ -299,7 +329,39 @@ impl Tree {
 
     /// Bytes this tree holds in memory.
     pub fn heap_bytes(&self) -> usize {
-        self.nodes.capacity() * std::mem::size_of::<Node>() + self.names.capacity()
+        self.nodes.capacity() * std::mem::size_of::<Node>()
+            + self.names.capacity()
+            + self.splits.capacity() * std::mem::size_of::<Split>()
+    }
+
+    /// Bytes per file type of a node.
+    fn split_of(&self, id: u32) -> Split {
+        let n = &self.nodes[id as usize];
+        if n.kind != 1 {
+            return self
+                .splits
+                .get(n.split as usize)
+                .copied()
+                .unwrap_or_default();
+        }
+        let s = n.name_off as usize;
+        let mut split = Split::default();
+        let cat = file_type(&self.names[s..s + n.name_len as usize]);
+        split[usize::from(cat)] = n.size_disk;
+        split
+    }
+
+    /// Adds to the bytes per type of a folder or "other files" row.
+    fn add_split(&mut self, id: u32, add: &Split) {
+        if add.iter().all(|&b| b == 0) {
+            return;
+        }
+        let n = &mut self.nodes[id as usize];
+        if n.split == NONE {
+            n.split = self.splits.len() as u32;
+            self.splits.push(Split::default());
+        }
+        add_to(&mut self.splits[n.split as usize], add);
     }
 
     pub fn total(&self) -> (u64, u64, u32) {
@@ -470,7 +532,9 @@ impl Tree {
             let grouped = &kids[keep..];
             if !grouped.is_empty() {
                 let (mut count, mut size, mut modified) = (0u32, 0u64, 0u32);
+                let mut split = Split::default();
                 for &(cid, s) in grouped {
+                    add_to(&mut split, &self.split_of(cid));
                     let c = &self.nodes[cid as usize];
                     count = count.saturating_add(if c.kind == 2 { c.items } else { 1 });
                     size += s;
@@ -483,13 +547,23 @@ impl Tree {
                     size,
                     items: count,
                     modified,
-                    cat: CAT_OTHER,
+                    cat: dominant(&split),
+                    split,
                     children: Vec::new(),
                 });
                 at.push((None, parent, level + 1));
             }
             let unlisted = n.size_disk.saturating_sub(listed);
             if unlisted > threshold {
+                // The folder's types less those of everything it has rows for.
+                let mut rows = Split::default();
+                for &(cid, _) in &kids {
+                    add_to(&mut rows, &self.split_of(cid));
+                }
+                let mut split = self.split_of(node);
+                for (s, r) in split.iter_mut().zip(rows) {
+                    *s = s.saturating_sub(r);
+                }
                 slots.push(ChartNode {
                     id: None,
                     name: "not listed (limited detail)".to_owned(),
@@ -497,13 +571,13 @@ impl Tree {
                     size: unlisted,
                     items: 0,
                     modified: 0,
-                    cat: CAT_OTHER,
+                    cat: dominant(&split),
+                    split,
                     children: Vec::new(),
                 });
                 at.push((None, parent, level + 1));
             }
         }
-        self.chart_folder_types(id, &mut slots, &at);
         // Attach from the end: every child is complete before its parent.
         while slots.len() > 1 {
             let mut child = slots.pop()?;
@@ -518,7 +592,7 @@ impl Tree {
 
     fn chart_entry(&self, id: u32) -> ChartNode {
         let n = &self.nodes[id as usize];
-        let name = &self.names[n.name_off as usize..n.name_off as usize + n.name_len as usize];
+        let split = self.split_of(id);
         ChartNode {
             id: Some(id),
             name: if id == 0 {
@@ -536,55 +610,9 @@ impl Tree {
             size: n.size_disk,
             items: n.items,
             modified: n.mtime,
-            cat: if n.kind == 1 {
-                file_type(name)
-            } else {
-                CAT_OTHER
-            },
+            cat: dominant(&split),
+            split,
             children: Vec::new(),
-        }
-    }
-
-    /// Gives every folder of the chart the type holding most of its bytes, in
-    /// one pass over the nodes below it (children follow their parents).
-    fn chart_folder_types(
-        &self,
-        id: u32,
-        slots: &mut [ChartNode],
-        at: &[(Option<u32>, usize, u32)],
-    ) {
-        const OUT: u16 = u16::MAX;
-        let first = id as usize;
-        // For each node from `id` on: the deepest chart segment it is part of.
-        let mut slot_of = vec![OUT; self.nodes.len() - first];
-        for (slot, entry) in at.iter().enumerate() {
-            if let Some(node) = entry.0 {
-                slot_of[node as usize - first] = slot as u16;
-            }
-        }
-        let mut bytes = vec![[0u64; 8]; slots.len()];
-        for i in 0..slot_of.len() {
-            let n = &self.nodes[first + i];
-            if slot_of[i] == OUT && i > 0 && n.parent as usize >= first {
-                slot_of[i] = slot_of[n.parent as usize - first];
-            }
-            if n.kind == 1 && slot_of[i] != OUT {
-                let s = n.name_off as usize;
-                let cat = file_type(&self.names[s..s + n.name_len as usize]);
-                bytes[slot_of[i] as usize][cat as usize] += n.size_disk;
-            }
-        }
-        for slot in (0..slots.len()).rev() {
-            let own = bytes[slot];
-            if slot > 0 {
-                for (to, v) in bytes[at[slot].1].iter_mut().zip(own) {
-                    *to += v;
-                }
-            }
-            if slots[slot].kind == "folder" {
-                let best = (0..own.len()).max_by_key(|&c| own[c]);
-                slots[slot].cat = best.filter(|&c| own[c] > 0).map_or(CAT_OTHER, |c| c as u8);
-            }
         }
     }
 
@@ -654,6 +682,7 @@ impl Tree {
             logical: 0,
             items: 0,
             mtime: 0,
+            split: NONE,
         });
         if parent != NONE {
             self.nodes[parent as usize].first_child = id;
@@ -832,6 +861,8 @@ struct Listing {
     rest_logical: u64,
     rest_new: u32,
     big: Vec<(u64, u64, u32, PathBuf)>,
+    /// Bytes per file type of all the files.
+    types: Split,
     cloud_files: u64,
     hard_links: u64,
     hard_link_bytes: u64,
@@ -886,6 +917,8 @@ impl Collect {
     }
 }
 
+// Returned once per folder and unpacked at once: boxing would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 enum Listed {
     Done(Listing),
     Unreadable,
@@ -1049,6 +1082,9 @@ fn list_folder(
                         let f = job.path.join(OsString::from_wide(name));
                         l.big.push((on_disk, size, mtime, f));
                     }
+                    if on_disk > 0 {
+                        l.types[usize::from(file_type(name))] += on_disk;
+                    }
                     l.files += 1;
                     l.disk += on_disk;
                     l.logical += size;
@@ -1120,6 +1156,7 @@ pub fn scan(
     let mut tree = Tree {
         nodes: Vec::new(),
         names: Vec::new(),
+        splits: Vec::new(),
         root: root.to_path_buf(),
         stats: TreeStats::default(),
         scanned_at: 0,
@@ -1284,6 +1321,7 @@ pub fn scan(
         .map_or(0, |d| d.as_secs());
     tree.nodes.shrink_to_fit();
     tree.names.shrink_to_fit();
+    tree.splits.shrink_to_fit();
     Some(tree)
 }
 
@@ -1295,6 +1333,9 @@ fn roll_up(tree: &mut Tree) {
         let n = tree.nodes[i];
         if n.kind != 0 {
             continue;
+        }
+        if let Some(&split) = tree.splits.get(n.split as usize) {
+            tree.add_split(n.parent, &split);
         }
         let p = &mut tree.nodes[n.parent as usize];
         p.size_disk = p.size_disk.saturating_add(n.size_disk);
@@ -1356,8 +1397,13 @@ fn apply(tree: &mut Tree, job: &Job, l: Listing, opts: &ScanOptions, new_jobs: &
         a.items = a.items.saturating_add(l.files);
         a.mtime = a.mtime.max(l.newest);
     }
+    tree.add_split(anchor, &l.types);
     if job.node.is_some() {
+        // What the listed files leave belongs to the "other files" row.
+        let mut rest = l.types;
         for (d, s, m, name) in l.top {
+            let cat = usize::from(file_type(name.as_bytes()));
+            rest[cat] = rest[cat].saturating_sub(d);
             let id = tree.add(&name, 1, 0, anchor);
             let n = &mut tree.nodes[id as usize];
             (n.size_disk, n.logical, n.mtime, n.items) = (d, s, m, 1);
@@ -1367,6 +1413,7 @@ fn apply(tree: &mut Tree, job: &Job, l: Listing, opts: &ScanOptions, new_jobs: &
             let n = &mut tree.nodes[id as usize];
             (n.size_disk, n.logical, n.mtime, n.items) =
                 (l.rest_disk, l.rest_logical, l.rest_new, l.rest_n);
+            tree.add_split(id, &rest);
         }
     }
 }
@@ -1700,7 +1747,7 @@ impl DiskService {
     }
 }
 
-const MAGIC: &[u8; 6] = b"LKDU\x02\x00";
+const MAGIC: &[u8; 6] = b"LKDU\x03\x00";
 
 fn write_tree(tree: &Tree, path: &Path, key: &Key) -> std::io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
@@ -1731,6 +1778,7 @@ fn write_tree(tree: &Tree, path: &Path, key: &Key) -> std::io::Result<()> {
         }
         w.write_all(&(tree.nodes.len() as u64).to_le_bytes())?;
         w.write_all(&(tree.names.len() as u64).to_le_bytes())?;
+        w.write_all(&(tree.splits.len() as u64).to_le_bytes())?;
         for n in &tree.nodes {
             w.write_all(&n.name_off.to_le_bytes())?;
             w.write_all(&n.name_len.to_le_bytes())?;
@@ -1742,8 +1790,12 @@ fn write_tree(tree: &Tree, path: &Path, key: &Key) -> std::io::Result<()> {
             w.write_all(&n.logical.to_le_bytes())?;
             w.write_all(&n.items.to_le_bytes())?;
             w.write_all(&n.mtime.to_le_bytes())?;
+            w.write_all(&n.split.to_le_bytes())?;
         }
         w.write_all(&tree.names)?;
+        for v in tree.splits.iter().flatten() {
+            w.write_all(&v.to_le_bytes())?;
+        }
         w.write_all(&[u8::from(tree.big_overflow)])?;
         w.write_all(&tree.big_floor.to_le_bytes())?;
         w.write_all(&(tree.big.len() as u32).to_le_bytes())?;
@@ -1818,7 +1870,8 @@ fn read_tree(path: &Path, key: &Key) -> Option<Tree> {
     }
     let count = usize::try_from(u64::from_le_bytes(rd(&mut r)?)).ok()?;
     let names_len = usize::try_from(u64::from_le_bytes(rd(&mut r)?)).ok()?;
-    if count == 0 || count > NODE_CAP * 2 + 1_000_000 || names_len > 1 << 31 {
+    let splits_len = usize::try_from(u64::from_le_bytes(rd(&mut r)?)).ok()?;
+    if count == 0 || count > NODE_CAP * 2 + 1_000_000 || names_len > 1 << 31 || splits_len > count {
         return None;
     }
     let mut nodes = Vec::with_capacity(count);
@@ -1841,10 +1894,15 @@ fn read_tree(path: &Path, key: &Key) -> Option<Tree> {
             logical: u64::from_le_bytes(rd(&mut r)?),
             items: u32::from_le_bytes(rd(&mut r)?),
             mtime: u32::from_le_bytes(rd(&mut r)?),
+            split: u32::from_le_bytes(rd(&mut r)?),
         });
     }
     let mut names = vec![0u8; names_len];
     r.read_exact(&mut names).ok()?;
+    let mut splits = vec![Split::default(); splits_len];
+    for v in splits.iter_mut().flatten() {
+        *v = u64::from_le_bytes(rd(&mut r)?);
+    }
     let big_overflow = rd::<1>(&mut r)?[0] != 0;
     let big_floor = u64::from_le_bytes(rd(&mut r)?);
     let big_count = u32::from_le_bytes(rd(&mut r)?) as usize;
@@ -1872,6 +1930,7 @@ fn read_tree(path: &Path, key: &Key) -> Option<Tree> {
             && (n.parent as usize) < count
             && (n.first_child == NONE || (n.first_child as usize) < count)
             && (n.next == NONE || (n.next as usize) < count)
+            && (n.split == NONE || (n.split as usize) < splits.len())
     });
     if !ok {
         return None;
@@ -1879,6 +1938,7 @@ fn read_tree(path: &Path, key: &Key) -> Option<Tree> {
     Some(Tree {
         nodes,
         names,
+        splits,
         root: PathBuf::from(String::from_utf8_lossy(&root).into_owned()),
         stats: TreeStats {
             files: s[0],
@@ -2147,6 +2207,111 @@ mod tests {
         assert_eq!(file_type(b".gitignore"), CAT_OTHER);
         assert_eq!(file_type(b"no extension"), CAT_OTHER);
         assert_eq!(file_type(b"x.averylongextension"), CAT_OTHER);
+        let wide = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        assert_eq!(file_type(&wide("Film.MKV")), 2);
+        // U+016D must not be cut down to the "m" of ".md".
+        assert_eq!(file_type(&wide("x.\u{16d}d")), CAT_OTHER);
+    }
+
+    /// Every chart segment's types add up to its size.
+    fn splits_add_up(c: &ChartNode) {
+        assert_eq!(c.split.iter().sum::<u64>(), c.size, "{}", c.name);
+        assert_eq!(c.cat, dominant(&c.split), "{}", c.name);
+        c.children.iter().for_each(splits_add_up);
+    }
+
+    #[test]
+    fn folder_types_count_every_file_and_roll_up_to_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = dir.path();
+        // 60 images (more than the 40 kept as rows) outweigh one larger video.
+        for i in 0..60 {
+            write(&r.join(format!("top/pics/p{i}.jpg")), 20_000);
+        }
+        write(&r.join("top/pics/clip.mp4"), 100_000);
+        write(&r.join("top/code/main.rs"), 3_000);
+        write(&r.join("top/code/blob.zzz"), 2_000);
+        write(&r.join("top/doc.pdf"), 5_000);
+        let t = run(r, fast()).unwrap();
+        let cluster = u64::from(t.cluster);
+        let on = |n: u64| n.div_ceil(cluster) * cluster;
+        let want: Split = [
+            on(5_000),
+            60 * on(20_000),
+            on(100_000),
+            0,
+            0,
+            on(3_000),
+            0,
+            on(2_000),
+        ];
+        assert_eq!(t.split_of(0), want, "rolled up to the root");
+        assert_eq!(t.split_of(find(&t, "top")), want);
+        let c = t.chart(0, 4).unwrap();
+        splits_add_up(&c);
+        assert_eq!((c.cat, c.split), (1, want));
+        let pics = t.chart(find(&t, "pics"), 1).unwrap();
+        splits_add_up(&pics);
+        let rest = pics
+            .children
+            .iter()
+            .find(|k| k.kind == "files" || k.kind == "other")
+            .expect("the images without a row");
+        assert_eq!(rest.cat, 1, "images, not Other");
+        // The same types when folders are folded for lack of rows.
+        for node_cap in [2, 4] {
+            let opts = ScanOptions { node_cap, ..fast() };
+            let capped = run(r, opts).unwrap();
+            assert_eq!(capped.split_of(0), want, "cap {node_cap}");
+            splits_add_up(&capped.chart(0, 4).unwrap());
+        }
+        // Saved and loaded again.
+        let file = tempfile::tempdir().unwrap();
+        let file = file.path().join("disk.scan");
+        let key = Key::generate().unwrap();
+        write_tree(&t, &file, &key).unwrap();
+        let back = read_tree(&file, &key).unwrap();
+        assert_eq!(back.chart(0, 4).unwrap().split, want);
+        let pics = find(&t, "pics");
+        assert_eq!(back.split_of(pics), t.split_of(pics));
+    }
+
+    #[test]
+    fn the_chart_of_empty_single_tiny_and_very_deep_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = dir.path();
+        fs::create_dir_all(r.join("empty")).unwrap();
+        write(&r.join("single/only.mp3"), 5_000);
+        fs::create_dir_all(r.join("zero")).unwrap();
+        for i in 0..300 {
+            write(&r.join(format!("tiny/t{i}.txt")), 10);
+            fs::write(r.join(format!("zero/z{i}")), b"").unwrap();
+        }
+        let mut deep = r.join("deep");
+        for i in 0..60 {
+            deep.push(format!("level-{i}"));
+        }
+        write(&deep.join("bottom.png"), 5_000);
+        assert!(deep.as_os_str().len() > 500, "well past MAX_PATH");
+        let t = run(r, fast()).unwrap();
+        for name in ["empty", "zero"] {
+            let c = t.chart(find(&t, name), 4).unwrap();
+            assert_eq!((c.size, c.cat), (0, CAT_OTHER), "{name}");
+            assert!(c.children.is_empty(), "{name}");
+        }
+        let single = t.chart(find(&t, "single"), 4).unwrap();
+        assert_eq!((single.children.len(), single.cat), (1, 3));
+        let tiny = t.chart(find(&t, "tiny"), 4).unwrap();
+        let sum: u64 = tiny.children.iter().map(|k| k.size).sum();
+        assert!(sum > 0);
+        assert_eq!((sum, tiny.cat), (tiny.size, 0));
+        let top = t.chart(find(&t, "deep"), 4).unwrap();
+        assert_eq!(top.cat, 1, "the type comes from 60 levels down");
+        let bottom = find(&t, "bottom.png");
+        assert_eq!(t.path(bottom).unwrap(), deep.join("bottom.png"));
+        assert_eq!(t.breadcrumb(bottom).len(), 63);
+        splits_add_up(&t.chart(0, 5).unwrap());
+        splits_add_up(&t.chart(bottom, 4).unwrap());
     }
 
     #[test]

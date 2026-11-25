@@ -21,12 +21,14 @@
   import {
     CENTRE,
     RING_LEVELS,
+    backing,
     filterShapes,
     hitBlocks,
     hitRing,
     ringArcs,
     ringGeom,
     treemapBlocks,
+    zoomPlan,
     type Arc,
     type Block,
     type RingGeom,
@@ -43,7 +45,8 @@
     drawRingZoom,
     human,
     outline,
-    slicePath,
+    ringCache,
+    sliceOf,
     type Style,
   } from "./chartdraw";
   import { look } from "./look.svelte";
@@ -93,17 +96,14 @@
     now: number;
   }
   /** A zoom between a layout (`outer`) and the layout of one of its folders. */
-  interface Zoom {
-    outer: Scene;
-    inner: Scene;
-    focus: number; // the folder's shape in `outer`
-    from: number;
-    to: number;
-    start: number;
-  }
+  type Zoom = NonNullable<ReturnType<typeof zoomPlan<Scene>>> & { start: number };
   const DURATION = 260;
 
   let wrap: HTMLElement | undefined = $state();
+  // Three layers: the still picture, its dimmed copy (the ring under a hover,
+  // swapped in for the still one) and on top what follows the pointer.
+  let base: HTMLCanvasElement | undefined = $state();
+  let dimmed: HTMLCanvasElement | undefined = $state();
   let canvas: HTMLCanvasElement | undefined = $state();
   let w = $state(0);
   let h = $state(0);
@@ -116,7 +116,7 @@
   const colourSet = $derived(palette(look.theme, look.accent));
   const marked = $derived(scene ? selectionShape(scene.shapes, selected) : { index: -1, exact: false });
   const filtered = $derived(scene?.mode === "treemap" && query.trim() ? filterShapes(scene.blocks, query) : null);
-  const keys = $derived(scene ? legend(colours, colourSet, scene.now) : []);
+  const keys = $derived(scene ? legend(colours, colourSet, scene.now, scene.root.split) : []);
   const folderName = (n: string) => n.split("\\").filter(Boolean).pop() ?? n;
   const title = $derived(data ? folderName(data.root.name) : "");
   const hovered = $derived(hover >= 0 ? scene?.shapes[hover] : undefined);
@@ -150,8 +150,12 @@
   // ------------------------------------------------------------ drawing
   let raf = 0;
   let zoom: Zoom | null = null;
-  let stale = true; // the cached still picture needs redrawing
-  const still = document.createElement("canvas");
+  // What the next frame has to do.
+  let stale = true; // the still picture needs redrawing
+  let dimStale = true; // so does its dimmed copy
+  let dirty = true; // and what lies over them
+  let moved: { x: number; y: number } | null = null; // the latest pointer event
+  let cache = ringCache();
   let fonts = { font: "sans-serif", code: "monospace" };
 
   const style = (s: Scene): Style => ({ mode: colours, palette: colourSet, now: s.now, px, ...fonts });
@@ -159,33 +163,58 @@
   function schedule() {
     if (!raf && visible()) raf = requestAnimationFrame(frame);
   }
+  function redraw() {
+    dirty = true;
+    schedule();
+  }
   function invalidate() {
     stale = true;
-    schedule();
+    redraw();
+  }
+
+  /** The layer's context, cleared if asked, sized to the chart and scaled to CSS pixels. */
+  function layer(el: HTMLCanvasElement, clear: boolean) {
+    const { cw, ch } = backing(w, h, dpr);
+    const ctx = el.getContext("2d");
+    if (!ctx) return null;
+    if (el.width !== cw || el.height !== ch) {
+      el.width = cw;
+      el.height = ch;
+    } else if (clear) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, cw, ch);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return ctx;
+  }
+  function showDimmed(on: boolean) {
+    if (!base || !dimmed) return;
+    base.style.visibility = on ? "hidden" : "";
+    dimmed.style.visibility = on ? "" : "hidden";
   }
 
   function frame(time: number) {
     raf = 0;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return;
-    const cw = Math.max(1, Math.round(w * dpr));
-    const ch = Math.max(1, Math.round(h * dpr));
-    if (canvas.width !== cw || canvas.height !== ch) {
-      canvas.width = cw;
-      canvas.height = ch;
-      stale = true;
+    if (!base || !dimmed || !canvas) return;
+    // However many pointer events came in, only the last one is looked at.
+    if (moved) {
+      pointer = moved;
+      moved = null;
+      if (!zoom) {
+        const i = hit(pointer.x, pointer.y);
+        if (i !== hover) setHover(i);
+      }
     }
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, cw, ch);
     const s = scene;
-    if (!s) return;
     if (zoom) {
       zoom.start ||= time;
       const t = Math.min(1, (time - zoom.start) / DURATION);
       if (t < 1) {
         const eased = 1 - (1 - t) ** 3;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        drawZoom(ctx, zoom, zoom.from + (zoom.to - zoom.from) * eased);
+        showDimmed(false);
+        layer(canvas, true);
+        const ctx = layer(base, true);
+        if (ctx) drawZoom(ctx, zoom, zoom.from + (zoom.to - zoom.from) * eased);
         schedule();
         return;
       }
@@ -193,23 +222,38 @@
       stale = true;
       if (pointer) setHover(hit(pointer.x, pointer.y));
     }
-    if (stale) {
-      still.width = cw;
-      still.height = ch;
-      const c = still.getContext("2d");
-      if (c) drawStill(c, s);
+    // The same slice as before and nothing else changed: nothing to draw.
+    if (!stale && !dirty) return;
+    if (!s) {
+      showDimmed(false);
+      layer(base, true);
+      layer(canvas, true);
+      return;
+    }
+    const { cw, ch } = backing(w, h, dpr);
+    if (stale || base.width !== cw || base.height !== ch) {
+      cache = ringCache();
+      const ctx = layer(base, true);
+      if (ctx) drawStill(ctx, s);
+      dimStale = true;
+      dimmed.width = 0; // freed until a hover needs it again
       stale = false;
     }
-    ctx.drawImage(still, 0, 0);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawOverlay(ctx, s);
+    const dim = s.mode === "ring" && !!s.shapes[hover];
+    if (dim && dimStale) {
+      drawDimmed();
+      dimStale = false;
+    }
+    showDimmed(dim);
+    const over = layer(canvas, true);
+    if (over) drawOverlay(over, s);
+    dirty = false;
   }
 
   function drawStill(ctx: CanvasRenderingContext2D, s: Scene) {
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const st = style(s);
     if (s.mode === "ring") {
-      for (const a of s.arcs) drawArc(ctx, s.geom, a, st);
+      for (const a of s.arcs) drawArc(ctx, s.geom, a, st, cache);
     } else {
       s.blocks.forEach((b, i) => {
         ctx.globalAlpha = filtered && !filtered.bright[i] ? 0.22 : 1;
@@ -219,26 +263,34 @@
     }
   }
 
-  /** Hover, selection and the ring's centre, over the still picture. */
+  /** Made at the first hover of a layout, then only shown and hidden. */
+  function drawDimmed() {
+    const ctx = dimmed && layer(dimmed, true);
+    if (!ctx || !base) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(base, 0, 0);
+    // Dim what is drawn, not the empty canvas.
+    ctx.save();
+    ctx.globalCompositeOperation = "source-atop";
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = colourSet.base;
+    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.restore();
+  }
+
+  /** The hovered item, the selection and the ring's centre, over the still picture. */
   function drawOverlay(ctx: CanvasRenderingContext2D, s: Scene) {
     const st = style(s);
     const p = colourSet;
-    const at = hover >= 0 ? s.shapes[hover] : undefined;
+    const at = s.shapes[hover];
     if (s.mode === "ring") {
-      if (at) {
-        // Dim what is drawn (not the empty canvas), then repaint the slice.
-        ctx.save();
-        ctx.globalCompositeOperation = "source-atop";
-        ctx.globalAlpha = 0.3;
-        ctx.fillStyle = p.base;
-        ctx.fillRect(0, 0, s.w, s.h);
-        ctx.restore();
-        drawArc(ctx, s.geom, s.arcs[hover], st);
-      }
+      const arc = s.arcs[hover];
+      if (arc) drawArc(ctx, s.geom, arc, st, cache);
       const m = s.arcs[marked.index];
-      if (m && slicePath(ctx, s.geom, m.depth, m.a0, m.a1) >= 0) outline(ctx, p.accent, p.base, 2, !marked.exact);
-      if (at && slicePath(ctx, s.geom, s.arcs[hover].depth, s.arcs[hover].a0, s.arcs[hover].a1) >= 0)
-        outline(ctx, p.text, p.base, 1);
+      const selected = m && sliceOf(ctx, s.geom, m, st, cache).path;
+      if (selected) outline(ctx, p.accent, p.base, 2, !marked.exact, selected);
+      const hot = arc && sliceOf(ctx, s.geom, arc, st, cache).path;
+      if (hot) outline(ctx, p.text, p.base, 1, false, hot);
       const node = at?.node ?? s.root;
       drawCentre(
         ctx,
@@ -252,6 +304,7 @@
         ],
         hover === CENTRE && s.crumbs.length > 1,
         st,
+        cache.fits,
       );
     } else {
       const m = s.blocks[marked.index];
@@ -307,25 +360,12 @@
     };
   }
 
-  /** Zoom in when the new folder was drawn before, out when an old one is drawn now. */
-  function zoomBetween(prev: Scene, next: Scene): Zoom | null {
-    const find = (s: Scene, id: number | null) => s.shapes.findIndex((x) => x.node.id === id);
-    const into = find(prev, next.root.id);
-    if (into >= 0) return { outer: prev, inner: next, focus: into, from: 0, to: 1, start: 0 };
-    for (let i = prev.crumbs.length - 1; i >= 0; i--) {
-      const focus = find(next, prev.crumbs[i].id);
-      if (focus >= 0) return { outer: next, inner: prev, focus, from: 1, to: 0, start: 0 };
-    }
-    return null;
-  }
-
   function rebuild(d: ChartData | null, m: "ring" | "treemap", width: number, height: number, label: number) {
     const prev = scene;
     const next = d && width > 0 && height > 0 ? build(d, m, width, height, label) : null;
-    zoom = null;
-    if (prev && next && prev.mode === m && prev.root.id !== next.root.id && !look.reduced && visible()) {
-      zoom = zoomBetween(prev, next);
-    }
+    // Read now, so switching Reduce motion counts from the next change on.
+    const plan = zoomPlan(prev, next, !look.reduced && visible());
+    zoom = plan && { ...plan, start: 0 };
     scene = next;
     setHover(!zoom && pointer && next ? hit(pointer.x, pointer.y) : -1);
     invalidate();
@@ -341,7 +381,7 @@
   });
   $effect(() => {
     void marked;
-    untrack(schedule);
+    untrack(redraw);
   });
   // A screen with another scale: redraw at its pixel density.
   $effect(() => {
@@ -357,8 +397,9 @@
     if (!s) return -1;
     return s.mode === "ring" ? hitRing(s.arcs, s.geom, x, y) : hitBlocks(s.blocks, x, y);
   }
+  /** Does not ask for a frame: callers outside one call `redraw`. */
   function setHover(i: number) {
-    const changed = i !== hover;
+    if (i !== hover) dirty = true;
     hover = i;
     const s = scene;
     const at = i >= 0 ? s?.shapes[i] : undefined;
@@ -374,17 +415,15 @@
           }
         : null,
     );
-    if (changed) schedule();
   }
   function move(e: PointerEvent) {
-    pointer = { x: e.offsetX, y: e.offsetY };
-    if (zoom) return;
-    const i = hit(e.offsetX, e.offsetY);
-    if (i !== hover) setHover(i);
+    moved = { x: e.offsetX, y: e.offsetY };
+    schedule();
   }
   function leave() {
-    pointer = null;
+    moved = pointer = null;
     setHover(-1);
+    schedule();
   }
   function click(e: MouseEvent) {
     const i = hit(e.offsetX, e.offsetY);
@@ -412,7 +451,8 @@
   function wheel(e: WheelEvent) {
     const now = Date.now();
     if (now - lastWheel < 300) return;
-    const node = scene?.shapes[hover]?.node;
+    // Under the pointer now, even if its frame has not run yet.
+    const node = zoom ? undefined : scene?.shapes[hit(e.offsetX, e.offsetY)]?.node;
     if (e.deltaY < 0 && node?.kind === "folder" && node.id !== null) {
       lastWheel = now;
       ondrill(node.id);
@@ -449,6 +489,7 @@
     cancelAnimationFrame(raf);
     raf = 0;
     zoom = null;
+    moved = null;
   }
 
   onMount(() => {
@@ -524,6 +565,8 @@
     onkeydown={key}
     oncontextmenu={contextMenu}
   >
+    <canvas bind:this={base} aria-hidden="true"></canvas>
+    <canvas bind:this={dimmed} aria-hidden="true" style="visibility: hidden"></canvas>
     <canvas
       bind:this={canvas}
       aria-hidden="true"
@@ -546,7 +589,7 @@
   <span class="sr" aria-live="polite">{spoken}</span>
   {#if keys.length}
     <ul class="legend" aria-label="Colour legend">
-      {#each keys as k}<li><i style:background={k.colour}></i>{k.label}</li>{/each}
+      {#each keys as k}<li><i style:background={k.colour}></i>{k.label}{k.size ? ` ${human(k.size)}` : ""}</li>{/each}
     </ul>
   {/if}
 </div>

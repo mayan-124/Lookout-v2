@@ -71,16 +71,17 @@ export function ageBucket(modified: number, now: number): number {
 }
 
 export function fillFor(node: CNode, mode: ColourMode, branch: number, depth: number, p: Palette, now: number): string {
-  if (node.kind === "other" || node.kind === "unlisted") return p.grey;
+  // By type, a group has a type like anything else: grey means unknown types only.
   if (mode === "type") return p.type[node.cat] ?? p.grey;
+  if (node.kind === "other" || node.kind === "unlisted") return p.grey;
   if (mode === "age") return p.age[ageBucket(node.modified, now)] ?? p.grey;
   // Deeper levels are lighter shades: never closer to the dark base.
   return mix(p.folder[branch % p.folder.length], WHITE, Math.min(depth, 3) * 0.15);
 }
 
-/** Legend entries for the current mode; folder colours need none. */
-export function legend(mode: ColourMode, p: Palette, now: number): { colour: string; label: string }[] {
-  if (mode === "type") return TYPES.map((label, i) => ({ colour: p.type[i], label }));
+/** Legend entries for the current mode; folder colours need none. `split` gives the type entries their totals. */
+export function legend(mode: ColourMode, p: Palette, now: number, split?: number[]): { colour: string; label: string; size?: number }[] {
+  if (mode === "type") return TYPES.map((label, i) => ({ colour: p.type[i], label, size: split?.[i] }));
   if (mode !== "age") return [];
   const date = (days: number) =>
     new Date((now - days * 86_400) * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });

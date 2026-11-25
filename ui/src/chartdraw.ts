@@ -43,19 +43,39 @@ export function fitText(ctx: Pick<Ctx, "measureText">, text: string, width: numb
 
 export const fillOf = (s: Arc | Block, st: Style) => fillFor(s.node, st.mode, s.branch, s.depth, st.palette, st.now);
 
+/**
+ * What drawing a ring can reuse from one frame to the next: each slice's path,
+ * colour and label, and the fitted centre lines. Make a new one whenever the
+ * layout, colours or fonts change.
+ */
+export interface RingCache {
+  slices: Map<Arc, Slice>;
+  fits: Map<string, string>;
+}
+export const ringCache = (): RingCache => ({ slices: new Map(), fits: new Map() });
+
+export interface Slice {
+  /** null: too thin to draw. */
+  path: Path2D | null;
+  round: number; // corner radius, stroked round the path
+  fill: string;
+  label: { text: string; font: string; colour: string; x: number; y: number; turn: number } | null;
+}
+
 // ------------------------------------------------------------ ring
 
 const radius = (g: RingGeom, depth: number) => (depth >= 0 ? g.hole + depth * g.ring : g.hole * Math.max(0, 1 + depth));
 
-/** Builds the path of one slice; returns the corner radius to stroke it with. */
-export function slicePath(ctx: Ctx, g: RingGeom, depth: number, a0: number, a1: number): number {
+type PathSink = Pick<Path2D, "arc" | "closePath">;
+
+/** Adds one slice to a path; returns the corner radius to stroke it with, -1 when too thin to draw. */
+export function traceSlice(path: PathSink, g: RingGeom, depth: number, a0: number, a1: number): number {
   const r0 = radius(g, depth) + 0.75;
   const r1 = radius(g, depth + 1) - 0.75;
   if (r1 - r0 < 0.5 || a1 - a0 <= 0) return -1;
-  ctx.beginPath();
   if (a1 - a0 >= TAU - 1e-6) {
-    ctx.arc(g.cx, g.cy, r1, 0, TAU);
-    ctx.arc(g.cx, g.cy, r0, TAU, 0, true);
+    path.arc(g.cx, g.cy, r1, 0, TAU);
+    path.arc(g.cx, g.cy, r0, TAU, 0, true);
     return 0;
   }
   // Slim slices get neither a gap nor round corners: they would vanish.
@@ -66,26 +86,24 @@ export function slicePath(ctx: Ctx, g: RingGeom, depth: number, a0: number, a1: 
   const outer = r1 - round;
   const i = (gap + round) / Math.max(inner, 1);
   const o = (gap + round) / outer;
-  ctx.arc(g.cx, g.cy, outer, a0 + o - TOP, a1 - o - TOP);
-  ctx.arc(g.cx, g.cy, inner, a1 - i - TOP, a0 + i - TOP, true);
-  ctx.closePath();
+  path.arc(g.cx, g.cy, outer, a0 + o - TOP, a1 - o - TOP);
+  path.arc(g.cx, g.cy, inner, a1 - i - TOP, a0 + i - TOP, true);
+  path.closePath();
   return round;
 }
 
-function paintSlice(ctx: Ctx, g: RingGeom, depth: number, a0: number, a1: number, fill: string) {
-  const round = slicePath(ctx, g, depth, a0, a1);
-  if (round < 0) return;
+function paintSlice(ctx: Ctx, path: Path2D, round: number, fill: string) {
   ctx.fillStyle = fill;
-  ctx.fill();
+  ctx.fill(path);
   if (round > 0) {
     ctx.strokeStyle = fill;
     ctx.lineWidth = round * 2;
     ctx.lineJoin = "round";
-    ctx.stroke();
+    ctx.stroke(path);
   }
 }
 
-function sliceLabel(ctx: Ctx, g: RingGeom, s: Arc, fill: string, st: Style) {
+function sliceLabel(ctx: Ctx, g: RingGeom, s: Arc, fill: string, st: Style): Slice["label"] {
   const span = s.a1 - s.a0;
   const mid = (s.a0 + s.a1) / 2;
   const r = g.hole + (s.depth + 0.5) * g.ring;
@@ -96,27 +114,43 @@ function sliceLabel(ctx: Ctx, g: RingGeom, s: Arc, fill: string, st: Style) {
   // Or from the centre outwards.
   const out = span * (r - g.ring / 2) >= st.px + 3 ? g.ring - 10 : 0;
   const room = Math.max(along, out);
-  if (room < st.px * 2.4) return;
-  ctx.font = `600 ${st.px}px ${st.font}`;
+  if (room < st.px * 2.4) return null;
+  const font = `600 ${st.px}px ${st.font}`;
+  ctx.font = font;
   const text = fitText(ctx, s.node.name, room);
-  if (!text) return;
+  if (!text) return null;
   let turn = along >= out ? mid : mid - TOP;
   // Never upside down.
   if (along >= out ? mid > TOP && mid < 3 * TOP : mid > Math.PI) turn += Math.PI;
-  ctx.save();
-  ctx.translate(g.cx + r * Math.sin(mid), g.cy - r * Math.cos(mid));
-  ctx.rotate(turn);
-  ctx.fillStyle = textOn(fill);
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(text, 0, 0);
-  ctx.restore();
+  return { text, font, colour: textOn(fill), x: g.cx + r * Math.sin(mid), y: g.cy - r * Math.cos(mid), turn };
 }
 
-export function drawArc(ctx: Ctx, g: RingGeom, s: Arc, st: Style) {
-  const fill = fillOf(s, st);
-  paintSlice(ctx, g, s.depth, s.a0, s.a1, fill);
-  sliceLabel(ctx, g, s, fill, st);
+/** A slice ready to paint, from the cache when it was drawn before. */
+export function sliceOf(ctx: Ctx, g: RingGeom, s: Arc, st: Style, cache: RingCache): Slice {
+  let out = cache.slices.get(s);
+  if (!out) {
+    const path = new Path2D();
+    const round = traceSlice(path, g, s.depth, s.a0, s.a1);
+    const fill = fillOf(s, st);
+    out = { path: round < 0 ? null : path, round, fill, label: sliceLabel(ctx, g, s, fill, st) };
+    cache.slices.set(s, out);
+  }
+  return out;
+}
+
+export function drawArc(ctx: Ctx, g: RingGeom, s: Arc, st: Style, cache: RingCache) {
+  const { path, round, fill, label } = sliceOf(ctx, g, s, st, cache);
+  if (path) paintSlice(ctx, path, round, fill);
+  if (!label) return;
+  ctx.save();
+  ctx.translate(label.x, label.y);
+  ctx.rotate(label.turn);
+  ctx.font = label.font;
+  ctx.fillStyle = label.colour;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label.text, 0, 0);
+  ctx.restore();
 }
 
 /** One frame of the zoom: `focus` has grown `k` of the way to the whole ring. */
@@ -124,20 +158,23 @@ export function drawRingZoom(ctx: Ctx, g: RingGeom, arcs: Arc[], focus: Arc, k: 
   for (const s of arcs) {
     const z = zoomArc(s, focus, k);
     if (z.a1 - z.a0 < 0.003 || z.depth <= -1 || z.depth >= levels) continue;
-    paintSlice(ctx, g, z.depth, z.a0, z.a1, fillOf(s, st));
+    const path = new Path2D();
+    const round = traceSlice(path, g, z.depth, z.a0, z.a1);
+    if (round >= 0) paintSlice(ctx, path, round, fillOf(s, st));
   }
 }
 
-/** A two-tone line round the current path, visible on light and dark fills. */
-export function outline(ctx: Ctx, colour: string, under: string, width: number, dashed = false) {
+/** A two-tone line round `path` (else the current one), visible on light and dark fills. */
+export function outline(ctx: Ctx, colour: string, under: string, width: number, dashed = false, path?: Path2D) {
+  const stroke = () => (path ? ctx.stroke(path) : ctx.stroke());
   ctx.lineJoin = "round";
   ctx.strokeStyle = under;
   ctx.lineWidth = width + 2;
-  ctx.stroke();
+  stroke();
   if (dashed) ctx.setLineDash([4, 3]);
   ctx.strokeStyle = colour;
   ctx.lineWidth = width;
-  ctx.stroke();
+  stroke();
   ctx.setLineDash([]);
 }
 
@@ -147,6 +184,7 @@ export function drawCentre(
   lines: { text: string; strong?: boolean; code?: boolean }[],
   hot: boolean,
   st: Style,
+  fits?: Map<string, string>,
 ) {
   const r = g.hole - 4;
   ctx.beginPath();
@@ -167,7 +205,13 @@ export function drawCentre(
     const room = 2 * Math.sqrt(Math.max(0, r * r - dy * dy)) - 8;
     ctx.font = `${l.strong ? 600 : 400} ${l.strong ? st.px + 1 : st.px - 1}px ${l.code ? st.code : st.font}`;
     ctx.fillStyle = l.strong ? st.palette.text : st.palette.soft;
-    ctx.fillText(fitText(ctx, l.text, room), g.cx, y);
+    const key = `${ctx.font}|${room}|${l.text}`;
+    let text = fits?.get(key);
+    if (text === undefined) {
+      text = fitText(ctx, l.text, room);
+      fits?.set(key, text);
+    }
+    ctx.fillText(text, g.cx, y);
     y += step;
   }
 }

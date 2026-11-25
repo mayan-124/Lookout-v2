@@ -10,8 +10,10 @@ export interface CNode {
   items: number;
   /** Unix seconds (a folder: the newest inside); 0 when unknown. */
   modified: number;
-  /** File type index (see TYPES in chartcolors.ts); a folder's largest type. */
+  /** File type index (see TYPES in chartcolors.ts) holding the most bytes. */
   cat: number;
+  /** Bytes per file type, in the order of TYPES; adds up to `size`. */
+  split: number[];
   children: CNode[];
 }
 
@@ -45,6 +47,17 @@ export const RING_LEVELS = 4;
 export const MIN_SHARE = 0.005;
 
 const total = (nodes: CNode[]) => nodes.reduce((s, n) => s + n.size, 0);
+const OTHER_TYPE = 7;
+
+/** The type holding the most bytes (the first of equals); "other" for none. */
+export function dominant(split: number[]): number {
+  let best = OTHER_TYPE;
+  let most = 0;
+  split.forEach((bytes, i) => {
+    if (bytes > most) [best, most] = [i, bytes];
+  });
+  return best;
+}
 
 /** Largest first, empty items dropped, small ones merged into one "Other (N items)" at the end. */
 export function mergeSmall(children: CNode[], parentSize: number, share = MIN_SHARE): CNode[] {
@@ -56,6 +69,7 @@ export function mergeSmall(children: CNode[], parentSize: number, share = MIN_SH
   // One small item is not worth hiding behind "Other".
   if (small.length < 2) return keep.concat(small);
   const items = small.reduce((s, c) => s + (c.kind === "other" || c.kind === "files" ? c.items : 1), 0);
+  const split = small.reduce((sum, c) => sum.map((v, i) => v + c.split[i]), new Array<number>(OTHER_TYPE + 1).fill(0));
   keep.push({
     id: null,
     name: `Other (${items.toLocaleString("en-US")} items)`,
@@ -63,7 +77,8 @@ export function mergeSmall(children: CNode[], parentSize: number, share = MIN_SH
     size: total(small),
     items,
     modified: small.reduce((m, c) => Math.max(m, c.modified), 0),
-    cat: 7,
+    cat: dominant(split),
+    split,
     children: [],
   });
   return keep;
@@ -74,6 +89,7 @@ export function prune(node: CNode, gone: ReadonlySet<number>): CNode {
   if (!gone.size) return node;
   let size = node.size;
   let items = node.items;
+  const split = node.split.slice();
   let changed = false;
   const children: CNode[] = [];
   for (const c of node.children) {
@@ -81,6 +97,7 @@ export function prune(node: CNode, gone: ReadonlySet<number>): CNode {
       changed = true;
       size -= c.size;
       items -= c.kind === "folder" ? c.items + 1 : 1;
+      c.split.forEach((v, i) => (split[i] -= v));
       continue;
     }
     const p = prune(c, gone);
@@ -88,10 +105,13 @@ export function prune(node: CNode, gone: ReadonlySet<number>): CNode {
       changed = true;
       size -= c.size - p.size;
       items -= c.items - p.items;
+      c.split.forEach((v, i) => (split[i] -= v - p.split[i]));
     }
     children.push(p);
   }
-  return changed ? { ...node, children, size: Math.max(0, size), items: Math.max(0, items) } : node;
+  if (!changed) return node;
+  const left = split.map((v) => Math.max(0, v));
+  return { ...node, children, size: Math.max(0, size), items: Math.max(0, items), split: left, cat: dominant(left) };
 }
 
 // ------------------------------------------------------------ ring
@@ -169,6 +189,38 @@ export function zoomArc(s: Arc, focus: Arc, k: number): { a0: number; a1: number
     a1: s.a1 + (to(s.a1) - s.a1) * k,
     depth: s.depth - (focus.depth + 1) * k,
   };
+}
+
+/**
+ * A zoom between two layouts: in when the new folder was drawn before, out when
+ * an old one is drawn now. `focus` is that folder's shape in `outer`. None with
+ * `animate` off (Reduce motion, or a hidden view): the new layout shows at once.
+ */
+export function zoomPlan<S extends { mode: string; root: CNode; crumbs: { id: number }[]; shapes: Shape[] }>(
+  prev: S | null,
+  next: S | null,
+  animate: boolean,
+): { outer: S; inner: S; focus: number; from: number; to: number } | null {
+  if (!animate || !prev || !next || prev.mode !== next.mode || prev.root.id === next.root.id) return null;
+  const find = (s: S, id: number | null) => s.shapes.findIndex((x) => x.node.id === id);
+  const into = find(prev, next.root.id);
+  if (into >= 0) return { outer: prev, inner: next, focus: into, from: 0, to: 1 };
+  for (let i = prev.crumbs.length - 1; i >= 0; i--) {
+    const focus = find(next, prev.crumbs[i].id);
+    if (focus >= 0) return { outer: next, inner: prev, focus, from: 1, to: 0 };
+  }
+  return null;
+}
+
+// ------------------------------------------------------------ screen scale
+
+/**
+ * Canvas pixels for a `w` by `h` CSS pixel chart. Drawing is scaled by `dpr`
+ * and pointer positions arrive in CSS pixels, so layout and hit-testing share
+ * one coordinate system whatever the display scaling.
+ */
+export function backing(w: number, h: number, dpr: number): { cw: number; ch: number } {
+  return { cw: Math.max(1, Math.round(w * dpr)), ch: Math.max(1, Math.round(h * dpr)) };
 }
 
 // ------------------------------------------------------------ treemap

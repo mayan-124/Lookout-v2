@@ -1,10 +1,13 @@
 // Disk charts: layout, hit-testing, colours and selection sync.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   CENTRE,
   MAX_SHAPES,
   TAU,
+  backing,
+  dominant,
   filterShapes,
   hitBlocks,
   hitRing,
@@ -15,24 +18,33 @@ import {
   squarify,
   treemapBlocks,
   zoomArc,
+  zoomPlan,
 } from "../src/chartlayout.ts";
 import { AGE_DAYS, TYPES, ageBucket, fillFor, legend, palette, textOn } from "../src/chartcolors.ts";
 import { listPath, selectionShape, shapePath, stepShape } from "../src/chartsync.ts";
-import { fitText } from "../src/chartdraw.ts";
+import { drawArc, drawBlock, drawCentre, drawRingZoom, fitText, ringCache } from "../src/chartdraw.ts";
 import { THEMES, contrast, panelColors } from "../src/theme.ts";
 
 let ids = 0;
-const node = (name, size, children = [], more = {}) => ({
-  id: ++ids,
-  name,
-  kind: children.length ? "folder" : "file",
-  size,
-  items: children.length || 1,
-  modified: 0,
-  cat: 7,
-  children,
-  ...more,
-});
+/** All of `size` in one type, unless the children say otherwise. */
+const node = (name, size, children = [], more = {}) => {
+  const cat = more.cat ?? 7;
+  const split = TYPES.map((_, i) =>
+    children.length ? children.reduce((s, c) => s + c.split[i], 0) : i === cat ? size : 0,
+  );
+  return {
+    id: ++ids,
+    name,
+    kind: children.length ? "folder" : "file",
+    size,
+    items: children.length || 1,
+    modified: 0,
+    cat: dominant(split),
+    split,
+    children,
+    ...more,
+  };
+};
 const folder = (name, children, more = {}) =>
   node(name, children.reduce((s, c) => s + c.size, 0), children, { kind: "folder", ...more });
 
@@ -213,8 +225,10 @@ test("colour modes map folders, types and ages to fills", () => {
   assert.equal(fillFor(file, "type", 1, 3, p, now), p.type[2]);
   assert.equal(fillFor(file, "age", 1, 0, p, now), p.age[3]);
   assert.equal(fillFor({ ...file, modified: 0 }, "age", 0, 0, p, now), p.grey);
-  for (const kind of ["other", "unlisted"])
-    for (const mode of ["folder", "type", "age"]) assert.equal(fillFor({ ...file, kind }, mode, 0, 0, p, now), p.grey);
+  for (const kind of ["other", "unlisted"]) {
+    for (const mode of ["folder", "age"]) assert.equal(fillFor({ ...file, kind }, mode, 0, 0, p, now), p.grey);
+    assert.equal(fillFor({ ...file, kind }, "type", 0, 0, p, now), p.type[2], "a group shows its largest type");
+  }
   assert.deepEqual(
     [1, 31, 183, 366, 731].map((d) => ageBucket(now - d * 86_400, now)),
     [0, 1, 2, 3, 4],
@@ -323,4 +337,168 @@ test("arrow keys move between siblings, into folders and out", () => {
   assert.equal(stepShape(arcs, stepShape(arcs, second, "in"), "out"), second);
   assert.equal(stepShape(arcs, second, "out"), second);
   assert.equal(stepShape([], -1, "next"), -1);
+});
+
+const types = (more) => TYPES.map((_, i) => more[i] ?? 0);
+
+test("groups and folders carry their type totals, and deleting takes them away", () => {
+  const tiny = [node("a.mp3", 30, [], { cat: 3 }), node("b.mp3", 10, [], { cat: 3 }), node("c.txt", 20, [], { cat: 0 })];
+  const root = folder("r", [node("big.zip", 100_000, [], { cat: 4 }), folder("f", tiny)]);
+  const group = mergeSmall(tiny, 100_000).at(-1);
+  assert.deepEqual([group.kind, group.cat, group.split], ["other", 3, types({ 0: 20, 3: 40 })]);
+  const p = palette("neon-grid", null);
+  assert.deepEqual(
+    legend("type", p, 0, root.split).map((k) => k.size),
+    types({ 0: 20, 3: 40, 4: 100_000 }),
+  );
+  const out = prune(root, new Set([root.children[0].id, tiny[0].id]));
+  assert.deepEqual([out.cat, out.split], [0, types({ 0: 20, 3: 10 })]);
+  assert.equal(sum(out.split, (v) => v), out.size);
+  assert.equal(dominant(types({})), 7);
+  assert.equal(dominant(types({ 1: 5, 2: 5 })), 1);
+});
+
+test("drawn shapes and hit-testing agree at 125%, 150% and 200% scaling", () => {
+  for (const dpr of [1, 1.25, 1.5, 2]) {
+    for (const [w, h] of [[848, 671], [331, 331], [1203, 457]]) {
+      const { cw, ch } = backing(w, h, dpr);
+      assert.ok(Math.abs(cw - w * dpr) <= 0.5 && Math.abs(ch - h * dpr) <= 0.5);
+      // A layout point is drawn at (x*dpr, y*dpr) in canvas pixels; the browser
+      // stretches the canvas over w by h CSS pixels, where the pointer reports.
+      const onScreen = (x, y) => [(x * dpr * w) / cw, (y * dpr * h) / ch];
+      const arcs = ringArcs(sample());
+      const g = ringGeom(w, h);
+      arcs.forEach((a, i) => {
+        // The middle of the slice, and a device pixel inside each of its edges.
+        for (const at of [0.5, 1.5 / (g.ring * dpr), 1 - 1.5 / (g.ring * dpr)]) {
+          const r = g.hole + (a.depth + at) * g.ring;
+          const mid = (a.a0 + a.a1) / 2;
+          const [x, y] = onScreen(g.cx + r * Math.sin(mid), g.cy - r * Math.cos(mid));
+          assert.equal(hitRing(arcs, g, x, y), i, `${dpr} ${w}x${h} ${a.node.name}`);
+        }
+      });
+      assert.equal(hitRing(arcs, g, ...onScreen(g.cx, g.cy)), CENTRE);
+      const blocks = treemapBlocks(sample(), w, h, 20);
+      blocks.forEach((b, i) => {
+        const y = b.head ? b.y + 5 : b.y + b.h / 2;
+        assert.equal(hitBlocks(blocks, ...onScreen(b.x + b.w / 2, y)), i, `${dpr} ${b.node.name}`);
+      });
+    }
+  }
+});
+
+/** A canvas that only checks that every number it is given is usable. */
+function checkedCanvas() {
+  const calls = [];
+  const check = (name, args) => {
+    for (const a of args) if (typeof a === "number") assert.ok(Number.isFinite(a), `${name}(${args})`);
+    if (name === "arc") assert.ok(args[2] >= 0, `radius ${args[2]}`);
+    calls.push(name);
+  };
+  const target = { measureText: (t) => ({ width: t.length * 7 }) };
+  const ctx = new Proxy(target, {
+    get: (t, k) => t[k] ?? ((...args) => check(k, args)),
+    set: (t, k, v) => ((t[k] = v), true),
+  });
+  globalThis.Path2D = class {
+    arc = (...args) => check("arc", args);
+    closePath = () => {};
+  };
+  return { ctx, calls };
+}
+
+test("empty, single-file, all-tiny and very deep folders lay out and draw", () => {
+  let deep = node("leaf", 4096);
+  for (let i = 0; i < 400; i++) deep = folder(`a rather long folder name ${i}`, [deep]);
+  const tiny = folder("tiny", Array.from({ length: 1000 }, (_, i) => node(`t${i}`, 4096)));
+  const zero = folder("zero", [node("nothing", 0)]);
+  const cases = { empty: folder("empty", []), zero, one: folder("one", [node("only", 1)]), tiny, deep };
+  const p = palette("neon-grid", null);
+  const st = { mode: "type", palette: p, now: 0, px: 12, font: "sans-serif", code: "monospace" };
+  for (const [name, root] of Object.entries(cases)) {
+    for (const [w, h] of [[330, 330], [848, 671], [1, 1]]) {
+      const { ctx } = checkedCanvas();
+      const g = ringGeom(w, h);
+      const cache = ringCache();
+      const arcs = ringArcs(root);
+      for (const a of arcs) drawArc(ctx, g, a, st, cache);
+      if (arcs.length) drawRingZoom(ctx, g, arcs, arcs[0], 0.5, 4, st);
+      drawCentre(ctx, g, [{ text: root.name, strong: true }, { text: "0 B", code: true }], true, st, cache.fits);
+      const blocks = treemapBlocks(root, w, h, 20);
+      for (const b of blocks) drawBlock(ctx, b, st);
+      hitRing(arcs, g, w / 3, h / 3);
+      hitBlocks(blocks, w / 3, h / 3);
+      assert.equal(arcs.length > 0, root.size > 0, name);
+    }
+  }
+  // Everything under the threshold becomes one full ring.
+  const [only, ...rest] = ringArcs(tiny);
+  assert.deepEqual([only.node.name, rest.length], ["Other (1,000 items)", 0]);
+  close(only.a1, TAU);
+});
+
+test("a slice drawn again reuses its path and label", () => {
+  const { ctx, calls } = checkedCanvas();
+  const g = ringGeom(600, 600);
+  const [arc] = ringArcs(sample());
+  const st = { mode: "folder", palette: palette("neon-grid", null), now: 0, px: 12, font: "sans-serif", code: "monospace" };
+  const cache = ringCache();
+  drawArc(ctx, g, arc, st, cache);
+  const first = cache.slices.get(arc);
+  calls.length = 0;
+  drawArc(ctx, g, arc, st, cache);
+  assert.equal(cache.slices.get(arc), first);
+  assert.ok(!calls.includes("arc") && calls.includes("fill") && calls.includes("fillText"));
+});
+
+test("zooming is planned only when motion is allowed", () => {
+  const root = sample();
+  const work = root.children[1];
+  const scene = (r, crumbs) => ({ mode: "ring", root: r, crumbs, shapes: ringArcs(r) });
+  const top = scene(root, [{ id: root.id }]);
+  const inside = scene(work, [{ id: root.id }, { id: work.id }]);
+  const into = zoomPlan(top, inside, true);
+  assert.deepEqual([into.from, into.to, top.shapes[into.focus].node], [0, 1, work]);
+  const back = zoomPlan(inside, top, true);
+  assert.deepEqual([back.from, back.to, top.shapes[back.focus].node], [1, 0, work]);
+  // Reduce motion (or a hidden view) passes false at the moment of the change.
+  assert.equal(zoomPlan(top, inside, false), null);
+  assert.equal(zoomPlan(inside, top, false), null);
+  assert.equal(zoomPlan(null, top, true), null);
+  assert.equal(zoomPlan(top, top, true), null);
+});
+
+test("arrow keys at the first and last sibling still lead everywhere else", () => {
+  const root = folder("r", [
+    folder("first", [node("f1", 400), node("f2", 300)]),
+    node("middle", 500),
+    folder("last", [node("l1", 200), node("l2", 100)]),
+    node("s1", 1),
+    node("s2", 1),
+  ]);
+  for (const shapes of [ringArcs(root, 4, MAX_SHAPES, 0), treemapBlocks(root, 900, 700, 20)]) {
+    const at = (name) => shapes.findIndex((s) => s.node.name === name);
+    for (const [end, past, away, child] of [
+      ["first", "prev", "next", "f1"],
+      ["last", "next", "prev", "l1"],
+    ]) {
+      const i = at(end);
+      // The ends stop (the grouped "Other" after the last one is skipped).
+      assert.equal(stepShape(shapes, i, past), i, end);
+      assert.equal(stepShape(shapes, i, away), at("middle"), end);
+      assert.equal(stepShape(shapes, i, "in"), at(child), end);
+      assert.equal(stepShape(shapes, at(child), "out"), i, end);
+    }
+    // From the group itself, which a selection can mark, the arrows leave it.
+    const group = shapes.findIndex((s) => s.node.kind === "other");
+    assert.equal(stepShape(shapes, group, "prev"), at("last"));
+  }
+});
+
+test("the chart cannot act on files: it only asks the view for a menu", () => {
+  // Delete goes through the view: menu, disk_prepare, preview, confirm (Disk.svelte).
+  for (const file of ["Chart.svelte", "chartdraw.ts", "chartlayout.ts", "chartsync.ts", "chartcolors.ts"]) {
+    const source = readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /invoke|@tauri-apps\/api\/core/, file);
+  }
 });
