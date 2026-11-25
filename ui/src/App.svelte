@@ -296,6 +296,8 @@
     ports: "Ports",
     system: "System",
     link: "Link",
+    timer: "Timer",
+    quickkey: "Quick key",
   };
   // Plugin results carry messages (a rename preview, an error): wrap, never cut off.
   const isPlugin = (i: Item) => !(i.source in GROUPS);
@@ -760,7 +762,53 @@
     system_page: "Open",
     system_theme: "Switch",
     system_radio: "Turn…",
+    timer_start: "Start",
+    timer_cancel: "Cancel timer",
   };
+
+  // Quick keys: a short word that puts a result on top when typed with a space.
+  let keyFor: { id: string; alias: string; error: string } | null = $state(null);
+  let keyDone = $state("");
+  let keyInput: HTMLInputElement | undefined = $state();
+  const canKey = (i: Item | undefined) =>
+    !!i &&
+    !i.source.startsWith("plugin:") &&
+    !!i.uri &&
+    ["file", "folder", "app", "url", "system"].includes(kindName(i.kind));
+  function startKey(i: Item | undefined) {
+    if (!i || card) return;
+    keyDone = "";
+    keyFor = { id: i.id, alias: "", error: "" };
+    tick().then(() => keyInput?.focus());
+  }
+  async function saveKey() {
+    const f = keyFor;
+    if (!f) return;
+    try {
+      const alias = await invoke<string>("quickkey_set", { id: f.id, alias: f.alias });
+      keyDone = `Quick key set. Type "${alias} " (with the space) to get it.`;
+      keyFor = null;
+      input?.focus();
+    } catch (e) {
+      f.error = errorText(e);
+    }
+  }
+  function keyKeydown(e: KeyboardEvent) {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      saveKey();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      keyFor = null;
+      input?.focus();
+    }
+  }
+  $effect(() => {
+    cur?.id;
+    keyFor = null;
+    keyDone = "";
+  });
   const openLabel = (i: Item | undefined) => ACTION_LABEL[defaultAction(i) ?? ""] ?? "Run";
   function copyText(i: Item | undefined) {
     if (!i || card) return;
@@ -1094,7 +1142,29 @@
                 {#if kindName(cur.kind) === "clipboard" && defaultAction(cur) !== "copy_clip"}
                   <button class="btn small" onclick={() => copyText(cur)}>Copy text</button>
                 {/if}
+                {#if canKey(cur) && !keyFor}
+                  <button class="btn small" onclick={() => startKey(cur)}>Set quick key</button>
+                {/if}
               </div>
+              {#if keyFor}
+                <div class="keyform">
+                  <input
+                    type="text"
+                    bind:this={keyInput}
+                    bind:value={keyFor.alias}
+                    maxlength="8"
+                    placeholder="2–8 letters or digits"
+                    aria-label="Quick key"
+                    aria-invalid={keyFor.error ? "true" : undefined}
+                    onkeydown={keyKeydown}
+                  />
+                  <button class="btn small primary" onclick={saveKey}>Save</button>
+                  <button class="btn small" onclick={() => ((keyFor = null), input?.focus())}>Cancel</button>
+                </div>
+                {#if keyFor.error}<p class="keymsg warn" role="alert">{keyFor.error}</p>{/if}
+              {:else if keyDone}
+                <p class="keymsg" role="status">{keyDone}</p>
+              {/if}
             </aside>
           {/if}
         </div>
@@ -1448,6 +1518,23 @@
   }
   .nm {
     overflow-wrap: anywhere;
+  }
+  .keyform {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .keyform input {
+    flex: 1;
+    min-width: 0;
+  }
+  .keymsg {
+    margin: 6px 0 0;
+    font-size: 12px;
+    color: var(--text-soft);
+  }
+  .keymsg.warn {
+    color: var(--danger);
   }
   .prevactions {
     display: flex;

@@ -20,6 +20,9 @@ pub struct ParsedQuery {
     pub tokens: Vec<String>,
     pub kind: Option<Kind>,
     pub time: Option<TimeRange>,
+    /// The input ended with whitespace after at least one word (quick keys
+    /// fire only on an exact word plus a trailing space).
+    pub trailing_space: bool,
 }
 
 impl ParsedQuery {
@@ -82,6 +85,7 @@ pub fn parse_at<Tz: chrono::TimeZone>(input: &str, now: &chrono::DateTime<Tz>) -
         tokens: words,
         kind,
         time,
+        trailing_space: !input.trim().is_empty() && input.ends_with(char::is_whitespace),
     }
 }
 

@@ -61,6 +61,8 @@ pub enum StartError {
     ActionLog(#[from] crate::actions::undo_log::LogError),
     #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error(transparent)]
+    Db(#[from] crate::securedb::DbError),
     #[error("could not start the index saver: {0}")]
     Saver(#[source] std::io::Error),
 }
@@ -209,6 +211,10 @@ pub struct Lookout {
     disk: crate::diskusage::DiskService,
     /// Clean up list and duplicate finder (on demand).
     tidy: crate::cleanup::Tidy,
+    quick_keys: Arc<crate::quickkeys::QuickKeys>,
+    timers: Arc<crate::timers::TimerService>,
+    /// Results of the latest update that may get a quick key.
+    keyable: Arc<Mutex<HashMap<String, crate::item::Item>>>,
 }
 
 /// Adds `%LOCALAPPDATA%` and `%APPDATA%` (names only; contents are never read)
@@ -439,9 +445,20 @@ impl Lookout {
             None => default_system(),
         };
         let theme: Arc<dyn quick_actions::ThemeBackend> = Arc::new(WindowsTheme);
+        let quick_keys = Arc::new(crate::quickkeys::QuickKeys::new(storage.db.clone())?);
+        let timer_store = Arc::new(crate::timers::TimerStore::new(storage.db.clone())?);
+        let timers = Arc::new(
+            crate::timers::TimerService::start(
+                timer_store.clone(),
+                crate::notify::default_notifier(),
+            )
+            .map_err(StartError::Engine)?,
+        );
         let files_source = Arc::new(FilesSource::new(index.clone(), weights));
         let sources: Vec<Arc<dyn Source>> = vec![
             Arc::new(CalculatorSource),
+            Arc::new(crate::quickkeys::QuickKeySource::new(quick_keys.clone())),
+            Arc::new(crate::timers::TimerSource::new(timer_store)),
             Arc::new(UnitsSource),
             Arc::new(crate::pathquery::PathSource),
             Arc::new(QuickSource::new(theme.clone())),
@@ -526,6 +543,8 @@ impl Lookout {
             Arc::new(OpenUrlAction::new(opts.launcher.clone())),
             Arc::new(PageAction::new(opts.launcher.clone())),
             Arc::new(ThemeAction::new(theme)),
+            Arc::new(crate::timers::StartAction::new(timers.clone())),
+            Arc::new(crate::timers::CancelAction::new(timers.clone())),
             Arc::new(RevealAction(Arc::new(ExplorerReveal))),
             Arc::new(CopyPathAction(Arc::new(WindowsClipboardWriter))),
             Arc::new(RecycleAction::new(
@@ -542,8 +561,16 @@ impl Lookout {
         // Remember which results can be acted on, so the UI can only name items we
         // produced. Actions never receive a path or port from the webview.
         let targets: Arc<Mutex<HashMap<String, Target>>> = Arc::default();
-        let (map, inner) = (targets.clone(), sink);
+        let keyable: Arc<Mutex<HashMap<String, crate::item::Item>>> = Arc::default();
+        let (map, inner, key_map) = (targets.clone(), sink, keyable.clone());
         let wrapped: Sink = Arc::new(move |update: Update| {
+            let can_key: HashMap<String, crate::item::Item> = update
+                .items
+                .iter()
+                .filter(|i| crate::quickkeys::eligible(i))
+                .map(|i| (i.id.clone(), i.clone()))
+                .collect();
+            *key_map.lock().unwrap_or_else(PoisonError::into_inner) = can_key;
             let known: HashMap<String, Target> = update
                 .items
                 .iter()
@@ -584,6 +611,9 @@ impl Lookout {
                 disk_hints,
             ),
             tidy,
+            quick_keys,
+            timers,
+            keyable,
         })
     }
 
@@ -849,6 +879,7 @@ impl Lookout {
     /// be used for anything that writes afterwards (its `meta.db` writes are
     /// switched off so it cannot overwrite what a successor saved).
     pub fn shutdown(&self) {
+        self.timers.stop();
         self.disk.close();
         self.stop_semantic();
         if let Some(h) = &self.plugins {
@@ -883,6 +914,7 @@ impl Lookout {
     /// start a new `Lookout` to index again. Settings are left alone.
     pub fn wipe_index(&self) -> Result<(), WipeError> {
         self.wiped.store(true, Ordering::Release);
+        self.timers.stop();
         self.pause.set(true);
         self.disk.close();
         if let Some(h) = &self.plugins {
@@ -968,6 +1000,27 @@ impl Lookout {
             .unwrap_or_else(PoisonError::into_inner)
             .get(id)
             .cloned()
+    }
+
+    pub fn quick_keys(&self) -> &crate::quickkeys::QuickKeys {
+        &self.quick_keys
+    }
+
+    /// Gives a result from the latest update a quick key. The result is
+    /// looked up here; the webview names only its id and the alias.
+    pub fn set_quick_key(
+        &self,
+        item_id: &str,
+        alias: &str,
+    ) -> Result<String, crate::quickkeys::KeyError> {
+        let item = self
+            .keyable
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(item_id)
+            .cloned()
+            .ok_or(crate::quickkeys::KeyError::NotSupported)?;
+        self.quick_keys.add(alias, &item)
     }
 
     /// The disk usage analyzer (on demand; idle until a scan is started).
@@ -1146,7 +1199,10 @@ fn target_of(item: &crate::item::Item) -> Option<Target> {
             })
         }
         Kind::Custom(ref name)
-            if name == quick_actions::KIND_URL || name == quick_actions::KIND_SYSTEM =>
+            if name == quick_actions::KIND_URL
+                || name == quick_actions::KIND_SYSTEM
+                || name == crate::timers::KIND_NEW
+                || name == crate::timers::KIND_RUNNING =>
         {
             Some(Target {
                 item_id: item.id.clone(),

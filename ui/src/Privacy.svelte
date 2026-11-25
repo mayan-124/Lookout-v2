@@ -57,6 +57,60 @@
     }
   }
 
+  // Quick keys: list, add, rename, delete. Targets that are apps or system actions
+  // are set from a search result ("Set quick key"); here a path or web address is typed.
+  interface QuickKey {
+    alias: string;
+    title: string;
+    subtitle: string | null;
+    kind: string;
+  }
+  let qkeys: QuickKey[] = $state([]);
+  let qkAlias = $state("");
+  let qkTarget = $state("");
+  let qkError = $state("");
+  let qkEditing: string | null = $state(null);
+  let qkEditAlias = $state("");
+  const qkText = (e: unknown) => (typeof e === "string" ? e : String(e));
+  async function loadKeys() {
+    try {
+      qkeys = await invoke<QuickKey[]>("quickkey_list");
+    } catch {
+      qkeys = [];
+    }
+  }
+  async function addKey() {
+    qkError = "";
+    try {
+      await invoke("quickkey_add", { alias: qkAlias, target: qkTarget });
+      qkAlias = "";
+      qkTarget = "";
+      await loadKeys();
+    } catch (e) {
+      qkError = qkText(e);
+    }
+  }
+  async function saveEdit(old: string) {
+    qkError = "";
+    try {
+      await invoke("quickkey_rename", { old, alias: qkEditAlias });
+      qkEditing = null;
+      await loadKeys();
+    } catch (e) {
+      qkError = qkText(e);
+    }
+  }
+  async function deleteKey(alias: string) {
+    qkError = "";
+    try {
+      await invoke("quickkey_delete", { alias });
+    } catch (e) {
+      qkError = qkText(e);
+    }
+    await loadKeys();
+  }
+  onMount(loadKeys);
+
   type Section = "general" | "folders" | "privacy" | "speed" | "addons" | "shortcuts" | "status" | "delete";
   const SECTIONS: [Section, string][] = [
     ["general", "General"],
@@ -394,6 +448,41 @@
             </div>
           {/if}
           {#if updMsg}<p role="status">{updMsg}</p>{/if}
+          </div>
+          <div class="scard">
+          <h3 class="stitle">Quick keys</h3>
+          <div class="field">
+            {@render field("Quick keys", "A short word for an app, file, folder, web address or system action. Type the word and a space in search to put it on top. To use an app or system action, select its result and click Set quick key.")}
+          </div>
+          {#each qkeys as k (k.alias)}
+            <div class="field">
+              <span class="fl">
+                <span class="ft"><code>{k.alias}</code> · {k.title}</span>
+                <span class="hint">{k.kind}{k.subtitle ? ` · ${k.subtitle}` : ""}</span>
+              </span>
+              {#if qkEditing === k.alias}
+                <input
+                  type="text"
+                  class="code"
+                  maxlength="8"
+                  bind:value={qkEditAlias}
+                  aria-label="New quick key"
+                  onkeydown={(e) => e.key === "Enter" && saveEdit(k.alias)}
+                />
+                <button class="btn small primary" onclick={() => saveEdit(k.alias)}>Save</button>
+                <button class="btn small" onclick={() => (qkEditing = null)}>Cancel</button>
+              {:else}
+                <button class="btn small" onclick={() => ((qkEditing = k.alias), (qkEditAlias = k.alias), (qkError = ""))}>Edit</button>
+                <button class="btn small danger" onclick={() => deleteKey(k.alias)}>Delete</button>
+              {/if}
+            </div>
+          {/each}
+          <div class="field">
+            <input type="text" class="code" maxlength="8" placeholder="Quick key" bind:value={qkAlias} aria-label="Quick key" />
+            <input type="text" placeholder="Folder, file path or web address" bind:value={qkTarget} aria-label="Target" onkeydown={(e) => e.key === "Enter" && addKey()} />
+            <button class="btn small primary" onclick={addKey}>Add</button>
+          </div>
+          {#if qkError}<p class="danger-text" role="alert">{qkError}</p>{/if}
           </div>
         {:else if section === "folders"}
           <h2 id="priv-title">Folders</h2>

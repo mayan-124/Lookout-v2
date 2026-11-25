@@ -534,6 +534,55 @@ async fn confirm_action(
     })
 }
 
+/// Quick keys (aliases). The webview names a result by its id from the latest
+/// update; the backend looks the result up itself.
+#[tauri::command]
+fn quickkey_list(services: State<Services>) -> Vec<lookout_core::quickkeys::KeyInfo> {
+    services
+        .current()
+        .map(|l| l.quick_keys().list())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn quickkey_set(id: String, alias: String, services: State<Services>) -> Result<String, String> {
+    services_of(&services)?
+        .set_quick_key(&id, &alias)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn quickkey_add(
+    alias: String,
+    target: String,
+    services: State<Services>,
+) -> Result<String, String> {
+    services_of(&services)?
+        .quick_keys()
+        .add_typed(&alias, &target)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn quickkey_rename(
+    old: String,
+    alias: String,
+    services: State<Services>,
+) -> Result<String, String> {
+    services_of(&services)?
+        .quick_keys()
+        .rename(&old, &alias)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn quickkey_delete(alias: String, services: State<Services>) -> Result<(), String> {
+    services_of(&services)?
+        .quick_keys()
+        .remove(&alias)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn can_undo(services: State<Services>) -> bool {
     services.current().is_some_and(|l| l.can_undo())
@@ -1759,6 +1808,11 @@ pub fn run() {
             run_action,
             confirm_action,
             can_undo,
+            quickkey_list,
+            quickkey_set,
+            quickkey_add,
+            quickkey_rename,
+            quickkey_delete,
             index_status,
             privacy_state,
             pick_folder,

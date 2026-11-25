@@ -42,6 +42,8 @@ Actions go through a preview and, when they can hurt, an explicit confirmation, 
 - quick actions: type `dark mode` (switches Windows dark/light, undoable), or `wifi`, `bluetooth`, `night light`, `display`, `sound`, `battery`, `storage`, `apps`, `windows update`, `settings` (opens that Settings page); results are labelled System
 - type a web address (`apple.com`, `https://x.com/y`, `localhost:3000`) to open it in your default browser (http and https only), or a network path (`\\server\share`) to open it in Explorer
 - `kill port 3000` (also `kill 3000`, `stop :3000`) shows the program, command line and folder that are using the port right now, asks you to confirm, stops it, and can start it again with `Ctrl+Z` (only if its command line and folder could be read)
+- quick keys: give an app, file, folder, web address or system action a 2 to 8 character alias (select the result and click Set quick key, or Settings > General); type the alias and a space to put it on top (previews and confirmations still apply)
+- timers: `timer 10 min`, `timer 90s`, `timer 1h30m tea`, `10 min timer`; `timers` lists and cancels them; a Windows notification (with sound) fires even when the window is hidden, and timers survive a restart
 - opening a file is an action too: documents, folders and apps open at once, but `.exe .bat .cmd .js .vbs .msi .ps1 .scr .hta` (and similar types) ask first
 
 Phase 3 adds search by what is *inside* things, with privacy controls:
