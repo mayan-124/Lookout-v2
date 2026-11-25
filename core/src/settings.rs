@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(windows)]
+use crate::autostart::RunEntry;
 use crate::ranking::RankingWeights;
 
 pub const DEFAULT_HOTKEY: &str = "Alt+Space";
@@ -134,6 +136,9 @@ pub struct Settings {
     /// Lets programs running as this Windows user search through the `lookout`
     /// command (a local named pipe). Off unless the user turns it on.
     pub cli_access: bool,
+    /// Start Lookout when this user signs in to Windows. `None` until it is
+    /// chosen; only a new install's setup offers it ticked.
+    pub start_with_windows: Option<bool>,
     /// Last window position (physical pixels) per monitor, keyed by
     /// [`monitor_key`]. A monitor that is gone simply has no use.
     pub window_positions: std::collections::BTreeMap<String, (i32, i32)>,
@@ -204,6 +209,7 @@ impl Default for Settings {
             appearance: None,
             chart_colors: CHART_COLORS[0].to_owned(),
             cli_access: false,
+            start_with_windows: None,
             pinned: false,
             window_positions: std::collections::BTreeMap::new(),
         }
@@ -229,6 +235,60 @@ impl Settings {
         let change = !self.first_run_done && !self.index_roots.is_empty();
         self.first_run_done |= change;
         change
+    }
+
+    /// The state of the "start with Windows" switch.
+    pub fn starts_with_windows(&self) -> bool {
+        self.start_with_windows == Some(true)
+    }
+
+    /// Whether the setup shows the switch ticked: the choice already made,
+    /// else yes (only a new install is still without one).
+    pub fn setup_offers_start_with_windows(&self) -> bool {
+        self.start_with_windows.unwrap_or(true)
+    }
+
+    /// Called at start: an install that was set up before this option existed
+    /// keeps it off until the user turns it on. True if that changed anything.
+    pub fn keep_start_with_windows_off(&mut self) -> bool {
+        let change = !self.needs_first_run() && self.start_with_windows.is_none();
+        if change {
+            self.start_with_windows = Some(false);
+        }
+        change
+    }
+
+    /// Writes or removes the Run entry and saves the choice; if either fails,
+    /// nothing changes.
+    #[cfg(windows)]
+    pub fn set_start_with_windows(
+        &mut self,
+        on: bool,
+        path: &Path,
+        entry: &RunEntry,
+        exe: &Path,
+    ) -> Result<(), String> {
+        entry
+            .set(on, exe)
+            .map_err(|e| format!("Could not change the Windows startup entry: {e}"))?;
+        let mut next = self.clone();
+        next.start_with_windows = Some(on);
+        if let Err(e) = next.save(path) {
+            let _ = entry.set(self.starts_with_windows(), exe);
+            return Err(format!("Could not save settings: {e}"));
+        }
+        *self = next;
+        Ok(())
+    }
+
+    /// At every start, while the switch is on: puts a missing or outdated entry
+    /// right. While it is off the registry is not touched.
+    #[cfg(windows)]
+    pub fn verify_start_with_windows(&self, entry: &RunEntry, exe: &Path) -> std::io::Result<()> {
+        if self.starts_with_windows() {
+            entry.set(true, exe)?;
+        }
+        Ok(())
     }
 
     /// The setup was finished or skipped; on any error nothing changes.
@@ -429,6 +489,29 @@ mod tests {
         // Removing every folder later does not bring the setup back.
         configured.index_roots.clear();
         assert!(!configured.needs_first_run());
+    }
+
+    #[test]
+    fn start_with_windows_is_offered_to_new_installs_and_off_for_existing_ones() {
+        let mut fresh = Settings::default();
+        assert!(!fresh.keep_start_with_windows_off());
+        assert!(
+            !fresh.starts_with_windows(),
+            "off until the setup applies it"
+        );
+        assert!(fresh.setup_offers_start_with_windows());
+        // An older settings file has no such field.
+        let mut existing: Settings = serde_json::from_str(r#"{"first_run_done": true}"#).unwrap();
+        assert!(existing.keep_start_with_windows_off());
+        assert!(!existing.starts_with_windows());
+        assert!(
+            !existing.setup_offers_start_with_windows(),
+            "run setup again"
+        );
+        // A choice already made is kept.
+        existing.start_with_windows = Some(true);
+        assert!(!existing.keep_start_with_windows_off());
+        assert!(existing.starts_with_windows());
     }
 
     #[test]
@@ -671,6 +754,7 @@ mod tests {
             chart_colors: "type".into(),
             pinned: true,
             cli_access: true,
+            start_with_windows: Some(true),
             window_positions: [("M|0,0|1x1".to_owned(), (5, 6))].into(),
         };
         s.save(&path).unwrap();

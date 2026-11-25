@@ -13,6 +13,8 @@
 
 pub mod actions;
 pub mod apps;
+#[cfg(windows)]
+pub mod autostart;
 pub mod calc;
 pub mod cleanup;
 pub mod cli;

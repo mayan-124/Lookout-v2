@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use lookout_core::actions::open::Launcher;
 use lookout_core::actions::{Done, GateConfig, Prepared};
 use lookout_core::apps::default_start_menu_dirs;
+use lookout_core::autostart::{RunEntry, AUTOSTART_FLAG};
 use lookout_core::cli::{parse_dev_flags, parse_measure_args, MeasureArgs};
 use lookout_core::content::idle::SystemIdle;
 use lookout_core::content::ocr::WindowsOcr;
@@ -461,7 +462,9 @@ fn frontend_ready(app: AppHandle, shared: State<Shared>) {
         let first_run = app
             .try_state::<Services>()
             .is_some_and(|s| lock(&s.settings).needs_first_run());
-        if first_run && lock(&shared.samples_tx).is_none() {
+        // A start at sign-in stays hidden; the setup then waits for the hotkey.
+        let at_sign_in = std::env::args().any(|a| a == AUTOSTART_FLAG);
+        if first_run && !at_sign_in && lock(&shared.samples_tx).is_none() {
             if let Err(e) = show_bar(&app) {
                 eprintln!("lookout: could not show the setup: {e}");
             }
@@ -1261,6 +1264,9 @@ struct PrivacyState {
     index_speed: lookout_core::settings::IndexSpeed,
     content_index_max_mb: u64,
     cli_access: bool,
+    start_with_windows: bool,
+    /// What the setup shows that switch as.
+    setup_start_with_windows: bool,
 }
 
 fn privacy_of(services: &Services, shared: &Shared) -> PrivacyState {
@@ -1285,6 +1291,8 @@ fn privacy_of(services: &Services, shared: &Shared) -> PrivacyState {
         index_speed: s.index_speed,
         content_index_max_mb: s.content_index_max_mb,
         cli_access: s.cli_access,
+        start_with_windows: s.starts_with_windows(),
+        setup_start_with_windows: s.setup_offers_start_with_windows(),
     }
 }
 
@@ -1489,6 +1497,23 @@ async fn set_cli_access(
         let _ = s.save(&services.paths.settings());
         return Err(e);
     }
+    Ok(privacy_of(&services, &shared))
+}
+
+/// "Start Lookout when I sign in to Windows": applied at once.
+#[tauri::command]
+fn set_start_with_windows(
+    on: bool,
+    services: State<Services>,
+    shared: State<Shared>,
+) -> Result<PrivacyState, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("Could not find Lookout: {e}"))?;
+    lock(&services.settings).set_start_with_windows(
+        on,
+        &services.paths.settings(),
+        &RunEntry::default(),
+        &exe,
+    )?;
     Ok(privacy_of(&services, &shared))
 }
 
@@ -1888,10 +1913,22 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // An install that already has folders never sees the setup.
-    if settings.mark_configured_done() {
+    // An install that already has folders never sees the setup, and one set up
+    // earlier does not start with Windows unless asked to.
+    let marked = settings.mark_configured_done();
+    if settings.keep_start_with_windows_off() || marked {
         if let Err(e) = settings.save(&settings_path) {
             eprintln!("lookout: could not save settings: {e}");
+        }
+    }
+
+    // After an update moved the program, point the startup entry at it again.
+    // Not for developer runs: they would take the entry over.
+    if flags.data_dir.is_none() && !cfg!(debug_assertions) {
+        if let Err(e) = std::env::current_exe()
+            .and_then(|exe| settings.verify_start_with_windows(&RunEntry::default(), &exe))
+        {
+            eprintln!("lookout: could not check the startup entry: {e}");
         }
     }
 
@@ -2124,6 +2161,7 @@ pub fn run() {
             set_paused,
             set_cli_access,
             set_content_options,
+            set_start_with_windows,
             save_settings,
             set_grab_hotkey,
             delete_index,

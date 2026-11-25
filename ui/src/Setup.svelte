@@ -15,6 +15,8 @@
     open_hotkey: string;
     index_contents: boolean;
     ocr: boolean;
+    start_with_windows: boolean;
+    setup_start_with_windows: boolean;
   }
 
   let {
@@ -36,6 +38,8 @@
   let contents = $state(true);
   let ocr = $state(true);
   let hotkey = $state("");
+  let startup = $state(false);
+  let startupSaved = false;
   let loaded = $state(false);
   let busy = $state(false);
   let message = $state("");
@@ -56,6 +60,8 @@
       contents = saved.index_contents;
       ocr = saved.ocr;
       hotkey = saved.open_hotkey;
+      startup = saved.setup_start_with_windows;
+      startupSaved = saved.start_with_windows;
     } catch (e) {
       message = errorText(e);
     }
@@ -106,6 +112,30 @@
       message = errorText(e);
     }
     busy = false;
+  }
+
+  async function saveStartup() {
+    message = "";
+    try {
+      const s = await invoke<Saved>("set_start_with_windows", { on: startup });
+      startupSaved = s.start_with_windows;
+      return true;
+    } catch (e) {
+      startup = startupSaved;
+      message = errorText(e);
+      return false;
+    }
+  }
+
+  // "Next" on the shortcuts step also applies a tick that was left as offered.
+  async function next() {
+    if (step === 3) {
+      busy = true;
+      const ok = await saveStartup();
+      busy = false;
+      if (!ok) return;
+    }
+    go(step + 1);
   }
 
   async function hotkeyKeydown(e: KeyboardEvent) {
@@ -190,6 +220,16 @@
         <input class="code combo" type="text" readonly value={hotkey} onkeydown={hotkeyKeydown} aria-label="Open Lookout hotkey" />
       </label>
       {#if hotkeyMessage}<p class="note" role="status">{hotkeyMessage}</p>{/if}
+      <label class="field">
+        <span class="fl">
+          <span class="ft">Start Lookout when I sign in to Windows</span>
+          <span class="hint">So the hotkey works after every restart. You can turn this off any time.</span>
+        </span>
+        <span class="switch">
+          <input type="checkbox" role="switch" bind:checked={startup} disabled={!loaded} onchange={saveStartup} />
+          <span class="track"></span>
+        </span>
+      </label>
     {:else if step === 4}
       <h2 id="setup-title">Make it yours</h2>
       <ThemePicker />
@@ -222,7 +262,7 @@
       <button type="button" class="btn" onclick={() => go(3)}>Skip this step</button>
       <button bind:this={primary} type="button" class="btn primary" disabled={busy || !anyFolder} onclick={startIndexing}>Start indexing</button>
     {:else if step < STEPS.length}
-      <button bind:this={primary} type="button" class="btn primary" onclick={() => go(step + 1)}>Next</button>
+      <button bind:this={primary} type="button" class="btn primary" disabled={busy || !loaded} onclick={next}>Next</button>
     {:else}
       <button bind:this={primary} type="button" class="btn primary" onclick={onclose}>Done</button>
     {/if}

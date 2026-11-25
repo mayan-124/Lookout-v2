@@ -24,6 +24,7 @@
     index_speed: "gentle" | "balanced" | "fast";
     content_index_max_mb: number;
     cli_access: boolean;
+    start_with_windows: boolean;
   }
 
   // Manual update check: nothing runs until the user clicks; nothing downloads until the second click.
@@ -258,6 +259,18 @@
     }
   }
 
+  let startupMessage = $state("");
+  async function setStartWithWindows(el: HTMLInputElement) {
+    startupMessage = "";
+    try {
+      const s = await invoke<PrivacyState>("set_start_with_windows", { on: el.checked });
+      if (info) info.start_with_windows = s.start_with_windows;
+    } catch (e) {
+      el.checked = !el.checked;
+      startupMessage = errorText(e);
+    }
+  }
+
   let contentMessage = $state("");
   async function setContentOption(which: "index_contents" | "ocr", el: HTMLInputElement) {
     contentMessage = "";
@@ -352,6 +365,23 @@
     <div class="body">
       {#if section === "general"}
         <h2 id="priv-title">General</h2>
+        <div class="scard">
+        <h3 class="stitle">Startup</h3>
+        <label class="field">
+          {@render field("Start Lookout when I sign in to Windows", "So the hotkey works after every restart.")}
+          <span class="switch">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={info?.start_with_windows ?? false}
+              disabled={!info}
+              onchange={(e) => setStartWithWindows(e.currentTarget)}
+            />
+            <span class="track"></span>
+          </span>
+        </label>
+        {#if startupMessage}<p class="hint" role="alert">{startupMessage}</p>{/if}
+        </div>
         <div class="scard">
         <h3 class="stitle">Appearance</h3>
         <ThemePicker />
