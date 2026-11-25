@@ -69,6 +69,8 @@ pub struct SearchParams<'a> {
     pub weights: RankingWeights,
     /// Only entries modified in `[from, to)` (unix seconds) match.
     pub time: Option<(u32, u32)>,
+    /// When not empty, only files with one of these (lowercase) extensions match.
+    pub exts: &'a [&'a str],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -131,6 +133,13 @@ fn path_key(path: &Path) -> String {
 
 /// Lowercase form of a name for matching, with accents removed (see
 /// [`ranking::fold_lower`]): "istanbul" finds "İstanbul", "cafe" finds "café".
+/// Whether a lowercase name ends in `.ext` for one of `exts`.
+fn has_ext(name: &[u8], exts: &[&str]) -> bool {
+    name.iter()
+        .rposition(|&b| b == b'.')
+        .is_some_and(|dot| exts.iter().any(|e| e.as_bytes() == &name[dot + 1..]))
+}
+
 pub(crate) fn lower_name(name: &str) -> String {
     ranking::fold_lower(name)
 }
@@ -593,11 +602,14 @@ impl NameIndex {
     // ----------------------------------------------------------------- search
 
     /// Whether a live entry passes the kind and time filters.
-    fn admitted(e: &Entry, p: &SearchParams<'_>) -> bool {
+    fn admitted(&self, i: usize, e: &Entry, p: &SearchParams<'_>) -> bool {
         if e.flags & FLAG_DEAD != 0 {
             return false;
         }
         let is_dir = e.flags & FLAG_DIR != 0;
+        if !p.exts.is_empty() && (is_dir || !has_ext(self.lower_name(i), p.exts)) {
+            return false;
+        }
         match p.kind {
             Some(Kind::File) if is_dir => return false,
             Some(Kind::Folder) if !is_dir => return false,
@@ -691,7 +703,7 @@ impl NameIndex {
         folders: bool,
     ) -> Option<(ScoreFeatures, f32)> {
         let e = &self.entries[i];
-        if !Self::admitted(e, p) {
+        if !self.admitted(i, e, p) {
             return None;
         }
         // With no words (a time-only query) every entry in the window matches equally
@@ -938,7 +950,7 @@ impl NameIndex {
                 break;
             }
             let e = &self.entries[i];
-            if !Self::admitted(e, p) || !pred(self.lower_name(i)) {
+            if !self.admitted(i, e, p) || !pred(self.lower_name(i)) {
                 continue;
             }
             let (_, score) = Self::features(e, p, quality);
@@ -1255,6 +1267,7 @@ mod tests {
             now: 100,
             weights: RankingWeights::default(),
             time: None,
+            exts: &[],
         };
         assert_eq!(idx.search(&p, &|| false).len(), 1);
         assert!(idx.remove_path(Path::new("C:\\Data\\\u{130}stanbul.txt")));
@@ -1287,6 +1300,7 @@ mod tests {
             now: 100,
             weights: RankingWeights::default(),
             time: None,
+            exts: &[],
         };
         let hits = back.search(&p, &|| false);
         let info = back.entry_info(hits[0].entry).unwrap();
@@ -1309,6 +1323,7 @@ mod tests {
             now: NOW,
             weights: RankingWeights::default(),
             time: None,
+            exts: &[],
         }
     }
 
@@ -1321,6 +1336,26 @@ mod tests {
             .filter_map(|h| idx.entry_info(h.entry))
             .map(|i| i.name)
             .collect()
+    }
+
+    #[test]
+    fn extension_filter_limits_matches_to_those_files() {
+        let (idx, _) = sample();
+        let none = toks(&[]);
+        let mut p = params(&none, 10);
+        p.time = Some((NOW - 2 * 86_400, NOW));
+        p.exts = &["pdf", "jpg"];
+        let hits = idx.search(&p, &|| false);
+        let mut found = names(&idx, &hits);
+        found.sort();
+        assert_eq!(found, ["Photo (1).JPG", "annual report.pdf"]);
+        let t = toks(&["report"]);
+        let mut p = params(&t, 10);
+        p.exts = &["pdf"];
+        assert_eq!(
+            names(&idx, &idx.search(&p, &|| false)),
+            ["annual report.pdf"]
+        );
     }
 
     fn sample() -> (NameIndex, u32) {

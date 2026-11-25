@@ -193,6 +193,7 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<bool, String> {
                     now,
                     weights,
                     time: None,
+                    exts: &[],
                 },
                 &|| false,
             );

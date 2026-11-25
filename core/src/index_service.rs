@@ -587,6 +587,7 @@ mod tests {
             now: unix_now(),
             weights: RankingWeights::default(),
             time: None,
+            exts: &[],
         };
         idx.search(&p, &|| false)
             .iter()

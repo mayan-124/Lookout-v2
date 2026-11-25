@@ -28,6 +28,7 @@
     generation: number;
     items: Item[];
     done: boolean;
+    filters?: { kind: string | null; date: string | null };
   }
   type Risk = "safe" | "confirm" | "dangerous";
   interface Prepared {
@@ -98,6 +99,7 @@
     const next = await invoke<string | null>("complete_path", { text }).catch(() => null);
     if (next && next !== text && query === text) {
       query = next;
+      skip = [];
       run(next);
     }
   }
@@ -194,6 +196,23 @@
       | undefined,
   );
   let done = $state(true);
+  // Date and kind words the backend understood ("PDF", "modified last week"),
+  // shown as removable labels. `skip` lists the ones the user removed.
+  let filters = $state<{ kind: string | null; date: string | null } | null>(null);
+  let skip: string[] = $state([]);
+  const understood = $derived(!!(filters && (filters.kind || filters.date)));
+  // The "exact words" row is the one after the last result (or the only row).
+  const rows = $derived(items.length + (understood ? 1 : 0));
+  function removeFilter(name: "kind" | "date") {
+    skip = [...skip, name];
+    run(query);
+    input?.focus();
+  }
+  function exactWords() {
+    skip = ["all"];
+    run(query);
+    input?.focus();
+  }
   let selected = $state(0);
   let status: Status | null = $state(null);
   let notice = $state("");
@@ -421,6 +440,8 @@
     notice = "";
     if (text.trim() === "") {
       all = [];
+      filters = null;
+      skip = [];
       done = true;
       selected = 0;
       lane = 0;
@@ -428,7 +449,7 @@
       return;
     }
     done = false;
-    invoke("query", { generation, text }).catch(() => {});
+    invoke("query", { generation, text, skip }).catch(() => {});
   }
 
   function onUpdate(u: Update) {
@@ -458,6 +479,7 @@
       ...u.items.filter((i) => i.source === "semantic"),
     ];
     done = u.done;
+    filters = u.filters && (u.filters.kind || u.filters.date) ? u.filters : null;
     const at = keep ? items.findIndex((i) => i.id === keep) : -1;
     selected = at >= 0 ? at : 0;
   }
@@ -548,8 +570,8 @@
   }
 
   function move(delta: number) {
-    if (items.length === 0) return;
-    selected = (selected + delta + items.length) % items.length;
+    if (rows === 0) return;
+    selected = (selected + delta + rows) % rows;
     tick().then(() =>
       list?.querySelector<HTMLElement>(`[data-index="${selected}"]`)?.scrollIntoView({ block: "nearest" }),
     );
@@ -684,6 +706,7 @@
       case "Enter":
         e.preventDefault();
         if (isDiskCommand(query)) openDisk();
+        else if (!e.repeat && understood && selected === items.length) exactWords();
         else if (!e.repeat) activate(items[selected]);
         break;
     }
@@ -867,6 +890,34 @@
 />
 <svelte:document onvisibilitychange={() => (visible = document.visibilityState === "visible")} />
 
+{#snippet exactRow()}
+  <li role="presentation" class="entry">
+    <div
+      role="option"
+      tabindex="-1"
+      id={`result-${items.length}`}
+      aria-selected={selected === items.length}
+      class="row"
+      class:selected={selected === items.length}
+      data-index={items.length}
+      onmousemove={() => (selected = items.length)}
+      onclick={exactWords}
+      onkeydown={() => {}}
+    >
+      <span class="icon" aria-hidden="true"
+        ><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+          ><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" /></svg
+        ></span
+      >
+      <span class="text">
+        <span class="title">Search for the exact words instead</span>
+        <span class="meta">“{query.trim()}”</span>
+      </span>
+      {#if selected === items.length}<span class="hint-enter"><kbd>Enter</kbd></span>{/if}
+    </div>
+  </li>
+{/snippet}
+
 {#snippet tile(it: Item)}
   {@const k = iconKind(it)}
   {#if isRunning(it)}
@@ -938,7 +989,10 @@
       <input
         bind:this={input}
         bind:value={query}
-        oninput={() => run(query)}
+        oninput={() => {
+          skip = [];
+          run(query);
+        }}
         class="search"
         type="text"
         placeholder={panel ? "settings" : "Search files and apps, or calculate: 2+2, 10 km to miles"}
@@ -1113,6 +1167,28 @@
       {:else}
         <div class="res" class:one={items.length === 0} in:fly={{ x: 16, duration: dur(120), delay: dur(50) }}>
           <div class="card glass listcard">
+            {#if filters}
+              <div class="filters" aria-label="Understood from your words">
+                {#if filters.kind}
+                  <button type="button" class="fchip" title="Remove this filter" onclick={() => removeFilter("kind")}>
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"
+                      ><path d="M2 3h12l-4.5 5.5V13l-3-1.5V8.5z" /></svg
+                    >{filters.kind}<svg class="x" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"
+                      ><path d="M4 4l8 8M12 4l-8 8" /></svg
+                    >
+                  </button>
+                {/if}
+                {#if filters.date}
+                  <button type="button" class="fchip" title="Remove this filter" onclick={() => removeFilter("date")}>
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"
+                      ><rect x="2" y="3.5" width="12" height="10.5" rx="2" /><path d="M2 7h12M5.5 2v3M10.5 2v3" /></svg
+                    >{filters.date}<svg class="x" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"
+                      ><path d="M4 4l8 8M12 4l-8 8" /></svg
+                    >
+                  </button>
+                {/if}
+              </div>
+            {/if}
             {#if corrected}<p class="note">Showing results for <b>{corrected}</b></p>{/if}
             {#if items.length > 0}
               <ul id="results" class="results" role="listbox" bind:this={list}>
@@ -1194,9 +1270,13 @@
                     </div>
                   </li>
                 {/each}
+                {#if understood}{@render exactRow()}{/if}
               </ul>
-            {:else if done}
-              <p class="empty">No results for “{query.trim()}”</p>
+            {:else}
+              {#if understood}
+                <ul id="results" class="results" role="listbox">{@render exactRow()}</ul>
+              {/if}
+              {#if done}<p class="empty">No results for “{query.trim()}”</p>{/if}
             {/if}
           </div>
 
@@ -1824,6 +1904,37 @@
   .note {
     margin: 0;
     padding: 8px 20px 0;
+  }
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 20px 0;
+  }
+  .fchip {
+    all: unset;
+    box-sizing: border-box;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--r-pill);
+    color: var(--text-soft);
+    font-size: var(--fs-xs);
+  }
+  .fchip:hover {
+    color: var(--text);
+    border-color: rgba(255, 255, 255, 0.4);
+  }
+  .fchip .x {
+    opacity: 0.6;
+  }
+  .fchip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .empty {
     padding: 20px 22px;

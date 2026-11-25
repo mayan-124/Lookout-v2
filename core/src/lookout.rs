@@ -960,6 +960,11 @@ impl Lookout {
         self.engine.submit(generation, text)
     }
 
+    /// Like [`query`](Self::query), ignoring the date or kind words in `skip`.
+    pub fn query_with(&self, generation: u64, text: &str, skip: crate::query::Skip) -> bool {
+        self.engine.submit_with(generation, text, skip)
+    }
+
     pub fn status(&self) -> Status {
         let sem = self
             .semantic_status()

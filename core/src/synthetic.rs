@@ -273,6 +273,7 @@ mod tests {
             now: NOW,
             weights: RankingWeights::default(),
             time: None,
+            exts: &[],
         };
         let mut names: Vec<String> = index
             .search(&p, &|| false)

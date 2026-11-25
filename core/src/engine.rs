@@ -17,7 +17,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::item::Item;
-use crate::query::{self, ParsedQuery};
+use crate::query::{self, ParsedQuery, Skip, Understood};
 use crate::sources::{QueryContext, Source};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -27,6 +27,8 @@ pub struct Update {
     pub items: Vec<Item>,
     /// True once every source has finished.
     pub done: bool,
+    /// Date and kind words the query was understood to contain.
+    pub filters: Understood,
 }
 
 pub type Sink = Arc<dyn Fn(Update) + Send + Sync>;
@@ -50,6 +52,8 @@ enum Msg {
     New {
         generation: u64,
         sources: usize,
+        understood: Understood,
+        exts: &'static [&'static str],
     },
     Batch {
         generation: u64,
@@ -97,11 +101,16 @@ impl Engine {
     /// Starts a query. Returns `false` (and does nothing) unless `generation`
     /// is newer than every earlier submission. Older work is cancelled.
     pub fn submit(&self, generation: u64, text: &str) -> bool {
+        self.submit_with(generation, text, Skip::default())
+    }
+
+    /// Like [`submit`](Self::submit), ignoring the natural-word filters in `skip`.
+    pub fn submit_with(&self, generation: u64, text: &str, skip: Skip) -> bool {
         let previous = self.current.fetch_max(generation, Ordering::AcqRel);
         if generation <= previous {
             return false;
         }
-        let parsed = Arc::new(query::parse(text));
+        let parsed = Arc::new(query::parse_with(text, skip));
         let runnable = if parsed.is_empty() {
             0
         } else {
@@ -113,6 +122,8 @@ impl Engine {
             .send(Msg::New {
                 generation,
                 sources: runnable,
+                understood: parsed.understood.clone(),
+                exts: parsed.exts,
             })
             .is_err()
         {
@@ -165,6 +176,8 @@ struct MergeState {
     generation: u64,
     per_source: HashMap<&'static str, Vec<Item>>,
     remaining: usize,
+    understood: Understood,
+    exts: &'static [&'static str],
     dirty: bool,
     last_flush: Option<Instant>,
 }
@@ -185,11 +198,23 @@ fn flush(state: &mut MergeState, sink: &Sink, live: &AtomicU64, max_results: usi
     // The same file can come from the name index and from its contents: keep the best.
     let mut seen = std::collections::HashSet::new();
     items.retain(|i| seen.insert(i.id.clone()));
+    // A kind word ("pdf", "photos") means files of that type only.
+    if !state.exts.is_empty() {
+        items.retain(|i| {
+            i.uri.as_deref().is_some_and(|u| {
+                std::path::Path::new(u)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| state.exts.iter().any(|x| x.eq_ignore_ascii_case(e)))
+            })
+        });
+    }
     items.truncate(max_results);
     sink(Update {
         generation: state.generation,
         items,
         done,
+        filters: state.understood.clone(),
     });
 }
 
@@ -198,6 +223,8 @@ fn merge_loop(rx: &Receiver<Msg>, sink: &Sink, live: &AtomicU64, cfg: EngineConf
         generation: 0,
         per_source: HashMap::new(),
         remaining: 0,
+        understood: Understood::default(),
+        exts: &[],
         dirty: false,
         last_flush: None,
     };
@@ -210,6 +237,8 @@ fn merge_loop(rx: &Receiver<Msg>, sink: &Sink, live: &AtomicU64, cfg: EngineConf
             Ok(Msg::New {
                 generation,
                 sources,
+                understood,
+                exts,
             }) => {
                 if generation < state.generation {
                     continue;
@@ -217,6 +246,8 @@ fn merge_loop(rx: &Receiver<Msg>, sink: &Sink, live: &AtomicU64, cfg: EngineConf
                 state.generation = generation;
                 state.per_source.clear();
                 state.remaining = sources;
+                state.understood = understood;
+                state.exts = exts;
                 state.dirty = false;
                 state.last_flush = None;
                 if sources == 0 {

@@ -10,6 +10,111 @@ pub struct TimeRange {
     pub to: u64,
 }
 
+/// Which understood filters to ignore, set when the user removes a label or
+/// asks for the exact words.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Skip {
+    pub kind: bool,
+    pub date: bool,
+}
+
+impl Skip {
+    pub const ALL: Skip = Skip {
+        kind: true,
+        date: true,
+    };
+
+    /// From the names the frontend sends: `"kind"`, `"date"`, or `"all"`.
+    pub fn from_names<S: AsRef<str>>(names: &[S]) -> Skip {
+        let has = |n: &str| names.iter().any(|s| s.as_ref() == n);
+        Skip {
+            kind: has("kind") || has("all"),
+            date: has("date") || has("all"),
+        }
+    }
+}
+
+/// What the parser understood from natural words, shown as removable labels.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Understood {
+    /// For example "PDF".
+    pub kind: Option<String>,
+    /// For example "modified last week".
+    pub date: Option<String>,
+}
+
+impl Understood {
+    pub fn is_empty(&self) -> bool {
+        self.kind.is_none() && self.date.is_none()
+    }
+}
+
+/// File-kind words (singular or plural) and the extensions they stand for.
+/// They count only next to a date phrase, so "code review" and "music" stay
+/// ordinary searches.
+const KIND_WORDS: &[(&[&str], &str, &[&str])] = &[
+    (&["pdf", "pdfs"], "PDF", &["pdf"]),
+    (
+        &["image", "images", "photo", "photos"],
+        "Images",
+        &[
+            "png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff", "heic",
+        ],
+    ),
+    (
+        &["screenshot", "screenshots"],
+        "Screenshots",
+        &["png", "jpg", "jpeg", "bmp", "webp"],
+    ),
+    (
+        &["document", "documents", "doc", "docs"],
+        "Documents",
+        &["doc", "docx", "odt", "rtf", "txt", "md", "pdf"],
+    ),
+    (
+        &["spreadsheet", "spreadsheets"],
+        "Spreadsheets",
+        &["xls", "xlsx", "xlsm", "csv", "ods"],
+    ),
+    (
+        &["presentation", "presentations", "slides"],
+        "Presentations",
+        &["ppt", "pptx", "odp", "key"],
+    ),
+    (
+        &["video", "videos"],
+        "Videos",
+        &["mp4", "mkv", "mov", "avi", "wmv", "webm", "m4v"],
+    ),
+    (
+        &["audio", "music"],
+        "Audio",
+        &["mp3", "wav", "flac", "m4a", "aac", "ogg", "wma"],
+    ),
+    (
+        &["code"],
+        "Code",
+        &[
+            "rs", "py", "js", "ts", "tsx", "jsx", "java", "c", "cpp", "h", "hpp", "cs", "go", "rb",
+            "php", "swift", "kt", "svelte", "html", "css", "json", "toml", "yaml", "yml", "sh",
+            "ps1",
+        ],
+    ),
+];
+
+#[allow(clippy::type_complexity)]
+fn kind_word(
+    word: &str,
+) -> Option<&'static (
+    &'static [&'static str],
+    &'static str,
+    &'static [&'static str],
+)> {
+    KIND_WORDS
+        .iter()
+        .find(|(names, _, _)| names.contains(&word))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedQuery {
     /// The input exactly as typed (calculator and unit sources read this).
@@ -20,6 +125,11 @@ pub struct ParsedQuery {
     pub tokens: Vec<String>,
     pub kind: Option<Kind>,
     pub time: Option<TimeRange>,
+    /// Lowercase file extensions from a kind word ("pdf", "photos"); empty when
+    /// there is none. Only files with one of these extensions match.
+    pub exts: &'static [&'static str],
+    /// The labels for `exts` and `time`.
+    pub understood: Understood,
     /// The input ended with whitespace after at least one word (quick keys
     /// fire only on an exact word plus a trailing space).
     pub trailing_space: bool,
@@ -58,11 +168,24 @@ fn image_phrase_len(words: &[String]) -> Option<usize> {
 }
 
 pub fn parse(input: &str) -> ParsedQuery {
-    parse_at(input, &chrono::Local::now())
+    parse_with(input, Skip::default())
+}
+
+/// Like [`parse`], ignoring the filters named in `skip`.
+pub fn parse_with(input: &str, skip: Skip) -> ParsedQuery {
+    parse_opts(input, &chrono::Local::now(), skip)
 }
 
 /// Like [`parse`] with an explicit "now" (and time zone), so tests are exact.
 pub fn parse_at<Tz: chrono::TimeZone>(input: &str, now: &chrono::DateTime<Tz>) -> ParsedQuery {
+    parse_opts(input, now, Skip::default())
+}
+
+pub fn parse_opts<Tz: chrono::TimeZone>(
+    input: &str,
+    now: &chrono::DateTime<Tz>,
+    skip: Skip,
+) -> ParsedQuery {
     let mut kind = None;
     let mut words = Vec::new();
     for word in input.split_whitespace() {
@@ -77,7 +200,26 @@ pub fn parse_at<Tz: chrono::TimeZone>(input: &str, now: &chrono::DateTime<Tz>) -
         words.drain(..skip);
         kind = Some(Kind::Screenshot);
     }
-    let time = crate::timefilter::extract(&mut words, now);
+    let mut understood = Understood::default();
+    let mut exts: &'static [&'static str] = &[];
+    let mut time = None;
+    if !skip.date {
+        let has_kind_word = !skip.kind && words.iter().any(|w| kind_word(w).is_some());
+        if let Some((range, phrase)) = crate::timefilter::extract(&mut words, now, has_kind_word) {
+            time = Some(range);
+            understood.date = Some(format!("modified {phrase}"));
+            // A kind word is a filter only next to a date phrase.
+            if !skip.kind {
+                if let Some(at) = words.iter().position(|w| kind_word(w).is_some()) {
+                    if let Some((_, label, e)) = kind_word(&words[at]) {
+                        exts = e;
+                        understood.kind = Some((*label).to_owned());
+                        words.remove(at);
+                    }
+                }
+            }
+        }
+    }
     let text = words.join(" ");
     ParsedQuery {
         raw: input.trim().to_owned(),
@@ -85,6 +227,8 @@ pub fn parse_at<Tz: chrono::TimeZone>(input: &str, now: &chrono::DateTime<Tz>) -
         tokens: words,
         kind,
         time,
+        exts,
+        understood,
         trailing_space: !input.trim().is_empty() && input.ends_with(char::is_whitespace),
     }
 }
@@ -157,6 +301,117 @@ mod tests {
             (Some(Kind::File), vec!["taxes".to_owned()])
         );
         assert!(q.time.is_some());
+    }
+
+    fn at() -> chrono::DateTime<chrono::Utc> {
+        use chrono::TimeZone;
+        chrono::Utc
+            .with_ymd_and_hms(2026, 11, 18, 10, 0, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn kind_words_with_a_date_become_extension_and_date_filters() {
+        for (input, label, ext, rest) in [
+            ("pdf last week", "PDF", "pdf", vec![]),
+            ("Invoice  PDFs   YESTERDAY", "PDF", "pdf", vec!["invoice"]),
+            ("images from July", "Images", "png", vec![]),
+            ("photos in july", "Images", "heic", vec![]),
+            ("screenshots this month", "Screenshots", "png", vec![]),
+            ("docs last 7 days", "Documents", "docx", vec![]),
+            ("document today", "Documents", "txt", vec![]),
+            ("spreadsheets today", "Spreadsheets", "xlsx", vec![]),
+            ("slides today", "Presentations", "pptx", vec![]),
+            ("presentation today", "Presentations", "key", vec![]),
+            ("videos today", "Videos", "mkv", vec![]),
+            ("music today", "Audio", "flac", vec![]),
+            ("audio today", "Audio", "mp3", vec![]),
+            ("code today budget", "Code", "rs", vec!["budget"]),
+            ("pdf 2024", "PDF", "pdf", vec![]),
+        ] {
+            let q = parse_at(input, &at());
+            assert_eq!(q.understood.kind.as_deref(), Some(label), "{input}");
+            assert!(q.exts.contains(&ext), "{input}");
+            assert!(q.time.is_some(), "{input}");
+            assert_eq!(q.tokens, rest, "{input}");
+        }
+        let q = parse_at("pdf last week", &at());
+        assert_eq!(q.understood.date.as_deref(), Some("modified last week"));
+        assert!(!q.is_empty());
+    }
+
+    #[test]
+    fn kind_words_need_whole_words_and_a_date() {
+        for input in [
+            "pdf",
+            "code review",
+            "music",
+            "pdfx last week",
+            "mypdf today",
+        ] {
+            let q = parse_at(input, &at());
+            assert!(q.exts.is_empty(), "{input}");
+            assert!(q.understood.kind.is_none(), "{input}");
+        }
+        // "opened" is plain text; nothing special happens.
+        let q = parse_at("opened last", &at());
+        assert!(q.time.is_none() && q.tokens == ["opened", "last"]);
+        let q = parse_at("invoice opened yesterday", &at());
+        assert_eq!(q.tokens, ["invoice", "opened"]);
+    }
+
+    #[test]
+    fn removing_a_label_reruns_without_that_filter() {
+        let all = parse_opts("pdf last week", &at(), Skip::default());
+        assert!(all.time.is_some() && !all.exts.is_empty());
+        let no_kind = parse_opts("pdf last week", &at(), Skip::from_names(&["kind"]));
+        assert!(no_kind.time.is_some() && no_kind.exts.is_empty());
+        assert_eq!(no_kind.tokens, ["pdf"]);
+        let no_date = parse_opts("pdf last week", &at(), Skip::from_names(&["date"]));
+        assert!(no_date.time.is_none() && no_date.exts.is_empty());
+        assert_eq!(no_date.tokens, ["pdf", "last", "week"]);
+        let exact = parse_opts("pdf last week", &at(), Skip::from_names(&["all"]));
+        assert!(exact.understood.is_empty() && exact.time.is_none());
+        assert_eq!(exact.text, "pdf last week");
+    }
+
+    #[test]
+    fn ordinary_queries_are_unchanged() {
+        for input in [
+            "annual report",
+            "report.pdf",
+            "march",
+            "march madness",
+            "may notes",
+            "notes may",
+            "taxes",
+            "code",
+            "pdf",
+            "photos",
+            "last",
+            "this is the week",
+            "past tense",
+            "last of us",
+            "2024",
+            "2018 plan",
+            "invoice 4821",
+            "screenshot notes",
+            "vscode",
+            "calc 2+2",
+            "docs",
+            "slides deck",
+        ] {
+            let q = parse_at(input, &at());
+            let words: Vec<String> = input.split_whitespace().map(str::to_lowercase).collect();
+            assert_eq!(q.tokens, words, "{input}");
+            assert!(q.time.is_none() && q.kind.is_none(), "{input}");
+            assert!(q.exts.is_empty() && q.understood.is_empty(), "{input}");
+        }
+        let q = parse_at("kind:folder photos", &at());
+        assert_eq!(
+            (q.kind, q.tokens),
+            (Some(Kind::Folder), vec!["photos".to_owned()])
+        );
     }
 
     #[test]

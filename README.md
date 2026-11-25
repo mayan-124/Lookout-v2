@@ -51,6 +51,8 @@ Phase 3 adds search by what is *inside* things, with privacy controls:
 - full-text search over the contents of text files (`txt md log csv json xml yaml toml html` and common source code; first 1 MiB of each), through a tantivy index
 - text inside images and screenshots (`png jpg bmp gif tif webp`) read with the Windows built-in OCR; `screenshot with invoice 4821` finds the image
 - time filters: `invoice yesterday`, `report last week`, `taxes in march`, `notes last 3 days`, or just `yesterday` for recently changed files
+- file kinds with a date: `pdf last week`, `images from July`, `screenshots this month`, `docs last 7 days` (matched on modified time, offline, no AI); each understood word shows as a label you can click to remove
+- a "Search for the exact words instead" row follows any query where words were read as a date or kind, so a file literally named `last week report` is still one click away
 - first-run folder choice, per-folder exclusions, pause (tray item and `Ctrl+Alt+P`), a "Delete my index" button (`Ctrl+,` opens them)
 - everything Lookout stores about your files is encrypted at rest with a key that only your Windows account can unwrap (DPAPI), and secrets (API keys, private keys, card numbers, `password = ...`) are masked before text is indexed
 

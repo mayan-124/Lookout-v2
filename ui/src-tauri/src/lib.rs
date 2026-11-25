@@ -451,10 +451,16 @@ impl Services {
 /// Starts a query. The frontend numbers its own queries so that it can drop
 /// any update that is not for its latest one.
 #[tauri::command]
-fn query(generation: u64, text: String, services: State<Services>) -> bool {
+fn query(
+    generation: u64,
+    text: String,
+    skip: Option<Vec<String>>,
+    services: State<Services>,
+) -> bool {
+    let skip = lookout_core::query::Skip::from_names(&skip.unwrap_or_default());
     services
         .current()
-        .is_some_and(|l| l.query(generation, &text))
+        .is_some_and(|l| l.query_with(generation, &text, skip))
 }
 
 /// Opens a path the way the `open` crate does. The action engine decides

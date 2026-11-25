@@ -79,6 +79,7 @@ fn search_ms(index: &SharedIndex, tokens: &[Vec<u8>]) -> f64 {
             now: unix_now(),
             weights: RankingWeights::default(),
             time: None,
+            exts: &[],
         },
         &|| false,
     );

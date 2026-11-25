@@ -298,6 +298,7 @@ impl Source for FilesSource {
                         u32::try_from(t.to).unwrap_or(u32::MAX),
                     )
                 }),
+                exts: q.exts,
             };
             let (hits, corrected) = idx.search_noted(&params, &|| ctx.is_cancelled());
             if ctx.is_cancelled() {

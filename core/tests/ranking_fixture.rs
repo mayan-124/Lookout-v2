@@ -81,6 +81,7 @@ fn top_names(idx: &NameIndex, fx: &Fixture, text: &str) -> Vec<String> {
         now: fx.now,
         weights: RankingWeights::default(),
         time: None,
+        exts: &[],
     };
     idx.search(&params, &|| false)
         .iter()
@@ -137,6 +138,7 @@ fn the_fixture_is_sensitive_to_weights() {
             now: fx.now,
             weights,
             time: None,
+            exts: &[],
         };
         idx.search(&p, &|| false)
             .iter()
