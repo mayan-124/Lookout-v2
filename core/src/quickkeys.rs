@@ -211,7 +211,9 @@ impl QuickKeys {
         let t = quick::strip_controls(target);
         let t = t.trim().trim_matches('"');
         let p = Path::new(t);
-        let item = if !t.is_empty() && p.exists() {
+        // A relative path would mean something different from wherever Lookout
+        // happens to be started.
+        let item = if !t.is_empty() && p.is_absolute() && p.exists() {
             let (kind, prefix) = if p.is_dir() {
                 (Kind::Folder, "folder")
             } else {
@@ -517,6 +519,12 @@ mod tests {
             Err(KeyError::BadTarget)
         ));
         assert!(matches!(k.add_typed("dd", &d), Err(KeyError::Taken { .. })));
+        // "core" exists next to the tests, but a relative path is refused.
+        assert!(matches!(
+            k.add_typed("rr", "core"),
+            Err(KeyError::BadTarget)
+        ));
+        assert!(matches!(k.add_typed("rr", ".."), Err(KeyError::BadTarget)));
         let kinds: Vec<_> = k.list().into_iter().map(|i| i.kind).collect();
         assert_eq!(kinds, ["folder", "web address"]);
         assert_eq!(

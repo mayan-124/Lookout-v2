@@ -266,7 +266,13 @@ impl WindowsClipboard {
             }
             let all = std::slice::from_raw_parts(p, bytes / 2);
             let end = all.iter().position(|&c| c == 0).unwrap_or(all.len());
-            let s = String::from_utf16_lossy(&all[..end]);
+            // Far past the longest clip kept: do not build a huge string just
+            // for the store to ignore it.
+            let s = if end > 2 * crate::store::MAX_CHARS {
+                String::new()
+            } else {
+                String::from_utf16_lossy(&all[..end])
+            };
             GlobalUnlock(h);
             Some(s)
         }

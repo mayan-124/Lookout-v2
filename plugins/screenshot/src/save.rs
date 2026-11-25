@@ -82,16 +82,28 @@ pub fn save_screenshot(image: &ImageBuffer, folder: &Path) -> Result<PathBuf, St
     }
 
     let ts = current_timestamp_string();
-    let target_path = next_available_path(folder, &ts);
-
-    image.save_png(&target_path).map_err(|e| {
-        format!(
-            "Failed to save screenshot to '{}': {e}",
-            target_path.display()
-        )
-    })?;
-
-    Ok(target_path)
+    // The name is claimed atomically, so two captures in the same second (a
+    // double hotkey press) never overwrite each other.
+    for _ in 0..1000 {
+        let target_path = next_available_path(folder, &ts);
+        match image.save_png_new(&target_path) {
+            Ok(Ok(())) => return Ok(target_path),
+            Ok(Err(e)) => {
+                return Err(format!(
+                    "Failed to save screenshot to '{}': {e}",
+                    target_path.display()
+                ))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!(
+                    "Failed to save screenshot to '{}': {e}",
+                    target_path.display()
+                ))
+            }
+        }
+    }
+    Err("Could not find a free file name for the screenshot".to_owned())
 }
 
 #[cfg(test)]

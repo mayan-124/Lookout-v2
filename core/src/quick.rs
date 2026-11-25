@@ -281,9 +281,11 @@ pub fn entry(id: &str) -> Option<&'static Entry> {
     ENTRIES.iter().find(|e| e.id == id)
 }
 
-/// Scores for a match: a whole keyword, or the start of one.
-pub const EXACT: f32 = 1.2;
-pub const PREFIX: f32 = 0.6;
+/// Scores for a match: a whole keyword, or the start of one. Both sit below a
+/// file or app whose name starts with the typed word (about 0.8 and up), so a
+/// Settings row never pushes a real match down.
+pub const EXACT: f32 = 0.7;
+pub const PREFIX: f32 = 0.35;
 /// Most system results one query returns, so they never crowd out files and apps.
 pub const MAX_SYSTEM: usize = 3;
 

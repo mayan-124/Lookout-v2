@@ -12,6 +12,10 @@ use serde::Serialize;
 
 use crate::securedb::{DbError, SecureDb};
 
+/// Newest rows kept. Every command-line search adds a row, so without a limit a
+/// script that searches in a loop would grow the encrypted database for ever.
+pub const MAX_ROWS: i64 = 5000;
+
 #[derive(Debug, thiserror::Error)]
 pub enum LogError {
     #[error("undo log database error: {0}")]
@@ -118,7 +122,9 @@ impl UndoLog {
                  VALUES (?1, ?2, ?3, ?4, 'started')",
                 params![now, action_id, items, params],
             )?;
-            Ok(conn.last_insert_rowid())
+            let id = conn.last_insert_rowid();
+            conn.execute("DELETE FROM undo_log WHERE id <= ?1", [id - MAX_ROWS])?;
+            Ok(id)
         })?)
     }
 
@@ -263,6 +269,21 @@ mod tests {
         let log = open();
         assert_eq!(log.get(id).unwrap().unwrap().status, Status::Interrupted);
         assert!(log.latest_undoable().unwrap().is_none());
+    }
+
+    #[test]
+    fn the_log_keeps_only_the_newest_rows() {
+        let log = UndoLog::open_in_memory().unwrap();
+        let mut first = 0;
+        for i in 0..(MAX_ROWS + 50) {
+            let id = log.begin("cli.search", &[], &json!(null), i).unwrap();
+            if i == 0 {
+                first = id;
+            }
+        }
+        assert!(log.get(first).unwrap().is_none());
+        let rows = log.recent(usize::MAX >> 1).unwrap();
+        assert_eq!(rows.len() as i64, MAX_ROWS);
     }
 
     #[test]

@@ -294,14 +294,31 @@
     }
     if (progress && progress.state !== "scanning") stopTimer();
   }
-  const stopTimer = () => {
+  // The scan runs in the backend either way; the status poll runs only while
+  // the window is visible, and catches up once when it is shown again.
+  let polling = false;
+  const clearTimer = () => {
     if (timer) clearInterval(timer);
     timer = undefined;
   };
-  const startTimer = () => {
-    stopTimer();
-    timer = setInterval(poll, 300);
+  const stopTimer = () => {
+    polling = false;
+    clearTimer();
   };
+  const startTimer = () => {
+    clearTimer();
+    polling = true;
+    if (document.visibilityState === "visible") timer = setInterval(poll, 300);
+  };
+  function onVisibility() {
+    if (!polling) return;
+    if (document.visibilityState === "visible") {
+      startTimer();
+      poll();
+    } else {
+      clearTimer();
+    }
+  }
 
   async function scan(path: string, fastMode = false) {
     if (!path) return;
@@ -591,6 +608,7 @@
 </script>
 
 <svelte:window onkeydown={onKeydown} onclick={() => (menu = null)} />
+<svelte:document onvisibilitychange={onVisibility} />
 
 {#snippet expandBtn()}
   <button class="xbtn" type="button" data-no-drag aria-label="Expand chart" title="Expand chart" onclick={(e) => { e.stopPropagation(); exp = true; }}>

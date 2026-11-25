@@ -1671,6 +1671,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(e) => {
             eprintln!("lookout: ignoring unreadable settings ({e}); using defaults");
+            // The next save replaces the file: keep a hand-edited one to repair.
+            if settings_path.exists() {
+                let _ = std::fs::copy(&settings_path, data_dir.join("settings.json.unreadable"));
+            }
             Settings::default()
         }
     };

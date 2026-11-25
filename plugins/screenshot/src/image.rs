@@ -372,6 +372,24 @@ impl ImageBuffer {
     pub fn save_png(&self, path: &Path) -> Result<(), String> {
         let _ = std::fs::remove_file(path);
         let file = File::create(path).map_err(|e| format!("Could not create file: {e}"))?;
+        self.write_png(file)
+    }
+
+    /// Like [`ImageBuffer::save_png`] but never touches an existing file: the
+    /// error kind is `AlreadyExists` when `path` is taken.
+    pub fn save_png_new(&self, path: &Path) -> std::io::Result<Result<(), String>> {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        let result = self.write_png(file);
+        if result.is_err() {
+            let _ = std::fs::remove_file(path);
+        }
+        Ok(result)
+    }
+
+    fn write_png(&self, file: File) -> Result<(), String> {
         let mut writer_buf = BufWriter::new(file);
         let w = &mut writer_buf;
 

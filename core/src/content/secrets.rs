@@ -47,7 +47,7 @@ fn patterns() -> &'static Patterns {
         Patterns {
             whole: whole.iter().filter_map(|s| Regex::new(s).ok()).collect(),
             assignment: Regex::new(
-                r#"(?i)(pass(?:word|wd|phrase)?|pwd|secret|api[_-]?key|access[_-]?key|auth[_-]?token|token|client[_-]?secret)(\s*[:=]\s*["']?)([^\s"']{6,})"#,
+                r#"(?i)(pass(?:word|wd|phrase)?|pwd|secret|api[_-]?key|access[_-]?key|auth[_-]?token|token|client[_-]?secret)(["']?\s*[:=]\s*["']?)([^\s"']{6,})"#,
             )
             .ok(),
             cardish: Regex::new(r"\b\d(?:[ -]?\d){12,18}\b").ok(),
@@ -239,5 +239,18 @@ mod tests {
             matches!(m, Cow::Borrowed(_)),
             "unchanged text is not copied"
         );
+    }
+
+    #[test]
+    fn quoted_keys_are_masked() {
+        for (text, secret) in [
+            (r#"{"password": "Hunter2xyz!"}"#, "Hunter2xyz"),
+            (r#"{"api_key":"abcd1234efgh"}"#, "abcd1234efgh"),
+            ("'client_secret' : 'Zx81qwerty'", "Zx81qwerty"),
+            ("PASSWORD=Sup3rS3cret", "Sup3rS3cret"),
+        ] {
+            let (m, n) = mask(text);
+            assert!(n >= 1 && !m.contains(secret), "{text} -> {m}");
+        }
     }
 }

@@ -79,3 +79,20 @@ fn test_saved_image_contains_only_clean_pixels_no_overlay_border() {
         }
     }
 }
+
+#[test]
+fn test_parallel_saves_in_one_second_never_overwrite_each_other() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let dir = dir.clone();
+            std::thread::spawn(move || save_screenshot(&ImageBuffer::new(8, 8), &dir).unwrap())
+        })
+        .collect();
+    let mut paths: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    paths.sort();
+    paths.dedup();
+    assert_eq!(paths.len(), 8, "two saves chose the same file");
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 8);
+}
