@@ -710,8 +710,15 @@
   const previewable = (i: Item | undefined) =>
     !!pathOf(i) && ["file", "folder", "screenshot", "project"].includes(kindName(i!.kind));
   // One simple icon per kind; kinds without one (answers, ports) keep their short text badge.
-  function iconKind(i: Item): "app" | "folder" | "image" | "clipboard" | "file" | "rec" | "gif" | "scan" | null {
+  type Ico = "app" | "folder" | "image" | "clipboard" | "file" | "rec" | "gif" | "scan" | "timer" | "moon" | "sun" | "gear" | "globe" | "network" | "key" | "warn" | "dot";
+  const BADGE_KINDS = ["calculator", "conversion", "port"];
+  function iconKind(i: Item): Ico | null {
     const k = kindName(i.kind);
+    if (k.startsWith("timer")) return "timer";
+    if (k === "quickkey_missing" || k === "path") return "warn";
+    if (k === "url") return "globe";
+    if (k === "system") return /dark mode/i.test(i.title) ? "moon" : /light mode/i.test(i.title) ? "sun" : "gear";
+    if ((k === "folder" || k === "file") && i.uri?.startsWith("\\\\")) return "network";
     if (k === "app") return "app";
     if (k === "folder") return "folder";
     if (k === "clipboard") return "clipboard";
@@ -720,8 +727,39 @@
     if (/^record.*gif/i.test(i.title)) return "gif";
     if (/^record/i.test(i.title)) return "rec";
     if (/^extract text/i.test(i.title)) return "scan";
-    return null;
+    if (typeof i.metadata?.quick_key === "string") return "key";
+    return BADGE_KINDS.includes(k) ? null : "dot";
   }
+
+  // ---- timers: live text only while the window is visible, 1 update per second ----
+  let tickNow = $state(Date.now());
+  const hasTimers = $derived(items.some((i) => kindName(i.kind) === "timer"));
+  $effect(() => {
+    if (!visible || !hasTimers) return;
+    tickNow = Date.now();
+    const id = setInterval(() => (tickNow = Date.now()), 1000);
+    return () => clearInterval(id);
+  });
+  const isRunning = (i: Item | undefined) => !!i && kindName(i.kind) === "timer" && typeof i.metadata?.end_ms === "number";
+  const isNewTimer = (i: Item | undefined) => !!i && kindName(i.kind) === "timer_new" && typeof i.metadata?.secs === "number";
+  const secsLeft = (i: Item) => Math.max(0, Math.ceil(((i.metadata!.end_ms as number) - tickNow) / 1000));
+  const pad2 = (n: number) => String(n).padStart(2, "0");
+  function clockText(s: number) {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}:${pad2(m)}:${pad2(s % 60)}` : `${pad2(m)}:${pad2(s % 60)}`;
+  }
+  function leftText(s: number) {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
+  }
+  const endClock = (ms: number) => `${pad2(new Date(ms).getHours())}:${pad2(new Date(ms).getMinutes())}`;
+  const RING = 56.55;
+  const ringOffset = (i: Item) => RING * (1 - Math.min(1, secsLeft(i) / Math.max(1, i.metadata!.secs as number)));
+  // Subtitle text; running timers show the live time left.
+  const subOf = (i: Item) =>
+    isRunning(i) ? `${leftText(secsLeft(i))} left · ends at ${endClock(i.metadata!.end_ms as number)}` : i.subtitle;
   const home = $derived(query.trim() === "" && !panel && !disk && !card);
   const cur = $derived(items[selected] as Item | undefined);
   const previewSource = $derived(previewable(cur) ? { path: pathOf(cur)! } : null);
@@ -831,7 +869,14 @@
 
 {#snippet tile(it: Item)}
   {@const k = iconKind(it)}
-  {#if k}
+  {#if isRunning(it)}
+    <span class="icon ring" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round">
+        <circle cx="12" cy="12" r="9" stroke="var(--hairline)" />
+        <circle cx="12" cy="12" r="9" stroke="currentColor" transform="rotate(-90 12 12)" stroke-dasharray={RING} stroke-dashoffset={ringOffset(it)} />
+      </svg>
+    </span>
+  {:else if k}
     <span class="icon" aria-hidden="true">
       <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round">
         {#if k === "app"}
@@ -846,6 +891,24 @@
           <rect x="1.8" y="3.5" width="12.4" height="9" rx="1.8" /><path d="M6.6 6.6a1.6 1.6 0 1 0 0 2.8V8.2H5.8M8.8 6.4v3.2M10.4 9.6V6.4h1.7M10.4 8h1.3" />
         {:else if k === "scan"}
           <path d="M2 5.5V3.5A1.5 1.5 0 0 1 3.5 2h2M10 2h2.5A1.5 1.5 0 0 1 14 3.5v2M14 10.5v2a1.5 1.5 0 0 1-1.5 1.5H10M6 14H3.5A1.5 1.5 0 0 1 2 12.5v-2M5.5 6h5M8 6v4.5" />
+        {:else if k === "timer"}
+          <circle cx="8" cy="9" r="5" /><path d="M8 9V6.4M6.5 2h3M12 4l.9-.9" />
+        {:else if k === "moon"}
+          <path d="M13 9.3A5.5 5.5 0 0 1 6.7 3a5.5 5.5 0 1 0 6.3 6.3z" />
+        {:else if k === "sun"}
+          <circle cx="8" cy="8" r="2.6" /><path d="M8 1.8v1.5M8 12.7v1.5M1.8 8h1.5M12.7 8h1.5M3.6 3.6l1 1M11.4 11.4l1 1M3.6 12.4l1-1M11.4 4.6l1-1" />
+        {:else if k === "gear"}
+          <circle cx="8" cy="8" r="2" /><path d="M8 1.8l1 1.6 1.9-.4.5 1.8 1.8.6-.5 1.9L14 8l-1.3 1.2.5 1.9-1.8.6-.5 1.8-1.9-.4L8 14.2l-1-1.6-1.9.4-.5-1.8-1.8-.6.5-1.9L2 8l1.3-1.2-.5-1.9 1.8-.6.5-1.8 1.9.4z" />
+        {:else if k === "globe"}
+          <circle cx="8" cy="8" r="5.8" /><path d="M2.2 8h11.6M8 2.2c2 1.7 2.8 3.6 2.8 5.8S10 12.1 8 13.8C6 12.1 5.2 10.2 5.2 8S6 3.9 8 2.2z" />
+        {:else if k === "network"}
+          <rect x="6" y="2" width="4" height="3" rx=".8" /><rect x="1.8" y="11" width="4" height="3" rx=".8" /><rect x="10.2" y="11" width="4" height="3" rx=".8" /><path d="M8 5v3M4 11V8h8v3" />
+        {:else if k === "key"}
+          <circle cx="5.2" cy="10.8" r="2.7" /><path d="M7.2 8.8l6.3-6.3M11 5l1.8 1.8M9.3 6.7l1.4 1.4" />
+        {:else if k === "warn"}
+          <path d="M8 2.2L14.2 13H1.8z" /><path d="M8 6.5v3M8 11.3v.1" />
+        {:else if k === "dot"}
+          <circle cx="8" cy="8" r="1.6" fill="currentColor" />
         {:else if k === "clipboard"}
           <rect x="3.5" y="3" width="9" height="10.5" rx="1.5" /><path d="M6 3V2h4v1M5.8 7h4.4M5.8 9.5h4.4" />
         {:else}
@@ -1093,13 +1156,13 @@
                             {#if typeof item.metadata?.snippet === "string" && item.uri}
                               <span class="meta code">{item.uri}</span>
                             {:else if item.subtitle}
-                              <span class="meta" class:code={isPath(item)}>{kindName(item.kind) === "clipboard" ? mask(item.subtitle) : item.subtitle}</span>
+                              <span class="meta" class:code={isPath(item)}>{kindName(item.kind) === "clipboard" ? mask(item.subtitle) : subOf(item)}</span>
                             {/if}
                           {/if}
                         </span>
                         {#if top && item.subtitle}
                           <span class="sub" class:code={isPath(item)} class:wrap={isPlugin(item)}
-                            >{#each highlight(kindName(item.kind) === "clipboard" ? mask(item.subtitle) : item.subtitle) as part}{#if part.hit}<mark>{part.text}</mark
+                            >{#each highlight(kindName(item.kind) === "clipboard" ? mask(item.subtitle) : (subOf(item) ?? "")) as part}{#if part.hit}<mark>{part.text}</mark
                                 >{:else}{part.text}{/if}{/each}</span
                           >
                         {:else if !top && isPlugin(item) && item.subtitle}
@@ -1112,6 +1175,19 @@
                           >
                         {/if}
                       </span>
+                      {#if typeof item.metadata?.quick_key === "string"}
+                        <kbd class="qk" title="Quick key">{item.metadata.quick_key}</kbd>
+                      {/if}
+                      {#if isRunning(item)}
+                        <button
+                          type="button"
+                          class="btn small rowcancel"
+                          onclick={(e) => {
+                            e.stopPropagation();
+                            activate(item);
+                          }}>Cancel</button
+                        >
+                      {/if}
                       {#if i === selected && defaultAction(item)}
                         <span class="hint-enter"><kbd>Enter</kbd>{#if top}{openLabel(item)}{/if}</span>
                       {/if}
@@ -1128,6 +1204,12 @@
             <aside class="card glass prevcard" aria-label="Preview" in:fly={{ x: 24, duration: dur(120), delay: dur(50) }}>
               {#if previewSource}
                 <PreviewPanel source={previewSource} embedded />
+              {:else if isRunning(cur) || isNewTimer(cur)}
+                <div class="plain timerprev">
+                  <span class="big" aria-live="off">{clockText(isRunning(cur) ? secsLeft(cur!) : (cur!.metadata!.secs as number))}</span>
+                  <strong class="nm">{mask(cur!.title)}</strong>
+                  <span class="sub wrap">{isRunning(cur) ? `Ends at ${endClock(cur!.metadata!.end_ms as number)}` : (cur!.subtitle ?? "")}</span>
+                </div>
               {:else}
                 <div class="plain">
                   <strong class="nm">{mask(cur.title)}</strong>
@@ -1701,11 +1783,34 @@
     color: var(--text-soft);
     font-size: var(--fs-sm);
   }
+  /* Typed words: accent colour only, no box, normal weight. */
   mark {
-    padding: 0 2px;
-    border-radius: 3px;
-    background: var(--match-bg);
+    padding: 0;
+    background: none;
     color: var(--match-text);
+    font-weight: inherit;
+  }
+  .icon.ring svg {
+    width: 22px;
+    height: 22px;
+  }
+  .row.top .icon.ring svg {
+    width: 30px;
+    height: 30px;
+  }
+  .qk {
+    flex: none;
+  }
+  .rowcancel {
+    flex: none;
+  }
+  .timerprev .big {
+    font-family: var(--font-code);
+    font-size: 40px;
+    line-height: 1.1;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
   }
   .hint-enter {
     flex: none;

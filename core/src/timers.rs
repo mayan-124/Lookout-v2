@@ -792,6 +792,8 @@ impl Source for TimerSource {
                     item.score = ANSWER_SCORE;
                     item.score_features.match_quality = 1.0;
                     item.metadata.insert("default_action".into(), CANCEL.into());
+                    item.metadata.insert("end_ms".into(), t.end_ms.into());
+                    item.metadata.insert("secs".into(), t.secs.into());
                     item
                 })
                 .collect();
@@ -822,6 +824,8 @@ impl Source for TimerSource {
                 item.score = ANSWER_SCORE;
                 item.score_features.match_quality = 1.0;
                 item.metadata.insert("default_action".into(), START.into());
+                item.metadata.insert("end_ms".into(), end.into());
+                item.metadata.insert("secs".into(), secs.into());
                 emit(vec![item]);
             }
         }
