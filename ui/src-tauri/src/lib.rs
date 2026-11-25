@@ -1356,6 +1356,28 @@ async fn set_cli_access(
     Ok(privacy_of(&services, &shared))
 }
 
+/// Index file contents / read text in pictures: saved and applied at once.
+#[tauri::command]
+async fn set_content_options(
+    index_contents: bool,
+    ocr: bool,
+    app: AppHandle,
+    services: State<'_, Services>,
+    shared: State<'_, Shared>,
+) -> Result<PrivacyState, String> {
+    {
+        let mut s = lock(&services.settings);
+        let mut next = s.clone();
+        next.index_contents = index_contents;
+        next.ocr = ocr;
+        next.save(&services.paths.settings())
+            .map_err(|e| format!("Could not save settings: {e}"))?;
+        *s = next;
+    }
+    restart_lookout(&app);
+    Ok(privacy_of(&services, &shared))
+}
+
 /// Changes the grab-text hotkey without a restart. If the new combo has no
 /// modifier or cannot be registered, the old hotkey stays active and saved.
 #[tauri::command]
@@ -1900,6 +1922,7 @@ pub fn run() {
             apply_folders,
             set_paused,
             set_cli_access,
+            set_content_options,
             save_settings,
             set_grab_hotkey,
             delete_index,

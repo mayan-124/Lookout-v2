@@ -283,6 +283,26 @@
     }
   }
 
+  let contentMessage = $state("");
+  async function setContentOption(which: "index_contents" | "ocr", el: HTMLInputElement) {
+    contentMessage = "";
+    if (!info) return;
+    const want = { index_contents: info.index_contents, ocr: info.ocr, [which]: el.checked };
+    try {
+      const s = await invoke<PrivacyState>("set_content_options", {
+        indexContents: want.index_contents,
+        ocr: want.ocr,
+      });
+      if (info) {
+        info.index_contents = s.index_contents;
+        info.ocr = s.ocr;
+      }
+    } catch (e) {
+      el.checked = !el.checked;
+      contentMessage = errorText(e);
+    }
+  }
+
   let grabMessage = $state("");
 
   function comboFrom(e: KeyboardEvent): string | null {
@@ -544,6 +564,32 @@
             Everything is encrypted with a key that only your Windows account can unlock. Secrets such as API keys,
             private keys and card numbers are masked before text is stored.
           </p>
+          <h3 class="label-caps">What Lookout reads</h3>
+          <label class="field">
+            {@render field("Index file contents", "Reads the text inside your files so you can search for words in them.")}
+            <span class="switch">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={info?.index_contents ?? false}
+                onchange={(e) => setContentOption("index_contents", e.currentTarget)}
+              />
+              <span class="track"></span>
+            </span>
+          </label>
+          <label class="field">
+            {@render field("Read text in pictures (OCR)", "Finds words inside images and screenshots so they can be searched.")}
+            <span class="switch">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={info?.ocr ?? false}
+                onchange={(e) => setContentOption("ocr", e.currentTarget)}
+              />
+              <span class="track"></span>
+            </span>
+          </label>
+          {#if contentMessage}<p class="hint" role="alert">{contentMessage}</p>{/if}
           <h3 class="label-caps">Command line access</h3>
           <label class="field">
             {@render field("Let the lookout command search", "Any program running as you can search your files and screen text through this. Off unless you need it.")}

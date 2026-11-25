@@ -24,6 +24,8 @@ struct Patterns {
     whole: Vec<Regex>,
     /// `name = value`: replace only the value (group 3).
     assignment: Option<Regex>,
+    /// `Authorization: Bearer|Basic value`: replace only the value (group 2).
+    auth: Option<Regex>,
     cardish: Option<Regex>,
     tokenish: Option<Regex>,
 }
@@ -47,7 +49,11 @@ fn patterns() -> &'static Patterns {
         Patterns {
             whole: whole.iter().filter_map(|s| Regex::new(s).ok()).collect(),
             assignment: Regex::new(
-                r#"(?i)(pass(?:word|wd|phrase)?|pwd|secret|api[_-]?key|access[_-]?key|auth[_-]?token|token|client[_-]?secret)(["']?\s*[:=]\s*["']?)([^\s"']{6,})"#,
+                r#"(?i)(password|passwd|passphrase|pwd|secret|api[_-]?key|access[_-]?key|auth[_-]?token|token|client[_-]?secret)(["']?\s*[:=]\s*["']?)([^\s"',;}]+)"#,
+            )
+            .ok(),
+            auth: Regex::new(
+                r#"(?i)(authorization["']?\s*[:=]\s*["']?(?:bearer|basic)\s+)([^\s"']+)"#,
             )
             .ok(),
             cardish: Regex::new(r"\b\d(?:[ -]?\d){12,18}\b").ok(),
@@ -135,9 +141,15 @@ pub fn mask(text: &str) -> (Cow<'_, str>, usize) {
     for re in &p.whole {
         apply(&mut out, &mut count, re, &|_| Some(MASK.to_owned()));
     }
+    if let Some(re) = &p.auth {
+        apply(&mut out, &mut count, re, &|c| {
+            (&c[2] != MASK).then(|| format!("{}{MASK}", &c[1]))
+        });
+    }
     if let Some(re) = &p.assignment {
         apply(&mut out, &mut count, re, &|c| {
-            Some(format!("{}{}{MASK}", &c[1], &c[2]))
+            // `[masked]` itself stops at `]`-free classes below; skip already-masked values.
+            (!c[3].starts_with("[masked]")).then(|| format!("{}{}{MASK}", &c[1], &c[2]))
         });
     }
     if let Some(re) = &p.cardish {
@@ -170,7 +182,12 @@ mod tests {
     fn all_patterns_compile() {
         let p = patterns();
         assert_eq!(p.whole.len(), 9, "a built-in pattern failed to compile");
-        assert!(p.assignment.is_some() && p.cardish.is_some() && p.tokenish.is_some());
+        assert!(
+            p.assignment.is_some()
+                && p.auth.is_some()
+                && p.cardish.is_some()
+                && p.tokenish.is_some()
+        );
     }
 
     #[test]
@@ -239,6 +256,60 @@ mod tests {
             matches!(m, Cow::Borrowed(_)),
             "unchanged text is not copied"
         );
+    }
+
+    #[test]
+    fn authorization_header_values_are_masked() {
+        for (text, secret) in [
+            ("Authorization: Bearer abc", "abc"),
+            ("authorization: basic dXNlcjpw", "dXNlcjpw"),
+            ("curl -H 'Authorization: Bearer x1' https://a.test", "x1"),
+            (
+                r#"curl -H "Authorization: Basic QWxhZGRpbg==" url"#,
+                "QWxhZGRpbg",
+            ),
+            (r#"{"Authorization": "Bearer tok"}"#, "tok\""),
+        ] {
+            let (m, n) = mask(text);
+            assert!(n >= 1 && !m.contains(secret), "{text} -> {m}");
+            assert!(m.contains(MASK), "{text} -> {m}");
+        }
+        let (m, _) = mask("curl -H 'Authorization: Bearer x1' https://a.test");
+        assert!(m.contains("Authorization: Bearer [masked]'") && m.contains("https://a.test"));
+    }
+
+    #[test]
+    fn short_secret_values_are_masked() {
+        for (text, secret) in [
+            ("password=abc", "abc"),
+            ("pwd: 1234", "1234"),
+            (r#"{"token": "x9"}"#, "x9"),
+            ("api_key=k", "=k"),
+            ("passwd = qw", "qw"),
+            ("secret: s3", "s3"),
+        ] {
+            let (m, n) = mask(text);
+            assert!(
+                n == 1 && !m.contains(secret) && m.contains(MASK),
+                "{text} -> {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn harmless_text_is_not_masked() {
+        for text in [
+            "pass the salt, the password policy is long",
+            "Authorization is required for this page",
+            "the bearer of the news; Basic English",
+            "tokens: 5 per minute, secret garden",
+            "bypass: yes, compass = north",
+            "Reset your password on the settings page.",
+            "invoice 4821 paid on March 3",
+        ] {
+            let (m, n) = mask(text);
+            assert!(n == 0 && m == text, "{text} -> {m}");
+        }
     }
 
     #[test]
