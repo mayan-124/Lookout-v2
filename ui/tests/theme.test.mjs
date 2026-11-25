@@ -93,8 +93,8 @@ test("hex input is validated", () => {
 test("disk chart hues stay distinct and visible on every theme", () => {
   for (const t of THEMES) {
     const { vars } = themeVars(t, null);
-    const hues = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => vars[`--c${i}`]);
-    assert.equal(new Set(hues).size, 8, t.id);
+    const hues = [...Array(11).keys()].map((i) => vars[`--c${i}`]);
+    assert.equal(new Set(hues).size, 11, t.id);
     for (const h of hues) assert.ok(contrast(h, t.base) >= 3, `${t.id} ${h}`);
   }
 });

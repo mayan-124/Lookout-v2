@@ -347,10 +347,13 @@ test("groups and folders carry their type totals, and deleting takes them away",
   const group = mergeSmall(tiny, 100_000).at(-1);
   assert.deepEqual([group.kind, group.cat, group.split], ["other", 3, types({ 0: 20, 3: 40 })]);
   const p = palette("neon-grid", null);
+  // The added types are listed only when the scan has some; "Other" is last.
   assert.deepEqual(
     legend("type", p, 0, root.split).map((k) => k.size),
-    types({ 0: 20, 3: 40, 4: 100_000 }),
+    [20, 0, 0, 40, 100_000, 0, 0, 0],
   );
+  const added = legend("type", p, 0, types({ 7: 1, 9: 2, 10: 3 })).map((k) => k.label);
+  assert.deepEqual(added.slice(7), ["Disk images and VMs", "Data and models", "Other"]);
   const out = prune(root, new Set([root.children[0].id, tiny[0].id]));
   assert.deepEqual([out.cat, out.split], [0, types({ 0: 20, 3: 10 })]);
   assert.equal(sum(out.split, (v) => v), out.size);

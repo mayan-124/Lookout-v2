@@ -152,7 +152,7 @@
             <p class="why">{it.why}</p>
             <p class="how">
               {it.mode === "recycle"
-                ? "Goes to the Recycle Bin."
+                ? "Goes to the Recycle Bin and can be restored from there."
                 : it.mode === "empty_bin"
                   ? "Deleted for good."
                   : "Deleted directly (rebuilt by the program)."}

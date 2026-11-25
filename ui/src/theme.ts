@@ -58,6 +58,8 @@ const SEMANTIC = { danger: "#FF6B63", success: "#3FB950" };
 /** Disk chart: color-blind-safe hues, one per folder, and grey for the rest. */
 const CHART_HUES = ["#66AFD9", "#41BD98", "#DC98C1", "#A8A8F4", "#AABF4A", "#D58385", "#4AB9C6", "#BAA8D2"];
 const CHART_GREY = "#7C8494";
+/** --c8 on: orange, yellow and magenta, for file types only. */
+const CHART_TYPE_HUES = ["#E8872E", "#F2E05A", "#E260E0"];
 /** These read better with a neutral border than with an accent-tinted one. */
 const NEUTRAL_BORDER = ["graphite", "aurora"];
 
@@ -164,7 +166,7 @@ export function themeVars(t: Theme, choice: string | null) {
     "--icon-chevron": icon(TEXT_COLORS.soft, 1.6, "M2.5 4.5 6 8l3.5-3.5"),
     "--icon-check": icon(on, 2, "M2.5 6.2 5 8.7l4.5-5"),
   };
-  CHART_HUES.forEach((hue, i) => (vars[`--c${i}`] = visible(hue)));
+  [...CHART_HUES, ...CHART_TYPE_HUES].forEach((hue, i) => (vars[`--c${i}`] = visible(hue)));
   return { vars, accent, lightened };
 }
 

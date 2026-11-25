@@ -619,6 +619,7 @@ fn build_tree(
         big: Vec::new(),
         big_overflow: false,
         big_floor: BIG_MIN,
+        old_types: false,
     };
     let rid = tree.add(&root.to_string_lossy(), 0, 0, NONE);
     if let Some(&i) = idx.get(&root_rec) {
@@ -837,8 +838,11 @@ mod tests {
         let b = read_stream(&mut s.as_slice(), &opts, &progress).expect("stream");
         let t = build_tree(b, Path::new(r"C:\"), &opts, &progress).expect("tree");
         let c = t.chart(0, 3).expect("chart");
-        assert_eq!(c.split, [4096, 0, 0, 0, 8192, 0, 0, 4096]);
+        assert_eq!(c.split, [4096, 0, 0, 0, 8192, 0, 0, 4096, 0, 0, 0]);
         let sub = c.children.iter().find(|k| k.name == "sub").expect("sub");
-        assert_eq!((sub.cat, sub.split), (4, [0, 0, 0, 0, 8192, 0, 0, 4096]));
+        assert_eq!(
+            (sub.cat, sub.split),
+            (4, [0, 0, 0, 0, 8192, 0, 0, 4096, 0, 0, 0])
+        );
     }
 }

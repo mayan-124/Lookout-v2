@@ -10,7 +10,7 @@
 //! opens a file, so cloud placeholders are not downloaded. Folders that are
 //! junctions, symlinks or cloud placeholders are listed but not entered.
 //!
-//! Memory: every folder gets a 48-byte node, plus a 64-byte [`Split`] (bytes
+//! Memory: every folder gets a 48-byte node, plus an 88-byte [`Split`] (bytes
 //! per file type) if it holds any data; each folder keeps only its
 //! [`FILES_PER_FOLDER`] largest files as nodes plus one "other files" row, so a
 //! drive with millions of files costs about as much as its folder count. Past
@@ -44,18 +44,27 @@ pub const FILES_PER_FOLDER: usize = 40;
 pub const CHART_CAP: usize = 1500;
 /// [`ChartNode::cat`] of anything with no known file type.
 const CAT_OTHER: u8 = 7;
+const CAT_SYSTEM: u8 = 8;
+const CAT_IMAGES: u8 = 9;
+const CAT_DATA: u8 = 10;
+/// Number of file types.
+const CATS: usize = 11;
+/// Types held by a version 3 saved scan.
+const CATS_V3: usize = 8;
 /// Bytes on disk per file type, in the order of [`file_type`].
-pub type Split = [u64; 8];
+pub type Split = [u64; CATS];
 
 /// File type for the chart's "by type" colours, from the extension of a UTF-8
 /// or UTF-16 name alone. Same order as `TYPES` in ui/src/chartcolors.ts:
-/// documents, images, video, audio, archives, code, apps, other.
+/// documents, images, video, audio, archives, code, apps, other, system and
+/// libraries, disk images and VMs, data and models. Only the last extension
+/// counts, and one that means different things to different programs is "other".
 fn file_type<C: Copy + PartialEq + From<u8> + TryInto<u8>>(name: &[C]) -> u8 {
     let Some(dot) = name.iter().rposition(|&c| c == C::from(b'.')) else {
         return CAT_OTHER;
     };
     let ext = &name[dot + 1..];
-    let mut low = [0u8; 8];
+    let mut low = [0u8; 12];
     if ext.is_empty() || ext.len() > low.len() {
         return CAT_OTHER;
     }
@@ -76,16 +85,37 @@ fn file_type<C: Copy + PartialEq + From<u8> + TryInto<u8>>(name: &[C]) -> u8 {
         | b"mpeg" | b"m2ts" | b"vob" | b"3gp" => 2,
         b"mp3" | b"wav" | b"flac" | b"aac" | b"ogg" | b"m4a" | b"wma" | b"opus" | b"aiff"
         | b"mid" => 3,
-        b"zip" | b"7z" | b"rar" | b"tar" | b"gz" | b"tgz" | b"bz2" | b"xz" | b"zst" | b"iso"
-        | b"cab" | b"img" | b"vhd" | b"vhdx" | b"vmdk" | b"wim" => 4,
+        b"zip" | b"7z" | b"rar" | b"tar" | b"gz" | b"tgz" | b"bz2" | b"xz" | b"zst" | b"cab"
+        | b"nupkg" | b"crate" | b"whl" => 4,
         b"rs" | b"py" | b"js" | b"mjs" | b"cjs" | b"ts" | b"tsx" | b"jsx" | b"java" | b"c"
         | b"h" | b"cpp" | b"hpp" | b"cc" | b"cs" | b"go" | b"rb" | b"php" | b"swift" | b"kt"
         | b"html" | b"htm" | b"css" | b"scss" | b"svelte" | b"vue" | b"json" | b"toml"
         | b"yaml" | b"yml" | b"xml" | b"sql" | b"sh" | b"ps1" | b"bat" | b"cmd" | b"lua"
         | b"ipynb" => 5,
-        b"exe" | b"dll" | b"msi" | b"msix" | b"appx" | b"sys" | b"apk" | b"jar" | b"scr"
-        | b"ocx" | b"drv" => 6,
+        b"exe" | b"msi" | b"msix" | b"appx" | b"apk" | b"jar" | b"scr" => 6,
+        b"dll" | b"sys" | b"drv" | b"ocx" | b"mui" | b"mun" | b"cat" | b"etl" | b"evtx"
+        | b"dmp" | b"pdb" | b"lib" | b"a" | b"o" | b"rlib" | b"rmeta" | b"so" | b"pyd"
+        | b"wasm" => CAT_SYSTEM,
+        b"iso" | b"img" | b"vhd" | b"vhdx" | b"vmdk" | b"vdi" | b"qcow2" | b"ova" | b"wim"
+        | b"esd" => CAT_IMAGES,
+        b"pak" | b"bin" | b"dat" | b"db" | b"sqlite" | b"sqlite3" | b"mdf" | b"ldb" | b"sst"
+        | b"parquet" | b"jsonl" | b"gguf" | b"onnx" | b"tflite" | b"safetensors" | b"pt"
+        | b"pth" | b"ckpt" | b"heapsnapshot" => CAT_DATA,
         _ => CAT_OTHER,
+    }
+}
+
+/// [`file_type`] as it was when version 3 scans were saved, so that such a
+/// scan looks as it did until the folder is scanned again.
+fn file_type_v3(name: &[u8]) -> u8 {
+    let Some(dot) = name.iter().rposition(|&c| c == b'.') else {
+        return CAT_OTHER;
+    };
+    match &name[dot + 1..].to_ascii_lowercase()[..] {
+        b"dll" | b"sys" | b"drv" | b"ocx" => 6,
+        b"iso" | b"img" | b"vhd" | b"vhdx" | b"vmdk" | b"wim" => 4,
+        b"nupkg" | b"crate" | b"whl" => CAT_OTHER,
+        _ => file_type(name).min(CAT_OTHER),
     }
 }
 
@@ -234,6 +264,8 @@ pub struct Tree {
     big_overflow: bool,
     /// While overflowed, files below this size may be missing.
     big_floor: u64,
+    /// Loaded from a version 3 saved scan: types 8 and up do not exist in it.
+    old_types: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,7 +378,12 @@ impl Tree {
         }
         let s = n.name_off as usize;
         let mut split = Split::default();
-        let cat = file_type(&self.names[s..s + n.name_len as usize]);
+        let name = &self.names[s..s + n.name_len as usize];
+        let cat = if self.old_types {
+            file_type_v3(name)
+        } else {
+            file_type(name)
+        };
         split[usize::from(cat)] = n.size_disk;
         split
     }
@@ -1164,6 +1201,7 @@ pub fn scan(
         big: Vec::new(),
         big_overflow: false,
         big_floor: BIG_MIN,
+        old_types: false,
     };
     let root_md = std::fs::metadata(root).ok()?;
     if !root_md.is_dir() {
@@ -1721,7 +1759,7 @@ impl DiskService {
         let (Some(file), Some(key)) = (&self.saved_file, &self.key) else {
             return Err(DiskError::NoStorage);
         };
-        if read_magic(file, key).is_some_and(|m| m != *MAGIC) {
+        if read_magic(file, key).is_some_and(|m| m != *MAGIC && m != *MAGIC_V3) {
             return Err(DiskError::OldFormat);
         }
         let tree = read_tree(file, key).ok_or(DiskError::NoScan)?;
@@ -1747,7 +1785,9 @@ impl DiskService {
     }
 }
 
-const MAGIC: &[u8; 6] = b"LKDU\x03\x00";
+const MAGIC: &[u8; 6] = b"LKDU\x04\x00";
+/// Still read: the same layout with [`CATS_V3`] file types.
+const MAGIC_V3: &[u8; 6] = b"LKDU\x03\x00";
 
 fn write_tree(tree: &Tree, path: &Path, key: &Key) -> std::io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
@@ -1757,7 +1797,13 @@ fn write_tree(tree: &Tree, path: &Path, key: &Key) -> std::io::Result<()> {
         let file = std::fs::File::create(&tmp)?;
         let mut w = SealWriter::new(std::io::BufWriter::new(file), key)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
-        w.write_all(MAGIC)?;
+        // A loaded version 3 scan is saved as one: its types stay what they were.
+        let (magic, cats) = if tree.old_types {
+            (MAGIC_V3, CATS_V3)
+        } else {
+            (MAGIC, CATS)
+        };
+        w.write_all(magic)?;
         let root = tree.root.to_string_lossy();
         w.write_all(&u32::try_from(root.len()).unwrap_or(0).to_le_bytes())?;
         w.write_all(root.as_bytes())?;
@@ -1793,7 +1839,7 @@ fn write_tree(tree: &Tree, path: &Path, key: &Key) -> std::io::Result<()> {
             w.write_all(&n.split.to_le_bytes())?;
         }
         w.write_all(&tree.names)?;
-        for v in tree.splits.iter().flatten() {
+        for v in tree.splits.iter().flat_map(|s| &s[..cats]) {
             w.write_all(&v.to_le_bytes())?;
         }
         w.write_all(&[u8::from(tree.big_overflow)])?;
@@ -1853,9 +1899,12 @@ fn read_header(path: &Path, key: &Key) -> Option<SavedInfo> {
 fn read_tree(path: &Path, key: &Key) -> Option<Tree> {
     let file = std::fs::File::open(path).ok()?;
     let mut r = OpenReader::new(std::io::BufReader::new(file), key).ok()?;
-    if rd::<6>(&mut r)? != *MAGIC {
+    let magic = rd::<6>(&mut r)?;
+    if magic != *MAGIC && magic != *MAGIC_V3 {
         return None;
     }
+    let old_types = magic == *MAGIC_V3;
+    let cats = if old_types { CATS_V3 } else { CATS };
     let len = u32::from_le_bytes(rd(&mut r)?) as usize;
     if len > 1 << 16 {
         return None;
@@ -1900,7 +1949,7 @@ fn read_tree(path: &Path, key: &Key) -> Option<Tree> {
     let mut names = vec![0u8; names_len];
     r.read_exact(&mut names).ok()?;
     let mut splits = vec![Split::default(); splits_len];
-    for v in splits.iter_mut().flatten() {
+    for v in splits.iter_mut().flat_map(|s| &mut s[..cats]) {
         *v = u64::from_le_bytes(rd(&mut r)?);
     }
     let big_overflow = rd::<1>(&mut r)?[0] != 0;
@@ -1957,6 +2006,7 @@ fn read_tree(path: &Path, key: &Key) -> Option<Tree> {
         big,
         big_overflow,
         big_floor,
+        old_types,
     })
 }
 
@@ -2244,6 +2294,9 @@ mod tests {
             on(3_000),
             0,
             on(2_000),
+            0,
+            0,
+            0,
         ];
         assert_eq!(t.split_of(0), want, "rolled up to the root");
         assert_eq!(t.split_of(find(&t, "top")), want);
@@ -2338,6 +2391,95 @@ mod tests {
         assert!(seen <= CHART_CAP + 1, "{seen}");
         let sizes: Vec<u64> = c.children.iter().map(|k| k.size).collect();
         assert!(sizes.windows(2).all(|w| w[0] >= w[1]), "largest first");
+    }
+
+    #[test]
+    fn extensions_map_to_their_type_whatever_the_case() {
+        let cases = [
+            (
+                CAT_SYSTEM,
+                "dll sys drv ocx mui mun cat etl evtx dmp pdb lib a o rlib rmeta so pyd wasm",
+            ),
+            (CAT_IMAGES, "iso img vhd vhdx vmdk vdi qcow2 ova wim esd"),
+            (
+                CAT_DATA,
+                "pak bin dat db sqlite sqlite3 mdf ldb sst parquet",
+            ),
+            (
+                CAT_DATA,
+                "jsonl gguf onnx tflite safetensors pt pth ckpt heapsnapshot",
+            ),
+            (4, "cab nupkg crate whl"),
+        ];
+        for (cat, exts) in cases {
+            for ext in exts.split_whitespace() {
+                let name = format!("x.{ext}");
+                assert_eq!(file_type(name.as_bytes()), cat, "{name}");
+                let upper = name.to_uppercase();
+                assert_eq!(file_type(upper.as_bytes()), cat, "{upper}");
+                let wide: Vec<u16> = upper.encode_utf16().collect();
+                assert_eq!(file_type(&wide), cat, "{upper} as UTF-16");
+            }
+        }
+        // No extension, even when the whole name is one.
+        for name in ["README", "dll", "iso", "ends.", ""] {
+            assert_eq!(file_type(name.as_bytes()), CAT_OTHER, "{name}");
+            assert_eq!(file_type_v3(name.as_bytes()), CAT_OTHER, "{name}");
+        }
+        // Only the last extension counts.
+        assert_eq!(file_type(b"src.tar.gz"), 4);
+        assert_eq!(file_type(b"setup.dll.txt"), 0);
+        assert_eq!(file_type(b"data.db.zip"), 4);
+        assert_eq!(file_type(b"disk.tar.iso"), CAT_IMAGES);
+        // Ambiguous extensions stay in "other".
+        for name in ["a.cache", "a.bundle", "a.obj", "a.pack", "a.map", "a.tmp"] {
+            assert_eq!(file_type(name.as_bytes()), CAT_OTHER, "{name}");
+        }
+        // The mapping old saved scans keep.
+        for (name, cat) in [
+            ("A.DLL", 6),
+            ("a.iso", 4),
+            ("a.pak", CAT_OTHER),
+            ("a.vdi", CAT_OTHER),
+            ("a.whl", CAT_OTHER),
+            ("a.tar.gz", 4),
+            ("a.exe", 6),
+        ] {
+            assert_eq!(file_type_v3(name.as_bytes()), cat, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_version_3_saved_scan_loads_and_shows_its_old_types() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("a/lib.dll"), 5_000);
+        write(&dir.path().join("a/notes.txt"), 100);
+        let mut tree = run(dir.path(), fast()).unwrap();
+        assert_eq!(tree.chart(0, 3).unwrap().cat, CAT_SYSTEM);
+        // What version 3 held: eight types, with the DLL among the apps.
+        let dll = tree.split_of(0)[usize::from(CAT_SYSTEM)];
+        for s in &mut tree.splits {
+            s[6] = std::mem::take(&mut s[usize::from(CAT_SYSTEM)]);
+        }
+        tree.old_types = true;
+        let file = tempfile::tempdir().unwrap().keep().join("disk.scan");
+        let key = Key::generate().unwrap();
+        write_tree(&tree, &file, &key).unwrap();
+        assert_eq!(read_magic(&file, &key), Some(*MAGIC_V3));
+        let svc = DiskService::new(
+            PauseState::new(),
+            1.0,
+            Some(file),
+            Some(key),
+            Hints::default(),
+        );
+        svc.load_saved().unwrap();
+        let back = svc.tree().unwrap();
+        let c = back.chart(0, 3).unwrap();
+        assert_eq!((c.cat, c.split[6]), (6, dll));
+        splits_add_up(&c);
+        assert_eq!(c.split[CATS_V3..], [0; CATS - CATS_V3]);
+        assert_eq!(back.split_of(find(&back, "lib.dll"))[6], dll);
     }
 
     #[test]

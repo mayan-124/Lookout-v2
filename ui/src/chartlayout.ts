@@ -47,7 +47,7 @@ export const RING_LEVELS = 4;
 export const MIN_SHARE = 0.005;
 
 const total = (nodes: CNode[]) => nodes.reduce((s, n) => s + n.size, 0);
-const OTHER_TYPE = 7;
+export const OTHER_TYPE = 7;
 
 /** The type holding the most bytes (the first of equals); "other" for none. */
 export function dominant(split: number[]): number {
@@ -69,7 +69,7 @@ export function mergeSmall(children: CNode[], parentSize: number, share = MIN_SH
   // One small item is not worth hiding behind "Other".
   if (small.length < 2) return keep.concat(small);
   const items = small.reduce((s, c) => s + (c.kind === "other" || c.kind === "files" ? c.items : 1), 0);
-  const split = small.reduce((sum, c) => sum.map((v, i) => v + c.split[i]), new Array<number>(OTHER_TYPE + 1).fill(0));
+  const split = small.reduce((sum, c) => sum.map((v, i) => v + c.split[i]), small[0].split.map(() => 0));
   keep.push({
     id: null,
     name: `Other (${items.toLocaleString("en-US")} items)`,

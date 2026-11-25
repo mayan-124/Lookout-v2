@@ -1,6 +1,6 @@
 // Fill colours of the disk charts. Every colour is derived from the theme's
 // variables (see theme.ts), so each theme base gets readable fills.
-import type { CNode } from "./chartlayout.ts";
+import { OTHER_TYPE, type CNode } from "./chartlayout.ts";
 import { contrast, INK, mix, panelColors, themeById, themeVars } from "./theme.ts";
 
 export type ColourMode = "folder" | "type" | "age";
@@ -11,7 +11,19 @@ export const COLOUR_MODES: { id: ColourMode; label: string }[] = [
 ];
 
 /** Same order as `file_type` in core/src/diskusage.rs. */
-export const TYPES = ["Documents", "Images", "Video", "Audio", "Archives", "Code", "Apps", "Other"];
+export const TYPES = [
+  "Documents",
+  "Images",
+  "Video",
+  "Audio",
+  "Archives",
+  "Code",
+  "Apps",
+  "Other",
+  "System and libraries",
+  "Disk images and VMs",
+  "Data and models",
+];
 
 /** Upper age, in days, of every bucket but the last. */
 export const AGE_DAYS = [30, 182, 365, 730];
@@ -57,7 +69,7 @@ export function palette(themeId: string, accentChoice: string | null): Palette {
     accent,
     grey,
     folder: hues,
-    type: [...hues.slice(0, 7), grey],
+    type: [...hues.slice(0, OTHER_TYPE), grey, ...[8, 9, 10].map((i) => vars[`--c${i}`])],
     age,
   };
 }
@@ -81,7 +93,13 @@ export function fillFor(node: CNode, mode: ColourMode, branch: number, depth: nu
 
 /** Legend entries for the current mode; folder colours need none. `split` gives the type entries their totals. */
 export function legend(mode: ColourMode, p: Palette, now: number, split?: number[]): { colour: string; label: string; size?: number }[] {
-  if (mode === "type") return TYPES.map((label, i) => ({ colour: p.type[i], label, size: split?.[i] }));
+  if (mode === "type") {
+    const keys = TYPES.map((label, i) => ({ colour: p.type[i], label, size: split?.[i] }));
+    // The types after "Other" are listed only when the scan has some (an older
+    // saved scan has none), and "Other" goes last.
+    const added = keys.slice(OTHER_TYPE + 1).filter((k) => !split || k.size);
+    return [...keys.slice(0, OTHER_TYPE), ...added, keys[OTHER_TYPE]];
+  }
   if (mode !== "age") return [];
   const date = (days: number) =>
     new Date((now - days * 86_400) * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });

@@ -12,6 +12,8 @@ use crate::item::Kind;
 pub const REVEAL: &str = "reveal";
 pub const COPY_PATH: &str = "copy_path";
 pub const RECYCLE: &str = "recycle";
+/// Said by every Disk confirmation that moves something to the Recycle Bin.
+const RECYCLE_NOTE: &str = "What you remove goes to the Windows Recycle Bin and can be restored from there. Lookout has no in-app undo.";
 
 fn existing_path(target: &Target) -> Result<PathBuf, ActionError> {
     let uri = target
@@ -290,7 +292,7 @@ impl Action for RecycleAction {
                     format!("{items} {noun}, {} on disk (as of the scan)", human(size)),
                 ],
                 warnings: vec![
-                    "Lookout cannot undo this. The items go to the Windows Recycle Bin; to get them back, restore them there.".to_owned(),
+                    RECYCLE_NOTE.to_owned(),
                     "If an item is too big for the Recycle Bin, Windows asks before deleting it permanently.".to_owned(),
                 ],
             },
@@ -442,7 +444,7 @@ impl Action for BatchRemoveAction {
             Mode::Recycle => (
                 format!("Move {n} items to the Recycle Bin: {}", b.label),
                 vec![
-                    "Lookout cannot undo this. The items go to the Windows Recycle Bin; to get them back, restore them there.".to_owned(),
+                    RECYCLE_NOTE.to_owned(),
                     "Space is only freed once the Recycle Bin is emptied. If an item is too big for it, Windows asks before deleting it permanently.".to_owned(),
                 ],
             ),
@@ -599,7 +601,7 @@ mod tests {
             text.contains("1234 items") && text.contains("5.0 MB"),
             "{text}"
         );
-        assert!(text.contains("cannot undo"));
+        assert!(text.contains(RECYCLE_NOTE), "{text}");
         assert!(rec.0.lock().unwrap().is_empty(), "planning deletes nothing");
         action.execute(&plan, &Authorized::for_tests()).unwrap();
         assert_eq!(*rec.0.lock().unwrap(), [dir.path().to_path_buf()]);
@@ -748,6 +750,7 @@ mod tests {
         let plan = action.plan(&batch_target(&id)).unwrap();
         assert_eq!(plan.risk, Risk::Confirm);
         assert!(format!("{:?}", plan.preview).contains("Keep:"));
+        assert!(plan.preview.warnings.iter().any(|w| w == RECYCLE_NOTE));
         action.execute(&plan, &Authorized::for_tests()).unwrap();
         assert_eq!(*rec.0.lock().unwrap(), std::slice::from_ref(&copy));
         // A missing keeper stops everything.

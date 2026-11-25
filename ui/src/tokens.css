@@ -39,7 +39,7 @@
 
   /* Colors. theme.ts holds every color value and sets these on <html>:
      --base --tint1 --tint2 --accent --accent-on --glass-border --text
-     --text-soft --muted --shade --danger --success --c0..--c7 --c-grey
+     --text-soft --muted --shade --danger --success --c0..--c10 --c-grey
      --icon-chevron --icon-check. Everything below is derived from them. */
   --accent-bg: var(--accent);
   --accent-on-line: color-mix(in srgb, var(--accent-on) 50%, transparent);
