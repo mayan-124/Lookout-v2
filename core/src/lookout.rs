@@ -13,6 +13,10 @@ use crate::actions::disk::{
 };
 use crate::actions::kill_port::{self, KillPort, PortSource};
 use crate::actions::open::{self, Launcher, OpenAction};
+use crate::actions::quick::{
+    self as quick_actions, OpenUrlAction, PageAction, QuickSource, RadioAction, ThemeAction,
+    WindowsRadios, WindowsTheme,
+};
 use crate::actions::system::ProcessBackend;
 use crate::actions::undo_log::{Entry, UndoLog};
 use crate::actions::{
@@ -435,11 +439,13 @@ impl Lookout {
             Some(s) => s,
             None => default_system(),
         };
+        let theme: Arc<dyn quick_actions::ThemeBackend> = Arc::new(WindowsTheme);
         let files_source = Arc::new(FilesSource::new(index.clone(), weights));
         let sources: Vec<Arc<dyn Source>> = vec![
             Arc::new(CalculatorSource),
             Arc::new(UnitsSource),
             Arc::new(crate::pathquery::PathSource),
+            Arc::new(QuickSource::new(theme.clone())),
             Arc::new(PortSource::new(system.clone())),
             Arc::new(AppsSource::new(app_list, frecency.clone(), weights)),
             files_source.clone(),
@@ -518,6 +524,10 @@ impl Lookout {
         let action_list: Vec<Arc<dyn Action>> = vec![
             Arc::new(OpenAction::new(opts.launcher.clone())),
             Arc::new(KillPort::new(system)),
+            Arc::new(OpenUrlAction::new(opts.launcher.clone())),
+            Arc::new(PageAction::new(opts.launcher.clone())),
+            Arc::new(ThemeAction::new(theme)),
+            Arc::new(RadioAction::new(Arc::new(WindowsRadios))),
             Arc::new(RevealAction(Arc::new(ExplorerReveal))),
             Arc::new(CopyPathAction(Arc::new(WindowsClipboardWriter))),
             Arc::new(RecycleAction::new(
@@ -1134,6 +1144,17 @@ fn target_of(item: &crate::item::Item) -> Option<Target> {
                 kind: Kind::Port,
                 uri: None,
                 port: Some(u16::try_from(port).ok()?),
+                origin: None,
+            })
+        }
+        Kind::Custom(ref name)
+            if name == quick_actions::KIND_URL || name == quick_actions::KIND_SYSTEM =>
+        {
+            Some(Target {
+                item_id: item.id.clone(),
+                kind: item.kind.clone(),
+                uri: Some(item.uri.clone()?),
+                port: None,
                 origin: None,
             })
         }

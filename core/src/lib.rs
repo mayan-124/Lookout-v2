@@ -36,6 +36,7 @@ pub mod pause;
 pub mod plugins;
 pub mod preview;
 pub mod query;
+pub mod quick;
 pub mod ranking;
 #[cfg(windows)]
 pub mod screengrab;

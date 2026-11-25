@@ -294,6 +294,8 @@
     content: "Inside files",
     semantic: "By meaning",
     ports: "Ports",
+    system: "System",
+    link: "Link",
   };
   // Plugin results carry messages (a rename preview, an error): wrap, never cut off.
   const isPlugin = (i: Item) => !(i.source in GROUPS);
@@ -754,6 +756,10 @@
     paste_clip: "Paste",
     copy_clip: "Copy",
     kill_port: "Stop…",
+    open_url: "Open",
+    system_page: "Open",
+    system_theme: "Switch",
+    system_radio: "Turn…",
   };
   const openLabel = (i: Item | undefined) => ACTION_LABEL[defaultAction(i) ?? ""] ?? "Run";
   function copyText(i: Item | undefined) {

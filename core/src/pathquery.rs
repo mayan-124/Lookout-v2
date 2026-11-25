@@ -146,12 +146,27 @@ pub fn item_for(text: &str, source: &str) -> Option<Item> {
     if !looks_like_path(text) {
         return None;
     }
+    // A network path is shown without asking the network anything: no lookup
+    // until the user opens it (and `\?\` device paths are never offered).
+    if text.trim().trim_start_matches('"').starts_with(['\\', '/']) {
+        let unc = crate::quick::parse_unc(text)?;
+        let mut item = open_item(
+            Kind::Folder,
+            "folder",
+            Path::new(&unc),
+            "Open folder".to_owned(),
+            None,
+            source,
+        );
+        item.score = ANSWER_SCORE;
+        return Some(item);
+    }
     let item = match resolve(&expand(text)) {
         PathTarget::Folder(p) => open_item(
             Kind::Folder,
             "folder",
             &p,
-            format!("Open {}", p.display()),
+            "Open folder".to_owned(),
             None,
             source,
         ),
@@ -283,6 +298,16 @@ mod tests {
         assert_eq!(x("C:/a/b"), r"C:\a\b");
         assert_eq!(x("D:"), r"D:\");
         assert_eq!(x(r"%NOPE%\x"), r"%NOPE%\x");
+    }
+
+    #[test]
+    fn a_network_path_shows_open_folder_without_a_lookup_and_device_paths_are_refused() {
+        let i = item_for(r"\\nonexistent-host\share\dir", "path").unwrap();
+        assert_eq!(i.kind, Kind::Folder);
+        assert_eq!(i.title, "Open folder");
+        assert_eq!(i.uri.as_deref(), Some(r"\\nonexistent-host\share\dir"));
+        assert!(item_for(r"\\?\C:\Windows", "path").is_none());
+        assert!(item_for(r"\\.\pipe\x", "path").is_none());
     }
 
     #[test]

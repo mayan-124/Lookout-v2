@@ -12,6 +12,7 @@ pub mod disk;
 pub mod gate;
 pub mod kill_port;
 pub mod open;
+pub mod quick;
 pub mod system;
 pub mod undo_log;
 
