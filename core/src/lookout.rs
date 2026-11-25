@@ -14,8 +14,7 @@ use crate::actions::disk::{
 use crate::actions::kill_port::{self, KillPort, PortSource};
 use crate::actions::open::{self, Launcher, OpenAction};
 use crate::actions::quick::{
-    self as quick_actions, OpenUrlAction, PageAction, QuickSource, RadioAction, ThemeAction,
-    WindowsRadios, WindowsTheme,
+    self as quick_actions, OpenUrlAction, PageAction, QuickSource, ThemeAction, WindowsTheme,
 };
 use crate::actions::system::ProcessBackend;
 use crate::actions::undo_log::{Entry, UndoLog};
@@ -527,7 +526,6 @@ impl Lookout {
             Arc::new(OpenUrlAction::new(opts.launcher.clone())),
             Arc::new(PageAction::new(opts.launcher.clone())),
             Arc::new(ThemeAction::new(theme)),
-            Arc::new(RadioAction::new(Arc::new(WindowsRadios))),
             Arc::new(RevealAction(Arc::new(ExplorerReveal))),
             Arc::new(CopyPathAction(Arc::new(WindowsClipboardWriter))),
             Arc::new(RecycleAction::new(

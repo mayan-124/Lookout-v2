@@ -156,40 +156,8 @@ pub fn parse_unc(text: &str) -> Option<String> {
 pub enum What {
     /// Switch between dark and light mode (registry, undoable).
     Theme,
-    /// Turn the Wi-Fi or Bluetooth radio on or off.
-    Radio(RadioKind),
     /// Open this fixed Settings page.
     Page(&'static str),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RadioKind {
-    Wifi,
-    Bluetooth,
-}
-
-impl RadioKind {
-    pub fn id(self) -> &'static str {
-        match self {
-            RadioKind::Wifi => "wifi",
-            RadioKind::Bluetooth => "bluetooth",
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            RadioKind::Wifi => "Wi-Fi",
-            RadioKind::Bluetooth => "Bluetooth",
-        }
-    }
-
-    pub fn from_id(id: &str) -> Option<Self> {
-        match id {
-            "wifi" => Some(RadioKind::Wifi),
-            "bluetooth" => Some(RadioKind::Bluetooth),
-            _ => None,
-        }
-    }
 }
 
 pub struct Entry {
@@ -216,20 +184,6 @@ pub const ENTRIES: &[Entry] = &[
             "theme",
         ],
         what: What::Theme,
-    },
-    Entry {
-        id: "wifi",
-        title: "Turn Wi-Fi on or off",
-        subtitle: "Asks first, can be undone",
-        keywords: &["wifi", "wi-fi", "wi fi", "wireless", "wlan"],
-        what: What::Radio(RadioKind::Wifi),
-    },
-    Entry {
-        id: "bluetooth",
-        title: "Turn Bluetooth on or off",
-        subtitle: "Asks first, can be undone",
-        keywords: &["bluetooth"],
-        what: What::Radio(RadioKind::Bluetooth),
     },
     Entry {
         id: "wifi_page",
@@ -522,16 +476,16 @@ mod tests {
     fn typed_words_find_system_entries() {
         assert_eq!(ids("dark mode"), ["dark_mode"]);
         assert_eq!(ids("Dark  Mode"), ["dark_mode"]);
-        assert_eq!(ids("wifi"), ["wifi", "wifi_page"]);
-        assert_eq!(ids("bluetooth"), ["bluetooth", "bluetooth_page"]);
-        assert_eq!(ids("turn off wifi"), ["wifi", "wifi_page"]);
+        assert_eq!(ids("wifi"), ["wifi_page"]);
+        assert_eq!(ids("bluetooth"), ["bluetooth_page"]);
+        assert_eq!(ids("turn off wifi"), ["wifi_page"]);
         assert_eq!(ids("night light"), ["night_light"]);
         assert_eq!(ids("do not disturb"), ["focus"]);
         assert_eq!(ids("airplane mode"), ["airplane"]);
         assert_eq!(ids("display settings"), ["display"]);
         assert_eq!(ids("windows update"), ["update"]);
         assert_eq!(ids("settings"), ["settings"]);
-        assert_eq!(ids("blue"), ["bluetooth", "bluetooth_page", "night_light"]);
+        assert_eq!(ids("blue"), ["bluetooth_page", "night_light"]);
     }
 
     #[test]

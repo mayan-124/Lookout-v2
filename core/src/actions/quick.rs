@@ -1,5 +1,5 @@
 //! Quick actions: open a web address, open a fixed Settings page, switch
-//! dark / light mode, turn Wi-Fi or Bluetooth on or off. Every one goes
+//! dark / light mode. Every one goes
 //! through the action engine, so each shows a preview first. Lookout makes no
 //! network connection itself: a web address is handed to the default browser.
 
@@ -14,13 +14,12 @@ use super::open::Launcher;
 use super::{Action, ActionError, Authorized, Executed, Plan, Preview, Risk, Target, UndoPlan};
 use crate::item::{Item, Kind};
 use crate::query::ParsedQuery;
-use crate::quick::{self, RadioKind, What};
+use crate::quick::{self, What};
 use crate::sources::{QueryContext, Source, Tier, ANSWER_SCORE};
 
 pub const OPEN_URL: &str = "open_url";
 pub const SYSTEM_PAGE: &str = "system_page";
 pub const SYSTEM_THEME: &str = "system_theme";
-pub const SYSTEM_RADIO: &str = "system_radio";
 
 /// `Kind::Custom` names used by the results of this module.
 pub const KIND_URL: &str = "url";
@@ -176,151 +175,6 @@ impl Action for ThemeAction {
             .map_err(|_| ActionError::Failed("the undo information is damaged".into()))?;
         self.backend.write(&prev).map_err(ActionError::Failed)?;
         Ok(format!("Back to {} mode", mode_name(prev.is_dark())))
-    }
-}
-
-// --------------------------------------------------------------- radios
-
-pub trait RadioBackend: Send + Sync {
-    /// Whether the radio is on; an error says why it cannot be read (no adapter...).
-    fn is_on(&self, kind: RadioKind) -> Result<bool, String>;
-    fn set(&self, kind: RadioKind, on: bool) -> Result<(), String>;
-}
-
-#[derive(Serialize, Deserialize)]
-struct RadioUndo {
-    kind: String,
-    was_on: bool,
-}
-
-pub struct RadioAction {
-    backend: Arc<dyn RadioBackend>,
-}
-
-impl RadioAction {
-    pub fn new(backend: Arc<dyn RadioBackend>) -> Self {
-        Self { backend }
-    }
-}
-
-fn on_off(on: bool) -> &'static str {
-    if on {
-        "on"
-    } else {
-        "off"
-    }
-}
-
-fn radio_warning(kind: RadioKind) -> &'static str {
-    match kind {
-        RadioKind::Wifi => "You may lose your network connection until you turn Wi-Fi back on.",
-        RadioKind::Bluetooth => "Connected Bluetooth devices will disconnect.",
-    }
-}
-
-impl Action for RadioAction {
-    fn id(&self) -> &str {
-        SYSTEM_RADIO
-    }
-
-    fn label(&self) -> &str {
-        "Turn on or off"
-    }
-
-    fn applies_to(&self, kind: &Kind) -> bool {
-        is_custom(kind, KIND_SYSTEM)
-    }
-
-    fn plan(&self, target: &Target) -> Result<Plan, ActionError> {
-        let kind = target
-            .uri
-            .as_deref()
-            .and_then(RadioKind::from_id)
-            .ok_or_else(|| ActionError::NotApplicable {
-                action: SYSTEM_RADIO.into(),
-            })?;
-        let was_on = self.backend.is_on(kind).map_err(ActionError::NothingToDo)?;
-        let to_on = !was_on;
-        let name = kind.name();
-        let warnings = if to_on {
-            Vec::new()
-        } else {
-            vec![radio_warning(kind).to_owned()]
-        };
-        Ok(simple_plan(
-            Risk::Confirm,
-            format!("Turn {name} {}", on_off(to_on)),
-            vec![format!("{name} is {} now.", on_off(was_on))],
-            warnings,
-            true,
-            serde_json::json!({ "kind": kind.id(), "was_on": was_on }),
-            format!("radio|{}|{was_on}", kind.id()),
-        ))
-    }
-
-    fn execute(&self, plan: &Plan, _proof: &Authorized) -> Result<Executed, ActionError> {
-        let kind = plan
-            .snapshot
-            .get("kind")
-            .and_then(|k| k.as_str())
-            .and_then(RadioKind::from_id)
-            .ok_or_else(|| ActionError::Failed("bad plan".into()))?;
-        let was_on = plan
-            .snapshot
-            .get("was_on")
-            .and_then(serde_json::Value::as_bool)
-            .ok_or_else(|| ActionError::Failed("bad plan".into()))?;
-        self.backend
-            .set(kind, !was_on)
-            .map_err(ActionError::Failed)?;
-        let token = serde_json::to_string(&RadioUndo {
-            kind: kind.id().to_owned(),
-            was_on,
-        })
-        .map_err(|e| ActionError::Failed(e.to_string()))?;
-        Ok(Executed {
-            message: format!("{} turned {}", kind.name(), on_off(!was_on)),
-            undo_token: Some(token),
-        })
-    }
-
-    fn plan_undo(&self, token: &str) -> Result<UndoPlan, ActionError> {
-        let t: RadioUndo = serde_json::from_str(token)
-            .map_err(|_| ActionError::Failed("the undo information is damaged".into()))?;
-        let kind = RadioKind::from_id(&t.kind)
-            .ok_or_else(|| ActionError::Failed("the undo information is damaged".into()))?;
-        let now = self.backend.is_on(kind).map_err(ActionError::NothingToDo)?;
-        let warnings = if t.was_on {
-            Vec::new()
-        } else {
-            vec![radio_warning(kind).to_owned()]
-        };
-        Ok(UndoPlan {
-            risk: Risk::Confirm,
-            preview: Preview {
-                from: None,
-                title: format!("Turn {} {} again", kind.name(), on_off(t.was_on)),
-                lines: vec![format!("{} is {} now.", kind.name(), on_off(now))],
-                warnings,
-            },
-            fingerprint: format!("radio-undo|{token}|{now}"),
-        })
-    }
-
-    fn undo(
-        &self,
-        token: &str,
-        _plan: &UndoPlan,
-        _proof: &Authorized,
-    ) -> Result<String, ActionError> {
-        let t: RadioUndo = serde_json::from_str(token)
-            .map_err(|_| ActionError::Failed("the undo information is damaged".into()))?;
-        let kind = RadioKind::from_id(&t.kind)
-            .ok_or_else(|| ActionError::Failed("the undo information is damaged".into()))?;
-        self.backend
-            .set(kind, t.was_on)
-            .map_err(ActionError::Failed)?;
-        Ok(format!("{} turned {}", kind.name(), on_off(t.was_on)))
     }
 }
 
@@ -546,7 +400,6 @@ impl Source for QuickSource {
                     },
                     SYSTEM_THEME,
                 ),
-                What::Radio(_) => (entry.title.to_owned(), SYSTEM_RADIO),
                 What::Page(_) => (entry.title.to_owned(), SYSTEM_PAGE),
             };
             let mut item = Item::new(
@@ -571,12 +424,10 @@ impl Source for QuickSource {
 // ------------------------------------------------------ real Windows parts
 
 #[cfg(windows)]
-pub use real::{WindowsRadios, WindowsTheme};
+pub use real::WindowsTheme;
 
 #[cfg(windows)]
 mod real {
-    use windows::Devices::Radios::{Radio, RadioAccessStatus, RadioKind as WinKind, RadioState};
-    use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
     use windows_sys::Win32::System::Registry::{
         RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
         HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_DWORD,
@@ -585,7 +436,7 @@ mod real {
         SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
     };
 
-    use super::{RadioBackend, RadioKind, ThemeBackend, ThemeValues};
+    use super::{ThemeBackend, ThemeValues};
 
     const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
     const APPS: &str = "AppsUseLightTheme";
@@ -699,66 +550,10 @@ mod real {
             Ok(())
         }
     }
-
-    pub struct WindowsRadios;
-
-    fn find(kind: RadioKind) -> Result<Radio, String> {
-        // SAFETY: plain WinRT initialisation; a repeat call returns an error we ignore.
-        unsafe {
-            let _ = RoInitialize(RO_INIT_MULTITHREADED);
-        }
-        let want = match kind {
-            RadioKind::Wifi => WinKind::WiFi,
-            RadioKind::Bluetooth => WinKind::Bluetooth,
-        };
-        let radios = Radio::GetRadiosAsync()
-            .and_then(|op| op.join())
-            .map_err(|e| e.message())?;
-        radios
-            .into_iter()
-            .find(|r| r.Kind().is_ok_and(|k| k == want))
-            .ok_or_else(|| format!("No {} adapter was found on this computer", kind.name()))
-    }
-
-    impl RadioBackend for WindowsRadios {
-        fn is_on(&self, kind: RadioKind) -> Result<bool, String> {
-            let radio = find(kind)?;
-            let state = radio.State().map_err(|e| e.message())?;
-            Ok(state == RadioState::On)
-        }
-
-        fn set(&self, kind: RadioKind, on: bool) -> Result<(), String> {
-            let radio = find(kind)?;
-            let access = Radio::RequestAccessAsync()
-                .and_then(|op| op.join())
-                .map_err(|e| e.message())?;
-            if access != RadioAccessStatus::Allowed {
-                return Err(
-                    "Windows did not allow Lookout to change radios (Settings > Privacy)".into(),
-                );
-            }
-            let state = if on { RadioState::On } else { RadioState::Off };
-            let result = radio
-                .SetStateAsync(state)
-                .and_then(|op| op.join())
-                .map_err(|e| e.message())?;
-            if result == RadioAccessStatus::Allowed {
-                Ok(())
-            } else {
-                Err(format!(
-                    "Windows refused to turn {} {}",
-                    kind.name(),
-                    super::on_off(on)
-                ))
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
     use super::*;
 
     struct FakeTheme(Mutex<ThemeValues>);
@@ -776,19 +571,6 @@ mod tests {
 
         fn write(&self, v: &ThemeValues) -> Result<(), String> {
             *self.0.lock().unwrap() = *v;
-            Ok(())
-        }
-    }
-
-    struct FakeRadios(AtomicBool);
-
-    impl RadioBackend for FakeRadios {
-        fn is_on(&self, _: RadioKind) -> Result<bool, String> {
-            Ok(self.0.load(Ordering::SeqCst))
-        }
-
-        fn set(&self, _: RadioKind, on: bool) -> Result<(), String> {
-            self.0.store(on, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -859,23 +641,6 @@ mod tests {
         assert_eq!(theme.read().apps, Some(0));
         assert_eq!(theme.read().system, Some(0));
         assert!(act.plan_undo("not json").is_err());
-    }
-
-    #[test]
-    fn radios_need_confirmation_and_undo_restores_the_state() {
-        let radios = Arc::new(FakeRadios(AtomicBool::new(true)));
-        let act = RadioAction::new(radios.clone());
-        let plan = act.plan(&target(KIND_SYSTEM, "wifi")).unwrap();
-        assert_eq!(plan.risk, Risk::Confirm);
-        assert_eq!(plan.preview.title, "Turn Wi-Fi off");
-        assert!(!plan.preview.warnings.is_empty());
-        let done = act.execute(&plan, &Authorized::for_tests()).unwrap();
-        assert!(!radios.0.load(Ordering::SeqCst));
-        let token = done.undo_token.unwrap();
-        let up = act.plan_undo(&token).unwrap();
-        act.undo(&token, &up, &Authorized::for_tests()).unwrap();
-        assert!(radios.0.load(Ordering::SeqCst));
-        assert!(act.plan(&target(KIND_SYSTEM, "dark_mode")).is_err());
     }
 
     #[test]
@@ -956,8 +721,7 @@ mod tests {
         assert_eq!(query(&dark, "dark mode")[0].title, "Switch to light mode");
 
         let wifi = query(&src, "wifi");
-        assert_eq!(wifi[0].metadata["default_action"], SYSTEM_RADIO);
-        assert_eq!(wifi[1].metadata["default_action"], SYSTEM_PAGE);
+        assert_eq!(wifi[0].metadata["default_action"], SYSTEM_PAGE);
 
         let link = query(&src, "apple.com");
         assert_eq!(link[0].title, "Open https://apple.com");

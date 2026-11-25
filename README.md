@@ -39,7 +39,7 @@ Everything. Your files, searches and index never leave your PC. Lookout connects
 
 Actions go through a preview and, when they can hurt, an explicit confirmation, and every one is written to an undo log that survives restarts:
 
-- quick actions: type `dark mode` (switches Windows dark/light, undoable), `wifi` or `bluetooth` (turns the radio on/off after you confirm, undoable), or `night light`, `display`, `sound`, `battery`, `storage`, `apps`, `windows update`, `settings` (opens that Settings page); results are labelled System
+- quick actions: type `dark mode` (switches Windows dark/light, undoable), or `wifi`, `bluetooth`, `night light`, `display`, `sound`, `battery`, `storage`, `apps`, `windows update`, `settings` (opens that Settings page); results are labelled System
 - type a web address (`apple.com`, `https://x.com/y`, `localhost:3000`) to open it in your default browser (http and https only), or a network path (`\\server\share`) to open it in Explorer
 - `kill port 3000` (also `kill 3000`, `stop :3000`) shows the program, command line and folder that are using the port right now, asks you to confirm, stops it, and can start it again with `Ctrl+Z` (only if its command line and folder could be read)
 - opening a file is an action too: documents, folders and apps open at once, but `.exe .bat .cmd .js .vbs .msi .ps1 .scr .hta` (and similar types) ask first
