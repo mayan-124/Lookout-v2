@@ -2,15 +2,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { didYouMean, ghostFor, opensHistory, placeSuggestions, readLine, suggest, within1, worthRemembering } from "../src/discover.ts";
+import { didYouMean, ghostFor, isNoteText, opensHistory, placeSuggestions, readLine, suggest, within1, worthRemembering } from "../src/discover.ts";
 import { helpEntries, tipsFor } from "../src/modes.ts";
 import { ACTIONS, ICONS, actionById, homeActions } from "../src/registry.ts";
 
 // The switches each mode sets (core/src/uimode.rs).
 const SHOW = {
-  simple: { disk: false, clipboard: false, capture: false, timers: true, quick_keys: false, filters: true },
-  standard: { disk: false, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true },
-  full: { disk: true, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true },
+  simple: { disk: false, clipboard: false, capture: false, timers: true, quick_keys: false, filters: true, notes: false },
+  standard: { disk: false, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true, notes: true },
+  full: { disk: true, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true, notes: true },
 };
 const ids = (q, mode = "full") => suggest(q, ACTIONS, mode, SHOW[mode]).map((s) => s.action.id);
 const ghost = (q, mode = "full") => ghostFor(q, ACTIONS, mode, SHOW[mode]);
@@ -180,7 +180,10 @@ test("the quick actions follow the mode", () => {
   const row = (mode, show = SHOW[mode]) => homeActions(mode, show).map((a) => a.id);
   assert.deepEqual(row("simple"), ["timer", "help"]);
   assert.deepEqual(row("standard"), ["timer", "darkmode", "appearance", "help"]);
-  assert.deepEqual(row("full"), ["timer", "darkmode", "appearance", "help"]);
+  // In Full, Note takes the place of Appearance; the grid stays two by two.
+  assert.deepEqual(row("full"), ["timer", "darkmode", "note", "help"]);
+  assert.deepEqual(row("full", { ...SHOW.full, notes: false }), ["timer", "darkmode", "appearance", "help"]);
+  assert.equal(actionById("note").label, "Note");
   // The user's own switches count.
   assert.deepEqual(row("simple", { ...SHOW.simple, timers: false }), ["help"]);
 });
@@ -248,4 +251,29 @@ test("the understood line says how a command was read, once", () => {
   assert.equal(readLine([{ ...file("np"), source: "quickkey", metadata: { quick_key: "np" } }], "np "), "Quick key · np");
   // Date and kind words have their own labels.
   assert.equal(readLine([file("invoice.pdf")], "pdf last week"), "");
+});
+
+test("Simple tips are the timer and help; dates, zones and notes wait for Standard", () => {
+  const tips = (mode) => tipsFor(ACTIONS, mode, SHOW[mode]).map((a) => a.id);
+  assert.deepEqual(tips("simple"), ["timer", "help"]);
+  for (const id of ["dates", "timezone", "note"]) {
+    assert.ok(tips("standard").includes(id) && tips("full").includes(id), id);
+  }
+  const help = helpEntries(ACTIONS, "simple", SHOW.simple, true).flatMap((e) => ("row" in e ? [e.row.id] : []));
+  for (const id of ["dates", "timezone", "note", "notes"]) assert.ok(!help.includes(id), id);
+  assert.equal(ghost("days u", "standard"), "ntil 25 dec");
+  assert.equal(ghost("time in", "standard"), " tokyo");
+  assert.equal(ghost("note", "standard"), ": ");
+});
+
+test("a note's own words suggest nothing, complete nothing and are not remembered", () => {
+  for (const q of ["note:", "note: settings", "Note: timer", " note: disk usage"]) {
+    assert.ok(isNoteText(q), q);
+    assert.deepEqual(ids(q), [], q);
+    assert.equal(ghost(q), "", q);
+    assert.ok(!worthRemembering(q), q);
+  }
+  assert.ok(!isNoteText("notes") && !isNoteText("my note: x"));
+  const app = readFileSync(new URL("../src/App.svelte", import.meta.url), "utf8");
+  assert.match(app, /typedSection\(query\) === 0 && !isNoteText\(query\)/);
 });

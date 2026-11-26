@@ -8,17 +8,28 @@ export const ACTIONS = data as Action[];
 
 export const actionById = (id: string) => ACTIONS.find((a) => a.id === id);
 
-/** The quick-action grid on Home, in its own order. */
-export const homeActions = (mode: Mode, show: Show) =>
-  ACTIONS.filter((a) => a.home && RANK[mode] >= RANK[a.homeMin ?? "simple"] && advertised(a, mode, show)).sort(
-    (a, b) => a.home! - b.home!,
-  );
+/**
+ * The quick-action grid on Home, in its own order. Where two share a place, the
+ * one meant for the larger mode takes it.
+ */
+export function homeActions(mode: Mode, show: Show): Action[] {
+  const min = (a: Action) => RANK[a.homeMin ?? "simple"];
+  const places = new Map<number, Action>();
+  for (const a of ACTIONS) {
+    if (!a.home || RANK[mode] < min(a) || !advertised(a, mode, show)) continue;
+    const held = places.get(a.home);
+    if (!held || min(a) > min(held)) places.set(a.home, a);
+  }
+  return [...places.values()].sort((a, b) => a.home! - b.home!);
+}
 
 /** One simple 16x16 line icon per category. */
 export const ICONS: Record<string, string> = {
   Search: "M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zM10.5 10.5L14 14",
   "Time filters": "M2.5 3.5h11V14h-11zM2.5 7h11M5.5 2v3M10.5 2v3",
   Timers: "M13 9a5 5 0 1 1-10 0 5 5 0 0 1 10 0zM8 9V6.4M6.5 2h3",
+  "Dates and time": "M14 8A6 6 0 1 1 2 8a6 6 0 0 1 12 0zM8 4.5V8l2.5 1.5",
+  Notes: "M3 2.5h10v8L9.5 14H3zM13 10.5H9.5V14M5.5 5.5h5M5.5 8h3",
   "Quick keys": "M7.9 10.8a2.7 2.7 0 1 1-5.4 0 2.7 2.7 0 0 1 5.4 0zM7.2 8.8l6.3-6.3M11 5l1.8 1.8",
   Settings: "M2 4.5h7M12 4.5h2M2 11.5h2M7 11.5h7M12 4.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zM7 11.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z",
   System: "M10 8a2 2 0 1 1-4 0 2 2 0 0 1 4 0zM8 2v2M8 12v2M2 8h2M12 8h2M3.8 3.8l1.4 1.4M10.8 10.8l1.4 1.4M3.8 12.2l1.4-1.4M10.8 5.2l1.4-1.4",

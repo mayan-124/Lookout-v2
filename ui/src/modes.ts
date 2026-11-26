@@ -2,7 +2,7 @@
 // no imports and no DOM, so node can test it as it is.
 
 export type Mode = "simple" | "standard" | "full";
-export type Feature = "disk" | "clipboard" | "capture" | "timers" | "quick_keys" | "filters";
+export type Feature = "disk" | "clipboard" | "capture" | "timers" | "quick_keys" | "filters" | "notes";
 export type Show = Record<Feature, boolean>;
 
 export interface UiState {
@@ -56,6 +56,8 @@ export interface Action {
   advanced?: boolean;
   /** False keeps it out of the Home tips. */
   tip?: boolean;
+  /** The smallest mode whose Home tips show it. */
+  tipMin?: Mode;
   /** Plain words and common typos that suggest it. */
   synonyms: string[];
   /** Words that are the command itself: its suggestion goes first. */
@@ -85,7 +87,7 @@ export interface Action {
 
 export const RANK: Record<Mode, number> = { simple: 0, standard: 1, full: 2 };
 /** The switches Simple turns off (core/src/uimode.rs). */
-const SIMPLE_OFF: Feature[] = ["disk", "clipboard", "capture", "quick_keys"];
+const SIMPLE_OFF: Feature[] = ["disk", "clipboard", "capture", "quick_keys", "notes"];
 
 /**
  * Whether help, tips, the quick grid and ghost text list an action. A switch that
@@ -118,7 +120,9 @@ export function helpEntries(rows: Action[], mode: Mode, show: Show, open: boolea
 
 /** The rows Home may show as a tip. Advanced ones only in Full. */
 export const tipsFor = (rows: Action[], mode: Mode, show: Show) =>
-  shown(rows, mode, show).filter((r) => r.tip !== false && (mode === "full" || !r.advanced));
+  shown(rows, mode, show).filter(
+    (r) => r.tip !== false && RANK[mode] >= RANK[r.tipMin ?? "simple"] && (mode === "full" || !r.advanced),
+  );
 
 export type View = "home" | "history" | "results" | "help" | "setup" | "settings" | "disk" | "confirm" | "done";
 

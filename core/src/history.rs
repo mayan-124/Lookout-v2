@@ -22,6 +22,8 @@ fn storable(text: &str) -> bool {
     !text.is_empty()
         && text.chars().count() <= MAX_CHARS
         && !text.chars().any(char::is_control)
+        // A note belongs to the notes, not to the recent searches.
+        && !crate::notes::is_private(text)
         && secrets::mask(text).1 == 0
 }
 
@@ -122,7 +124,15 @@ mod tests {
         let aws = format!("AKIA{}", "IOSFODNN7EXAMPLE");
         let card = format!("4111 1111 1111 {}", "1111");
         let assigned = format!("password={}", "hunter2hunter2");
-        for bad in [&aws, &card, &assigned, "", "   ", "two\nlines"] {
+        for bad in [
+            &aws,
+            &card,
+            &assigned,
+            "",
+            "   ",
+            "two\nlines",
+            "Note: buy milk",
+        ] {
             assert!(!h.record(bad, true).unwrap(), "{bad}");
         }
         assert!(!h.record(&"x".repeat(MAX_CHARS + 1), true).unwrap());

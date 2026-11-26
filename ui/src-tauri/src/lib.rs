@@ -889,6 +889,15 @@ async fn clear_search_history(services: State<'_, Services>) -> Result<(), Strin
         .map_err(|e| e.to_string())
 }
 
+/// "Clear all notes" in Settings > Privacy.
+#[tauri::command]
+async fn clear_notes(services: State<'_, Services>) -> Result<(), String> {
+    services_of(&services)?
+        .notes()
+        .clear()
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn set_remember_searches(
     on: bool,
@@ -2499,6 +2508,7 @@ pub fn run() {
             search_history,
             record_search,
             clear_search_history,
+            clear_notes,
             set_remember_searches,
             setup_folders,
             setup_start,

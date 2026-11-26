@@ -145,6 +145,7 @@
     ["timers", "Timers", "Count down from the search box.", "Shows in help and tips."],
     ["quick_keys", "Quick keys", "Open things with a short word.", "Shows in help, tips and results."],
     ["filters", "Date and kind filters", "Search like “pdf last week”.", "Shows in help and tips."],
+    ["notes", "Notes", "Save short notes from the search box.", "Shows in help, tips and Home."],
   ];
   const ALWAYS_SKIPPED = [
     "Lookout's own data and cache folders",
@@ -319,6 +320,19 @@
       historyMessage = "Cleared your search history.";
     } catch (e) {
       historyMessage = errorText(e);
+    }
+  }
+
+  let notesMessage = $state("");
+  // Cleared notes cannot be undone, so it is asked first.
+  let askClearNotes = $state(false);
+  async function clearNotes() {
+    askClearNotes = false;
+    try {
+      await invoke("clear_notes");
+      notesMessage = "Cleared all your notes.";
+    } catch (e) {
+      notesMessage = errorText(e);
     }
   }
 
@@ -633,7 +647,7 @@
       {:else if section === "privacy"}
         <h2 id="priv-title">Privacy</h2>
         <h3 class="label-caps">What is stored</h3>
-        <p class="hint">File names, file text, usage and search history and the undo log. Nothing leaves this PC.</p>
+        <p class="hint">File names, file text, usage and search history, your notes and the undo log. Nothing leaves this PC.</p>
         <h3 class="label-caps">How it is protected</h3>
         <p class="hint">
           Encrypted with a key only your Windows account can unlock. API keys, private keys and card numbers are
@@ -670,6 +684,17 @@
           <p><button class="btn small" onclick={clearHistory}>Clear history now</button></p>
         {/if}
         {#if historyMessage}<p class="hint" role="status">{historyMessage}</p>{/if}
+        <h3 class="label-caps">Notes</h3>
+        {#if askClearNotes}
+          <p class="warning" role="alert">Delete every note? This cannot be undone.</p>
+          <div class="row end">
+            <button class="btn small" onclick={() => (askClearNotes = false)}>Keep them</button>
+            <button class="btn small danger" onclick={clearNotes}>Delete all notes</button>
+          </div>
+        {:else}
+          <p><button class="btn small" onclick={() => ((askClearNotes = true), (notesMessage = ""))}>Clear all notes</button></p>
+        {/if}
+        {#if notesMessage}<p class="hint" role="status">{notesMessage}</p>{/if}
         <h3 class="label-caps">Other programs</h3>
         {@render cliSwitch()}
       {:else if section === "speed"}
@@ -748,7 +773,7 @@
         <h2 id="priv-title" class="danger-text">Delete my data</h2>
         {#if confirmingDelete}
           <p class="warning" role="alert">
-            This deletes your saved file names, file text, usage and search history, the undo log and the encryption key.
+            This deletes your saved file names, file text, usage and search history, your notes, the undo log and the encryption key.
             Your files are not touched. You will be asked to choose folders again.
           </p>
           <div class="row">
@@ -756,7 +781,7 @@
             <button class="btn danger" disabled={busy} onclick={deleteIndex}>Delete everything</button>
           </div>
         {:else}
-          <p class="hint">Removes the search data Lookout stored about your files. Your files are not touched.</p>
+          <p class="hint">Removes your notes and the search data Lookout stored about your files. Your files are not touched.</p>
           <p><button class="btn danger" onclick={() => (confirmingDelete = true)}>Delete my search data…</button></p>
         {/if}
       {/if}

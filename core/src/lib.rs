@@ -12,6 +12,7 @@
 //! cancellation.
 
 pub mod actions;
+pub mod answers;
 pub mod apps;
 #[cfg(windows)]
 pub mod autostart;
@@ -21,6 +22,7 @@ pub mod cli;
 pub mod cliaccess;
 pub mod content;
 pub mod crypto;
+pub mod dates;
 #[cfg(windows)]
 pub mod diskusage;
 pub mod dupes;
@@ -36,6 +38,7 @@ pub mod lookout;
 pub mod memory;
 pub mod name_index;
 pub mod names_store;
+pub mod notes;
 pub mod notify;
 pub mod operators;
 pub mod pathquery;
@@ -64,3 +67,4 @@ pub mod timers;
 pub mod uimode;
 pub mod units;
 pub mod winfocus;
+pub mod zones;

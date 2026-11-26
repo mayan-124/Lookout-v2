@@ -14,9 +14,9 @@ import {
 
 // The switches each mode sets (core/src/uimode.rs).
 const SHOW = {
-  simple: { disk: false, clipboard: false, capture: false, timers: true, quick_keys: false, filters: true },
-  standard: { disk: false, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true },
-  full: { disk: true, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true },
+  simple: { disk: false, clipboard: false, capture: false, timers: true, quick_keys: false, filters: true, notes: false },
+  standard: { disk: false, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true, notes: true },
+  full: { disk: true, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true, notes: true },
 };
 
 const row = (category, feature = null, advanced = false, mode = "simple") => ({

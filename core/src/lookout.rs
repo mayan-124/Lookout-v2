@@ -21,6 +21,7 @@ use crate::actions::undo_log::{Entry, UndoLog};
 use crate::actions::{
     Action, ActionEngine, ActionError, Done, GateConfig, PluginOrigin, Prepared, Target,
 };
+use crate::answers::{AnswerSource, CopyAnswer};
 use crate::apps;
 use crate::content::idle::IdleSource;
 use crate::content::ocr::Ocr;
@@ -37,6 +38,7 @@ use crate::index_service::{
 };
 use crate::item::{Item, Kind};
 use crate::names_store::{self, Persister};
+use crate::notes::{CopyNote, DeleteNote, NoteSource, NoteStore, SaveNote};
 use crate::pause::PauseState;
 use crate::plugins::{HostConfig, PluginActions, PluginHost, PluginSource};
 use crate::ranking;
@@ -222,6 +224,7 @@ pub struct Lookout {
     tidy: crate::cleanup::Tidy,
     quick_keys: Arc<crate::quickkeys::QuickKeys>,
     history: crate::history::SearchHistory,
+    notes: Arc<NoteStore>,
     timers: Arc<crate::timers::TimerService>,
     /// Results of the latest update that may get a quick key.
     keyable: Arc<Mutex<HashMap<String, crate::item::Item>>>,
@@ -539,8 +542,12 @@ impl Lookout {
             .map_err(StartError::Engine)?,
         );
         let files_source = Arc::new(FilesSource::new(index.clone(), weights));
+        // Nothing is read or written until a note is asked for.
+        let notes = Arc::new(NoteStore::new(storage.db.clone()));
         let sources: Vec<Arc<dyn Source>> = vec![
             Arc::new(CalculatorSource),
+            Arc::new(AnswerSource),
+            Arc::new(NoteSource::new(notes.clone(), weights)),
             Arc::new(crate::quickkeys::QuickKeySource::new(quick_keys.clone())),
             Arc::new(crate::timers::TimerSource::new(timer_store)),
             Arc::new(UnitsSource),
@@ -642,6 +649,10 @@ impl Lookout {
                 disk_hints.clone(),
             )),
             Arc::new(BatchRemoveAction::new(tidy_store, Arc::new(ShellRecycler))),
+            Arc::new(CopyAnswer(Arc::new(WindowsClipboardWriter))),
+            Arc::new(SaveNote(notes.clone())),
+            Arc::new(CopyNote(notes.clone(), Arc::new(WindowsClipboardWriter))),
+            Arc::new(DeleteNote(notes.clone())),
         ];
         let mut actions = ActionEngine::new(action_list, log, opts.gate);
         if let Some(host) = &plugin_host {
@@ -669,7 +680,12 @@ impl Lookout {
             *map.lock().unwrap_or_else(PoisonError::into_inner) = known;
             inner(update);
         });
-        let cli_sources = sources.clone();
+        // Notes are never handed to the command line.
+        let cli_sources = sources
+            .iter()
+            .filter(|s| s.id() != "notes")
+            .cloned()
+            .collect();
         let home_roots = roots.clone();
         let engine =
             Engine::new(sources, wrapped, EngineConfig::default()).map_err(StartError::Engine)?;
@@ -705,6 +721,7 @@ impl Lookout {
             tidy,
             quick_keys,
             history,
+            notes,
             timers,
             keyable,
             cli_sources,
@@ -1040,6 +1057,10 @@ impl Lookout {
             p.stop(false);
         }
         self.storage.detach();
+        // Out of memory too; nothing is written any more.
+        if let Err(e) = self.notes.clear() {
+            eprintln!("lookout: could not forget the notes: {e}");
+        }
         *write(&self.index) = crate::name_index::NameIndex::new();
         if let Some(paths) = &self.storage.paths {
             paths.wipe()?;
@@ -1254,6 +1275,10 @@ impl Lookout {
         &self.history
     }
 
+    pub fn notes(&self) -> &NoteStore {
+        &self.notes
+    }
+
     /// Gives a result from the latest update a quick key. The result is
     /// looked up here; the webview names only its id and the alias.
     pub fn set_quick_key(
@@ -1450,7 +1475,11 @@ fn target_of(item: &crate::item::Item) -> Option<Target> {
             if name == quick_actions::KIND_URL
                 || name == quick_actions::KIND_SYSTEM
                 || name == crate::timers::KIND_NEW
-                || name == crate::timers::KIND_RUNNING =>
+                || name == crate::timers::KIND_RUNNING
+                || name == crate::answers::KIND_DATE
+                || name == crate::answers::KIND_TIME
+                || name == crate::notes::KIND_NEW
+                || name == crate::notes::KIND_NOTE =>
         {
             Some(Target {
                 item_id: item.id.clone(),
@@ -2050,6 +2079,44 @@ mod tests {
         assert!(f.ask(2, "budget").items.is_empty());
         // Writes after the wipe do not re-create meta.db.
         let _ = f.lookout.record_open(&first);
+        assert!(!paths.meta_db().exists());
+    }
+
+    #[test]
+    fn notes_stay_out_of_recent_files_and_the_command_line_and_are_wiped() {
+        let f = start(|_| {});
+        f.wait_indexed();
+        let paths = paths_in(f._dir.path());
+        let save = f.ask(1, "note: zebra crossing budget");
+        // Only the notes see what follows "note:".
+        assert_eq!(save.items.len(), 1, "{:?}", save.items);
+        assert!(save.filters.operators.is_empty() && !save.filters.invalid_operator);
+        let ready = f
+            .lookout
+            .prepare_action(crate::notes::SAVE, &save.items[0].id)
+            .unwrap();
+        f.lookout.run_action(&ready.ticket).unwrap();
+        let in_bar = f.ask(2, "zebra");
+        assert!(in_bar.items.iter().any(|i| i.source == "notes"));
+        for text in ["zebra", "notes", "note: zebra", "budget"] {
+            let cli = f.lookout.cli_search(text, None, 50);
+            assert!(cli.iter().all(|i| i.source != "notes"), "{text}: {cli:?}");
+        }
+        assert!(f
+            .lookout
+            .recent_files(50)
+            .iter()
+            .all(|i| i.source != "notes" && !i.title.contains("zebra")));
+        assert!(!f.lookout.history().record("note: zebra", true).unwrap());
+        let log = serde_json::to_string(&f.lookout.action_history(10).unwrap()).unwrap();
+        assert!(!log.contains("zebra"), "{log}");
+        f.lookout.wipe_index().unwrap();
+        assert!(paths.leftovers().is_empty(), "{:?}", paths.leftovers());
+        assert!(f
+            .ask(3, "notes")
+            .items
+            .iter()
+            .all(|i| !i.title.contains("zebra")));
         assert!(!paths.meta_db().exists());
     }
 

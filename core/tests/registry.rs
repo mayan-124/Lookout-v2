@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use lookout_core::query::parse;
-use lookout_core::{actions::kill_port, calc, quick, timers, uimode, units};
+use lookout_core::{actions::kill_port, answers, calc, notes, quick, timers, uimode, units};
 use serde_json::Value;
 
 fn actions() -> Vec<Value> {
@@ -68,6 +68,21 @@ fn every_example_is_understood() {
             "recent" => assert!(q.time.is_some()),
             "timer" => assert!(matches!(timers::parse(typed), timers::Parsed::Timer { .. })),
             "timers" => assert!(timers::is_list_request(typed)),
+            "dates" | "timezone" => {
+                assert!(
+                    answers::is_question(typed, &chrono::Local::now()),
+                    "{typed}"
+                );
+                assert!(q.time.is_none() && q.understood.operators.is_empty());
+            }
+            "note" => {
+                assert!(matches!(
+                    notes::command(typed),
+                    Some(notes::Command::Save(_))
+                ));
+                assert!(q.ops.is_empty() && !q.understood.invalid_operator);
+            }
+            "notes" => assert_eq!(notes::command(typed), Some(notes::Command::List)),
             "darkmode" | "winsettings" => assert!(!quick::match_entries(typed).is_empty()),
             "killport" => assert_eq!(kill_port::parse_kill_request(typed), Some(3000)),
             "clipboard" => assert!(clip.contains(&first)),

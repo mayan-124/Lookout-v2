@@ -7,7 +7,7 @@ import type { Feature, Mode, UiState } from "./modes";
 export const ui = $state<UiState>({
   mode: "standard",
   custom: false,
-  show: { disk: false, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true },
+  show: { disk: false, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true, notes: true },
   hide_tips: false,
   advanced_open: false,
   disk_notice: false,

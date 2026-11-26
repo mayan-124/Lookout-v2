@@ -26,6 +26,7 @@ pub struct Show {
     pub timers: bool,
     pub quick_keys: bool,
     pub filters: bool,
+    pub notes: bool,
 }
 
 impl Mode {
@@ -39,6 +40,7 @@ impl Mode {
             timers: true,
             quick_keys: !simple,
             filters: true,
+            notes: !simple,
         }
     }
 }
@@ -165,8 +167,8 @@ mod tests {
 
     const MODES: [Mode; 3] = [Mode::Simple, Mode::Standard, Mode::Full];
 
-    fn show(on: [bool; 6]) -> Show {
-        let [disk, clipboard, capture, timers, quick_keys, filters] = on;
+    fn show(on: [bool; 7]) -> Show {
+        let [disk, clipboard, capture, timers, quick_keys, filters, notes] = on;
         Show {
             disk,
             clipboard,
@@ -174,6 +176,7 @@ mod tests {
             timers,
             quick_keys,
             filters,
+            notes,
         }
     }
 
@@ -198,13 +201,13 @@ mod tests {
     fn each_mode_sets_its_switches() {
         assert_eq!(
             Mode::Simple.preset(),
-            show([false, false, false, true, false, true])
+            show([false, false, false, true, false, true, false])
         );
         assert_eq!(
             Mode::Standard.preset(),
-            show([false, true, true, true, true, true])
+            show([false, true, true, true, true, true, true])
         );
-        assert_eq!(Mode::Full.preset(), show([true; 6]));
+        assert_eq!(Mode::Full.preset(), show([true; 7]));
         assert_eq!(Ui::default().mode(), Mode::Standard);
         assert_eq!(Ui::default().show(), Mode::Standard.preset());
     }
@@ -217,7 +220,7 @@ mod tests {
             let mut s = start.clone();
             for mode in MODES {
                 s.update_ui(&path, |u| u.set_mode(mode)).unwrap();
-                s.update_ui(&path, |u| u.set_show(show([false; 6])))
+                s.update_ui(&path, |u| u.set_show(show([false; 7])))
                     .unwrap();
                 let untouched = Settings {
                     ui: start.ui.clone(),
@@ -302,7 +305,7 @@ mod tests {
         s.window_positions.insert("M".into(), (1, 2));
         s.ui = Ui {
             mode: Some(Mode::Full),
-            show: Some(show([false; 6])),
+            show: Some(show([false; 7])),
             hide_tips: true,
             advanced_open: true,
             disk_notice: true,

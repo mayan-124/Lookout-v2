@@ -149,6 +149,22 @@ impl ParsedQuery {
     }
 }
 
+/// The words as typed, with nothing read into them.
+fn plain(input: &str) -> ParsedQuery {
+    let words: Vec<String> = input.split_whitespace().map(str::to_lowercase).collect();
+    ParsedQuery {
+        raw: input.trim().to_owned(),
+        text: words.join(" "),
+        tokens: words,
+        kind: None,
+        time: None,
+        exts: &[],
+        ops: Operators::default(),
+        understood: Understood::default(),
+        trailing_space: input.ends_with(char::is_whitespace),
+    }
+}
+
 /// Number of leading words in a phrase like "screenshot with" or "image that
 /// says", if the rest of the query is not empty.
 fn image_phrase_len(words: &[String]) -> Option<usize> {
@@ -193,6 +209,10 @@ pub fn parse_opts<Tz: chrono::TimeZone>(
     now: &chrono::DateTime<Tz>,
     skip: Skip,
 ) -> ParsedQuery {
+    // A note or an answered date or time question is not made of filters.
+    if crate::notes::is_private(input) || crate::answers::is_question(input, now) {
+        return plain(input);
+    }
     let mut kind = None;
     let mut words = Vec::new();
     // Operators come out first; what is left is read as before.

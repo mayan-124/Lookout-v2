@@ -75,7 +75,9 @@ impl Source for CalculatorSource {
     }
 
     fn query(&self, q: &ParsedQuery, _ctx: &QueryContext, emit: &mut dyn FnMut(Vec<Item>)) {
-        if q.kind.is_some() {
+        // "2026-12-25" is a date, not a subtraction.
+        let today = chrono::Local::now().date_naive();
+        if q.kind.is_some() || crate::dates::answer(&q.raw, today).is_some() {
             return;
         }
         let Some(value) = calc::try_evaluate(&q.raw) else {

@@ -17,7 +17,7 @@
   import { FOLDER_STEP, chooseFoldersTarget, isHelpQuery, stepOnShow } from "./setupflow";
   import { dockItems, footerHints, helpEntries, isDiskCommand, tipsFor, typedSection, type Action, type View } from "./modes";
   import { ACTIONS, ICONS, actionById, homeActions } from "./registry";
-  import { didYouMean, ghostFor, opensHistory, placeSuggestions, readLine, suggest, worthRemembering } from "./discover";
+  import { didYouMean, ghostFor, isNoteText, opensHistory, placeSuggestions, readLine, suggest, worthRemembering } from "./discover";
   import { recentRows } from "./home";
   import { NO_VALUES, OPERATOR_HINT, completions, operatorGhost, removeOperator, type OperatorValues } from "./operators";
   import { dismissDiskNotice, loadUi, setHideTips, setShow, ui } from "./uistate.svelte";
@@ -362,9 +362,14 @@
     timer: "Timer",
     quickkey: "Quick key",
     action: "Action",
+    dates: "Answer",
+    zones: "Answer",
+    notes: "Notes",
   };
   // Plugin results carry messages (a rename preview, an error): wrap, never cut off.
   const isPlugin = (i: Item) => !(i.source in GROUPS);
+  // An answer says how the question was read: that line wraps too.
+  const wraps = (i: Item) => isPlugin(i) || i.source === "dates" || i.source === "zones";
   const groupOf = (i: Item) => {
     const kind = kindName(i.kind);
     if (kind === "clipboard") return "Clipboard";
@@ -532,7 +537,9 @@
     caretAtEnd && !quiet && !composing && ghostOff !== query && !panel && !disk && !card && earlier === null,
   );
   // Chips, suggestions and the hint: not in Simple, nor in a clip or shot search.
-  const opsShown = $derived(ui.mode !== "simple" && !panel && !disk && !card && typedSection(query) === 0);
+  const opsShown = $derived(
+    ui.mode !== "simple" && !panel && !disk && !card && typedSection(query) === 0 && !isNoteText(query),
+  );
   const offers = $derived(offering && opsShown ? completions(query, opValues) : []);
   const ghost = $derived(
     !offering ? "" : offers.length > 0 ? operatorGhost(query, offers) : ghostFor(query, ACTIONS, ui.mode, ui.show),
@@ -796,6 +803,12 @@
       hideBar(); // opened: get out of the way
       return;
     }
+    if (done.action_id === "note_save" || done.action_id === "note_delete") {
+      // A saved note leaves the box, so Enter cannot save it twice; lists reload.
+      if (done.action_id === "note_save" && !done.was_undo) query = "";
+      skip = [];
+      run(query);
+    }
     card = { phase: "result", ok: true, message: done.message, undoable: done.undoable };
   }
 
@@ -843,6 +856,7 @@
       const page = keepsPage(hidden_secs, panel || disk || setup !== null, cleared);
       notice = "";
       earlier = null;
+      noteMenu = null;
       press = null;
       refusal = null;
       visible = true;
@@ -923,6 +937,10 @@
     // Esc during a drag cancels the drag, nothing else.
     if (dragging) {
       e.preventDefault();
+      return;
+    }
+    if (noteMenu) {
+      noteMenuKey(e);
       return;
     }
     const plain = !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
@@ -1033,6 +1051,12 @@
         return;
       }
     }
+    if ((e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) && isNote(cur)) {
+      e.preventDefault();
+      const r = list?.querySelector(`[data-index="${selected}"]`)?.getBoundingClientRect();
+      if (r) openNoteMenu(cur!, r.left + 48, r.bottom - 8);
+      return;
+    }
     if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === "c" && isFile(cur)) {
       e.preventDefault();
       if (!e.repeat) copyFile(cur);
@@ -1110,12 +1134,15 @@
   const previewable = (i: Item | undefined) =>
     !!pathOf(i) && ["file", "folder", "screenshot", "project"].includes(kindName(i!.kind));
   // One simple icon per kind; kinds without one (answers, ports) keep their short text badge.
-  type Ico = "app" | "folder" | "image" | "clipboard" | "file" | "rec" | "gif" | "scan" | "timer" | "moon" | "sun" | "gear" | "globe" | "network" | "key" | "warn" | "dot";
+  type Ico = "app" | "folder" | "image" | "clipboard" | "file" | "rec" | "gif" | "scan" | "timer" | "moon" | "sun" | "gear" | "globe" | "network" | "key" | "warn" | "dot" | "calendar" | "clock" | "note";
   const BADGE_KINDS = ["calculator", "conversion", "port"];
   function iconKind(i: Item): Ico | null {
     const k = kindName(i.kind);
     if (k.startsWith("timer")) return "timer";
-    if (k === "quickkey_missing" || k === "path") return "warn";
+    if (k === "date_answer") return "calendar";
+    if (k === "time_answer") return "clock";
+    if (k.startsWith("note")) return "note";
+    if (k === "quickkey_missing" || k === "path" || k === "answer_info") return "warn";
     if (k === "url") return "globe";
     if (k === "system") return /dark mode/i.test(i.title) ? "moon" : /light mode/i.test(i.title) ? "sun" : "gear";
     if ((k === "folder" || k === "file") && i.uri?.startsWith("\\\\")) return "network";
@@ -1224,6 +1251,10 @@
     system_radio: "Turn…",
     timer_start: "Start",
     timer_cancel: "Cancel timer",
+    answer_copy: "Copy",
+    note_save: "Save",
+    note_copy: "Copy",
+    note_delete: "Delete",
   };
 
   // Quick keys: a short word that puts a result on top when typed with a space.
@@ -1286,6 +1317,43 @@
     remember(query);
     begin(() => invoke<Prepared>("prepare_action", { action: "copy_file", id: i.id }));
   }
+
+  // Right-click on a note: Copy or Delete. Delete can be undone.
+  let noteMenu = $state<{ id: string; x: number; y: number } | null>(null);
+  let noteMenuEl: HTMLElement | undefined = $state();
+  const isNote = (i: Item | undefined) => !!i && kindName(i.kind) === "note";
+  function openNoteMenu(i: Item, x: number, y: number) {
+    if (card) return;
+    // Kept inside the window, which is only as tall as what it shows.
+    noteMenu = { id: i.id, x: Math.min(x, window.innerWidth - 140), y: Math.min(y, window.innerHeight - 84) };
+    tick().then(() => noteMenuEl?.querySelector("button")?.focus());
+  }
+  function closeNoteMenu() {
+    noteMenu = null;
+    input?.focus();
+  }
+  function noteAction(action: "note_copy" | "note_delete") {
+    const id = noteMenu?.id;
+    closeNoteMenu();
+    if (id) begin(() => invoke<Prepared>("prepare_action", { action, id }));
+  }
+  function noteMenuKey(e: KeyboardEvent) {
+    const buttons = [...(noteMenuEl?.querySelectorAll("button") ?? [])];
+    const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      buttons[(at + (e.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+    } else if (e.key === "Escape" || e.key === "Tab") {
+      e.preventDefault();
+      closeNoteMenu();
+    } else if (e.key !== "Enter" && e.key !== " ") {
+      closeNoteMenu();
+    }
+  }
+  $effect(() => {
+    // The menu goes with its row.
+    if (noteMenu && !items.some((i) => i.id === noteMenu!.id)) noteMenu = null;
+  });
 
   // Dragging a file row into another program. A press becomes a drag only after
   // the pointer has travelled; the shell then runs the drag until the release.
@@ -1357,6 +1425,9 @@
 
 <svelte:window
   onkeydown={onKeydown}
+  onpointerdown={(e) => {
+    if (noteMenu && !(e.target as Element).closest(".menu")) noteMenu = null;
+  }}
   onblur={() => !pinned && (visible = false)}
   onfocus={() => (visible = true)}
   onpointermove={dragMove}
@@ -1427,6 +1498,12 @@
           <path d="M2 5.5V3.5A1.5 1.5 0 0 1 3.5 2h2M10 2h2.5A1.5 1.5 0 0 1 14 3.5v2M14 10.5v2a1.5 1.5 0 0 1-1.5 1.5H10M6 14H3.5A1.5 1.5 0 0 1 2 12.5v-2M5.5 6h5M8 6v4.5" />
         {:else if k === "timer"}
           <circle cx="8" cy="9" r="5" /><path d="M8 9V6.4M6.5 2h3M12 4l.9-.9" />
+        {:else if k === "calendar"}
+          <path d="M2.5 3.5h11V14h-11zM2.5 7h11M5.5 2v3M10.5 2v3" />
+        {:else if k === "clock"}
+          <circle cx="8" cy="8" r="5.8" /><path d="M8 4.5V8l2.5 1.5" />
+        {:else if k === "note"}
+          <path d="M3 2.5h10v8L9.5 14H3zM13 10.5H9.5V14M5.5 5.5h5M5.5 8h3" />
         {:else if k === "moon"}
           <path d="M13 9.3A5.5 5.5 0 0 1 6.7 3a5.5 5.5 0 1 0 6.3 6.3z" />
         {:else if k === "sun"}
@@ -1810,6 +1887,12 @@
                       onpointerenter={() => checkDrag(item)}
                       onpointerdown={(e) => pressRow(e, item)}
                       ondragstart={(e) => e.preventDefault()}
+                      oncontextmenu={(e) => {
+                        if (!isNote(item)) return;
+                        e.preventDefault();
+                        selected = i;
+                        openNoteMenu(item, e.clientX, e.clientY);
+                      }}
                       onclick={() => {
                         if (!dragged) activate(item);
                         dragged = false;
@@ -1837,7 +1920,7 @@
                           {/if}
                         </span>
                         {#if top && item.subtitle}
-                          <span class="sub" class:code={isPath(item)} class:wrap={isPlugin(item)}
+                          <span class="sub" class:code={isPath(item)} class:wrap={wraps(item)}
                             >{#each highlight(kindName(item.kind) === "clipboard" ? mask(item.subtitle) : (subOf(item) ?? "")) as part}{#if part.hit}<mark>{part.text}</mark
                                 >{:else}{part.text}{/if}{/each}</span
                           >
@@ -1900,6 +1983,11 @@
                   <span class="big" aria-live="off">{clockText(isRunning(cur) ? secsLeft(cur!) : (cur!.metadata!.secs as number))}</span>
                   <strong class="nm">{mask(cur!.title)}</strong>
                   <span class="sub wrap">{isRunning(cur) ? `Ends at ${endClock(cur!.metadata!.end_ms as number)}` : (cur!.subtitle ?? "")}</span>
+                </div>
+              {:else if isNote(cur)}
+                <div class="plain">
+                  <p class="notetext">{mask(cur.title)}</p>
+                  <span class="sub">{cur.subtitle}</span>
                 </div>
               {:else}
                 <div class="plain">
@@ -1976,6 +2064,12 @@
     </footer>
     </div>
   </div>
+  {#if noteMenu}
+    <div class="menu" role="menu" tabindex="-1" bind:this={noteMenuEl} style:left={`${noteMenu.x}px`} style:top={`${noteMenu.y}px`}>
+      <button type="button" role="menuitem" onclick={() => noteAction("note_copy")}>Copy</button>
+      <button type="button" role="menuitem" onclick={() => noteAction("note_delete")}>Delete</button>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -2647,6 +2741,36 @@
   }
   .rowcancel {
     flex: none;
+  }
+  .notetext {
+    margin: 0;
+    max-height: 260px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+  }
+  .menu {
+    position: fixed;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    min-width: 128px;
+    padding: 4px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    background: var(--raised);
+  }
+  .menu button {
+    all: unset;
+    padding: 6px 12px;
+    border-radius: var(--r-md);
+    font-size: var(--fs-md);
+    cursor: pointer;
+  }
+  .menu button:hover,
+  .menu button:focus-visible {
+    background: var(--accent-soft);
   }
   .timerprev .big {
     font-family: var(--font-code);

@@ -72,7 +72,8 @@ export interface Suggestion {
  */
 export function suggest(query: string, actions: Action[], mode: Mode, show: Show): Suggestion[] {
   const q = fold(query);
-  if (q.length < MIN_QUERY) return [];
+  // A note's own words are not commands.
+  if (q.length < MIN_QUERY || isNoteText(query)) return [];
   const words = q.split(" ");
   const found: (Suggestion & { tier: number; rank: number })[] = [];
   for (const action of actions) {
@@ -163,7 +164,7 @@ export function didYouMean(found: Suggestion[], selected: Row | undefined): stri
 /** The faint rest of a command, or "". Only listed commands, never plain searches. */
 export function ghostFor(query: string, actions: Action[], mode: Mode, show: Show): string {
   const typed = query.toLowerCase();
-  if (typed.length < MIN_QUERY || typed.length !== query.length) return "";
+  if (typed.length < MIN_QUERY || typed.length !== query.length || isNoteText(query)) return "";
   for (const a of actions) {
     if (typed.length < (a.ghostMin ?? MIN_QUERY) || !a.ghost || !advertised(a, mode, show)) continue;
     const full = a.ghost.find((g) => g.length > typed.length && g.startsWith(typed));
@@ -207,8 +208,11 @@ export function readLine(rows: Row[], query: string): string {
 /** Typed text worth keeping in the history: not help and not a section button's. */
 export const worthRemembering = (query: string) => {
   const q = fold(query);
-  return q !== "" && !["help", "?", "clip", "shot"].includes(q);
+  return q !== "" && !isNoteText(q) && !["help", "?", "clip", "shot"].includes(q);
 };
+
+/** Text that starts "note:" belongs to the notes: no filters, no history. */
+export const isNoteText = (query: string) => /^\s*note:/i.test(query);
 
 /** Up opens the recent searches only in the empty box on Home; elsewhere it moves. */
 export const opensHistory = (view: View, query: string) => view === "home" && query === "";

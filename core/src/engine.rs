@@ -111,11 +111,14 @@ impl Engine {
             return false;
         }
         let parsed = Arc::new(query::parse_with(text, skip));
-        let runnable = if parsed.is_empty() {
-            0
-        } else {
-            self.sources.len()
-        };
+        // What follows "note:" is shown to the notes alone.
+        let private = crate::notes::is_private(text);
+        let wanted: Vec<&Arc<dyn Source>> = self
+            .sources
+            .iter()
+            .filter(|s| !parsed.is_empty() && (!private || s.id() == "notes"))
+            .collect();
+        let runnable = wanted.len();
         // Sent before any source starts, so the merger always sees `New` first.
         if self
             .tx
@@ -132,7 +135,7 @@ impl Engine {
         if runnable == 0 {
             return true;
         }
-        for source in &self.sources {
+        for source in wanted {
             let ctx = QueryContext::new(generation, self.current.clone());
             if ctx.is_cancelled() {
                 // Superseded while we were starting; the newer submit owns the merger now.
