@@ -181,6 +181,19 @@
   let first: HTMLButtonElement | undefined = $state();
   let appearanceCard: HTMLDivElement | undefined = $state();
 
+  // Chosen folders that cannot be reached right now: kept, and flagged.
+  let missing: string[] = $state([]);
+  $effect(() => {
+    const paths = [...roots];
+    let live = true;
+    invoke<string[]>("missing_folders", { paths })
+      .then((m) => live && (missing = m))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  });
+
   let discarding = $state(false);
 
   const LIMITS = { idle: [0, 3600], rescan: [0, 720], mb: [100, 1_000_000] } as const;
@@ -454,11 +467,12 @@
   }
 </script>
 
-{#snippet folderList(items: string[], empty: string, stop: (p: string) => void, what: string)}
+{#snippet folderList(items: string[], empty: string, stop: (p: string) => void, what: string, away: string[] = [])}
   <ul class="folders">
     {#each items as p (p)}
       <li>
         <span class="path code">{p}</span>
+        {#if away.includes(p)}<span class="away">Not reachable</span>{/if}
         <button class="btn small" onclick={() => stop(p)} aria-label={`${what} ${p}`}>Remove</button>
       </li>
     {:else}
@@ -522,7 +536,10 @@
         <div class="scard">
           <h3 class="stitle">Folders</h3>
           <p class="hint">Lookout only reads files inside these folders.</p>
-          {@render folderList(roots, "No folders chosen", (p) => (roots = roots.filter((r) => r !== p)), "Remove")}
+          {@render folderList(roots, "No folders chosen", (p) => (roots = roots.filter((r) => r !== p)), "Remove", missing)}
+          {#if roots.some((p) => missing.includes(p))}
+            <p class="hint" role="status">A folder that is not reachable stays chosen: reconnect it and restart Lookout, or remove it.</p>
+          {/if}
           <p><button bind:this={first} class="btn" onclick={() => add("roots")}>Add folder…</button></p>
         </div>
         <div class="scard">
@@ -938,6 +955,11 @@
   }
   .none {
     color: var(--muted);
+  }
+  .away {
+    flex: none;
+    font-size: 12px;
+    color: var(--text-soft);
   }
   .tags {
     display: flex;

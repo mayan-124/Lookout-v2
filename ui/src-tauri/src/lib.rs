@@ -482,6 +482,20 @@ async fn complete_path(text: String) -> Option<String> {
     lookout_core::pathquery::complete(&text)
 }
 
+/// Which of the chosen folders cannot be reached right now. Off the window's
+/// thread: an offline share can take many seconds to answer.
+#[tauri::command]
+async fn missing_folders(paths: Vec<String>) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .filter(|p| !std::path::Path::new(p).is_dir())
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// The built-in skip list, for the Settings screen.
 #[tauri::command]
 fn skip_list() -> Vec<String> {
@@ -1755,11 +1769,12 @@ async fn save_settings(
     shared: State<'_, Shared>,
 ) -> Result<PrivacyState, String> {
     let changes = lookout_core::settings::Changes {
+        // A folder that is away (an unplugged drive, an offline share) stays
+        // chosen; Settings flags it through `missing_folders`.
         roots: args
             .roots
             .into_iter()
             .map(std::path::PathBuf::from)
-            .filter(|p| p.is_dir())
             .collect(),
         excluded_folders: args
             .excluded
@@ -2567,6 +2582,7 @@ pub fn run() {
             set_pinned,
             complete_path,
             skip_list,
+            missing_folders,
             reset_window_position,
             set_remember_last_search,
             drag_check,
