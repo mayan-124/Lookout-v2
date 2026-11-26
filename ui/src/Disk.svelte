@@ -1301,7 +1301,7 @@
   .crumb {
     all: unset;
     cursor: pointer;
-    color: var(--accent);
+    color: var(--accent-text);
     font-family: var(--font-code);
     font-size: 13px;
   }

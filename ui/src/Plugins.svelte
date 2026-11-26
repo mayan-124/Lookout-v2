@@ -344,7 +344,7 @@
 
 <style>
   .btn.dtl {
-    color: var(--accent);
+    color: var(--accent-text);
   }
   .btn.dtl:hover {
     text-decoration: underline;

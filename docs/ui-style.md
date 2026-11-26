@@ -15,9 +15,9 @@ section labels 12px uppercase with letter spacing.
 - Text #FFFFFF titles, #E3E8F5 body, #9AA3BD secondary.
 - Chart hues `--c0..--c7`, `--c-grey`: distinct, softened for the graphite base.
 
-**Contrast** text pairs are at least 4.5:1 on plain panels, except danger red toward the lightest gradient corner.
-Secondary text is lightened per theme so it also passes on cards. Danger red, and Synthwave's accent used as text,
-fall below on raised surfaces toward that corner.
+**Contrast** text is at least 4.5:1 on panels and cards, accent text (`--accent-text`) and danger also on hover and
+selection highlights (danger buttons darken instead of lighting up); each is lightened per theme. Accent borders and
+fills need only 3:1, as does the search box's faint suggestion (`--ghost`).
 
 **Components** (global classes in app.css)
 - `.btn` secondary (transparent, strong border); `.btn.primary` accent; `.btn.danger` danger text; `.btn.small`; `.btn.text`.

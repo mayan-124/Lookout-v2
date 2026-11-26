@@ -7,9 +7,12 @@ import {
   THEMES,
   applyTheme,
   contrast,
+  highlights,
   initialAppearance,
   normalizeHex,
   onAccent,
+  panelColors,
+  textSurfaces,
   themeById,
   themeVars,
   usableAccent,
@@ -80,6 +83,25 @@ test("a custom accent is lightened until it is readable on the base", () => {
   assert.deepEqual(usableAccent("#FFFFFF", base), { accent: "#FFFFFF", lightened: false });
   assert.equal(themeVars(themeById("matrix"), "#000000").lightened, true);
   assert.equal(themeVars(themeById("matrix"), "not a color").vars["--accent"], "#3DFF8A");
+});
+
+test("accent and danger text reach 4.5:1 on panels and highlights; the suggestion 3:1", () => {
+  for (const t of THEMES) {
+    for (const choice of [null, ...ACCENT_PRESETS.map((a) => a.value), "#000000", "#0000FF", "#FF0000"]) {
+      const { vars, accent } = themeVars(t, choice);
+      const surfaces = textSurfaces(t);
+      const text = [
+        ["--accent-text", highlights(surfaces, accent)],
+        ["--danger", highlights(Object.values(panelColors(t)), accent)],
+      ];
+      for (const [name, lit] of text) {
+        for (const s of [...surfaces, ...lit]) assert.ok(contrast(vars[name], s) >= 4.5, `${t.id} ${choice} ${name} on ${s}`);
+      }
+      for (const p of Object.values(panelColors(t))) {
+        assert.ok(contrast(vars["--ghost"], p) >= 3, `${t.id} ghost on ${p}`);
+      }
+    }
+  }
 });
 
 test("hex input is validated", () => {

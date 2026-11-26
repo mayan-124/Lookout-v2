@@ -954,6 +954,8 @@
     };
   });
 
+  const caretIsAtEnd = () => !!input && input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
+  const previewButtons = () => Array.from(document.querySelectorAll<HTMLButtonElement>(".prevactions button"));
   function onKeydown(e: KeyboardEvent) {
     // Keys that belong to an input method are left to it.
     if (e.isComposing) return;
@@ -1079,6 +1081,27 @@
         else helpAdvanced = !helpAdvanced;
         return;
       }
+    }
+    // Right at the end of the search text goes to the preview's buttons; Left
+    // comes back, as do Up and Down before they move the selection.
+    if (plain && e.key === "ArrowRight" && e.target === input && caretIsAtEnd()) {
+      const first = previewButtons()[0];
+      if (first) {
+        e.preventDefault();
+        first.focus();
+        return;
+      }
+    }
+    if (plain && e.target instanceof HTMLButtonElement) {
+      const buttons = previewButtons();
+      const at = buttons.indexOf(e.target);
+      if (at >= 0 && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        if (e.key === "ArrowRight") buttons[Math.min(at + 1, buttons.length - 1)].focus();
+        else (buttons[at - 1] ?? input)?.focus();
+        return;
+      }
+      if (at >= 0 && (e.key === "ArrowUp" || e.key === "ArrowDown")) input?.focus();
     }
     if ((e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) && isNote(cur)) {
       e.preventDefault();
@@ -2220,7 +2243,7 @@
     outline-offset: 2px;
   }
   .pin.on {
-    color: var(--accent);
+    color: var(--accent-text);
     border-color: var(--accent-line);
   }
   .searchbox {
@@ -2249,8 +2272,7 @@
     pointer-events: none;
     font-size: 24px;
     font-weight: 500;
-    color: var(--muted);
-    opacity: 0.6;
+    color: var(--ghost);
   }
   .ghost .typed {
     visibility: hidden;
@@ -2283,6 +2305,12 @@
   }
   .search:focus-visible {
     outline: none;
+  }
+  /* A quiet ring, clear of the text. Not while Settings holds the box read-only. */
+  .search:not([readonly]):focus-visible {
+    outline: 1px solid var(--accent-line);
+    outline-offset: 6px;
+    border-radius: var(--r-sm);
   }
 
   .chips {
@@ -2360,6 +2388,10 @@
     grid-template-columns: minmax(0, 1fr) 300px;
     gap: 16px;
     align-self: start;
+    /* Scrolls where the screen is too short; 256px is the room the rest takes. */
+    grid-auto-rows: max-content;
+    max-height: calc(var(--room, 100vh) - 256px);
+    overflow-y: auto;
   }
   .home .card {
     border-radius: 28px;
@@ -2553,7 +2585,7 @@
     font-weight: 500;
   }
   .ex:hover {
-    color: var(--accent);
+    color: var(--accent-text);
   }
   .ex:focus-visible {
     outline: 2px solid var(--accent);
@@ -2715,7 +2747,7 @@
     width: 54px;
     height: 54px;
     border-radius: var(--r-lg);
-    color: var(--accent);
+    color: var(--accent-text);
     font-size: var(--fs-xs);
   }
   .thumb {
@@ -2809,7 +2841,7 @@
     font-weight: inherit;
   }
   .icon.ring {
-    color: var(--accent);
+    color: var(--accent-text);
   }
   .icon.ring svg {
     width: 22px;
@@ -2865,7 +2897,7 @@
     line-height: 1.1;
     font-weight: 500;
     font-variant-numeric: tabular-nums;
-    color: var(--accent);
+    color: var(--accent-text);
   }
   .hint-enter {
     flex: none;
@@ -3043,6 +3075,6 @@
       0 0 8px var(--panel-base);
   }
   .warn {
-    color: var(--accent);
+    color: var(--accent-text);
   }
 </style>

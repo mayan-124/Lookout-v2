@@ -879,7 +879,7 @@
     color: var(--accent-on);
     font-weight: 600;
   }
-  .item.danger {
+  .item.danger:not(.on) {
     color: var(--danger);
   }
   .item.fold {

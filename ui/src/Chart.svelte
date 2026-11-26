@@ -690,7 +690,7 @@
   .trail button {
     all: unset;
     cursor: pointer;
-    color: var(--accent);
+    color: var(--accent-text);
     flex: none;
   }
   .trail button:disabled {

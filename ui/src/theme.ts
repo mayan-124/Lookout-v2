@@ -54,7 +54,7 @@ export const ON_ACCENT = { dark: "#111214", light: "#FFFFFF" };
 const SHADE = "#000000";
 /** Text on a chart fill: whichever of the two reads better. */
 export const INK = { black: SHADE, white: TEXT_COLORS.title };
-const SEMANTIC = { danger: "#FF6B63", success: "#3FB950" };
+const SEMANTIC = { danger: "#FF7A90", success: "#3FB950" };
 /** Disk chart: color-blind-safe hues, one per folder, and grey for the rest. */
 const CHART_HUES = ["#66AFD9", "#41BD98", "#DC98C1", "#A8A8F4", "#AABF4A", "#D58385", "#4AB9C6", "#BAA8D2"];
 const CHART_GREY = "#7C8494";
@@ -133,6 +133,18 @@ export function panelColors(t: Theme) {
   };
 }
 
+/** The panels, and Settings' cards on them (two 4% layers). */
+export function textSurfaces(t: Theme): string[] {
+  const panels = Object.values(panelColors(t));
+  const card = (p: string) => mix(mix(p, TEXT_COLORS.title, 0.04), TEXT_COLORS.title, 0.04);
+  return [...panels, ...panels.map(card)];
+}
+
+/** Hover and selection fills on those: --accent-soft and --btn-bg-hover. */
+export function highlights(surfaces: string[], accent: string): string[] {
+  return surfaces.flatMap((p) => [mix(p, accent, 0.13), mix(p, TEXT_COLORS.title, 0.13)]);
+}
+
 export const themeById = (id: unknown): Theme =>
   THEMES.find((t) => t.id === id) ?? THEMES.find((t) => t.id === DEFAULT_THEME)!;
 
@@ -146,10 +158,24 @@ export function themeVars(t: Theme, choice: string | null) {
   const on = onAccent(accent);
   const panels = Object.values(panelColors(t));
   const visible = (hue: string) => lightenUntil(hue, (c) => panels.every((p) => contrast(c, p) >= 3));
-  // Secondary text reads at 4.5:1 on the panels and on Settings' cards (two 4% layers).
-  const card = (p: string) => mix(mix(p, TEXT_COLORS.title, 0.04), TEXT_COLORS.title, 0.04);
-  const surfaces = [...panels, ...panels.map(card)];
-  const muted = lightenUntil(TEXT_COLORS.muted, (c) => surfaces.every((p) => contrast(c, p) >= 4.5));
+  // Secondary text reads at 4.5:1 on the panels and on Settings' cards.
+  const surfaces = textSurfaces(t);
+  const readable = (color: string, on: string[]) => lightenUntil(color, (c) => on.every((p) => contrast(c, p) >= 4.5));
+  const muted = readable(TEXT_COLORS.muted, surfaces);
+  // Accent text also reads on hover and selection highlights; borders and fills
+  // keep the accent itself, which only needs 3:1. Danger covers highlights on
+  // the panels only: danger buttons darken instead, so the red stays pink.
+  const accentOn = [...surfaces, ...highlights(surfaces, accent)];
+  const dangerOn = [...surfaces, ...highlights(panels, accent)];
+  // The faint suggestion in the search box: 3:1, dimmer than other text.
+  let ghost = muted;
+  for (let step = 0; step < 50; step++) {
+    const c = mix(t.base, muted, step / 50);
+    if (panels.every((p) => contrast(c, p) >= 3)) {
+      ghost = c;
+      break;
+    }
+  }
   const vars: Record<string, string> = {
     "--base": t.base,
     "--tint1": t.tint1,
@@ -162,8 +188,10 @@ export function themeVars(t: Theme, choice: string | null) {
     "--text": TEXT_COLORS.title,
     "--text-soft": TEXT_COLORS.soft,
     "--muted": muted,
+    "--ghost": ghost,
+    "--accent-text": readable(accent, accentOn),
     "--shade": SHADE,
-    "--danger": SEMANTIC.danger,
+    "--danger": readable(SEMANTIC.danger, dangerOn),
     "--success": SEMANTIC.success,
     "--c-grey": visible(CHART_GREY),
     // data URIs cannot read variables, so the icons are built here.
