@@ -136,6 +136,9 @@ pub struct Settings {
     pub pinned: bool,
     /// Keeps the text of recent searches (encrypted) for the Up arrow.
     pub remember_searches: bool,
+    /// A bar reopened within 30 seconds shows the last search again. The
+    /// window holds it in memory; it is never saved.
+    pub remember_last_search: bool,
     /// Lets programs running as this Windows user search through the `lookout`
     /// command (a local named pipe). Off unless the user turns it on.
     pub cli_access: bool,
@@ -214,6 +217,7 @@ impl Default for Settings {
             appearance: None,
             chart_colors: CHART_COLORS[0].to_owned(),
             remember_searches: true,
+            remember_last_search: true,
             cli_access: false,
             start_with_windows: None,
             pinned: false,
@@ -228,6 +232,27 @@ impl Settings {
     pub fn set_remember_searches(&mut self, on: bool, path: &Path) -> Result<(), String> {
         let mut next = self.clone();
         next.remember_searches = on;
+        next.save(path)
+            .map_err(|e| format!("Could not save settings: {e}"))?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Saves the "Remember my last search" switch; on any error nothing changes.
+    pub fn set_remember_last_search(&mut self, on: bool, path: &Path) -> Result<(), String> {
+        let mut next = self.clone();
+        next.remember_last_search = on;
+        next.save(path)
+            .map_err(|e| format!("Could not save settings: {e}"))?;
+        *self = next;
+        Ok(())
+    }
+
+    /// "Reset window position": forgets where the window was dragged to, on
+    /// every monitor; on any error nothing changes.
+    pub fn reset_window_positions(&mut self, path: &Path) -> Result<(), String> {
+        let mut next = self.clone();
+        next.window_positions.clear();
         next.save(path)
             .map_err(|e| format!("Could not save settings: {e}"))?;
         *self = next;
@@ -596,6 +621,24 @@ mod tests {
     }
 
     #[test]
+    fn last_search_is_on_by_default_and_reset_forgets_every_position() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut s = Settings::default();
+        assert!(s.remember_last_search);
+        s.window_positions
+            .insert(monitor_key("DISPLAY1", 0, 0, 1920, 1080), (300, 120));
+        s.pinned = true;
+        s.set_remember_last_search(false, &path).unwrap();
+        s.reset_window_positions(&path).unwrap();
+        let back = Settings::load(&path).unwrap();
+        assert!(!back.remember_last_search && back.window_positions.is_empty());
+        assert!(back.pinned, "only the positions are reset");
+        std::fs::write(&path, r#"{"hotkey":"Alt+Space"}"#).unwrap();
+        assert!(Settings::load(&path).unwrap().remember_last_search);
+    }
+
+    #[test]
     fn a_saved_position_must_still_be_on_its_monitor() {
         let mon = (0, 0, 1920, 1080);
         assert!(position_on_monitor((580, 200), 760, mon));
@@ -783,6 +826,7 @@ mod tests {
             chart_colors: "type".into(),
             pinned: true,
             remember_searches: false,
+            remember_last_search: false,
             cli_access: true,
             start_with_windows: Some(true),
             window_positions: [("M|0,0|1x1".to_owned(), (5, 6))].into(),

@@ -12,6 +12,8 @@
   import { look } from "./look.svelte";
   import Setup from "./Setup.svelte";
   import Help from "./Help.svelte";
+  import { isFileRow, movedEnough } from "./dragout";
+  import { keepsPage, keepsSearch } from "./lastsearch";
   import { FOLDER_STEP, chooseFoldersTarget, isHelpQuery, stepOnShow } from "./setupflow";
   import { dockItems, footerHints, helpEntries, isDiskCommand, tipsFor, typedSection, type Action, type View } from "./modes";
   import { ACTIONS, ICONS, actionById, homeActions } from "./registry";
@@ -60,6 +62,11 @@
   type Card =
     | { phase: "confirm"; prepared: Prepared; presented: boolean; busy: boolean; error: string }
     | { phase: "result"; ok: boolean; message: string; undoable: boolean };
+  interface Shown {
+    id: number;
+    hidden_secs: number | null;
+    remember_last_search: boolean;
+  }
   interface Status extends IndexCounts {
     folders: number;
     apps: number;
@@ -286,11 +293,24 @@
   // replace newer results.
   let generation = 0;
 
-  // Hidden for less than this long, the bar comes back as it was: text,
-  // results, selection, and Settings or Disk if one was open. Esc, running an
-  // action or a closing click sets `cleared`, and the next show starts empty.
-  const RESTORE_SECS = 5 * 60;
+  // Reopened soon after hiding, the bar shows the last search again, its text
+  // selected (see lastsearch.ts). Settings or Disk come back too, unless Esc or
+  // opening something set `cleared`.
   let cleared = false;
+  // A search brought back: no ghost text or suggestions until the user types.
+  let quiet = $state(false);
+  // The text already saved to search history, so a restored one is not saved twice.
+  let savedSearch: string | null = null;
+
+  /** Keeps the results as they were, without the suggestion rows. */
+  function bringBackSearch() {
+    const exact = selected === items.length;
+    const keep = items[selected]?.id;
+    quiet = true;
+    composing = false;
+    all = all.filter((i) => i.source !== "action");
+    selected = exact && understood ? items.length : Math.max(0, items.findIndex((i) => i.id === keep));
+  }
 
   const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
 
@@ -486,7 +506,7 @@
     if (input) caretAtEnd = input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
   }
   const ghost = $derived(
-    caretAtEnd && !composing && ghostOff !== query && !panel && !disk && !card && earlier === null
+    caretAtEnd && !quiet && !composing && ghostOff !== query && !panel && !disk && !card && earlier === null
       ? ghostFor(query, ACTIONS, ui.mode, ui.show)
       : "",
   );
@@ -504,7 +524,9 @@
     if (!panel) settingsStart = "general";
   });
   function remember(text: string) {
-    if (worthRemembering(text)) invoke("record_search", { text }).catch(() => {});
+    if (text === savedSearch || !worthRemembering(text)) return;
+    savedSearch = text;
+    invoke("record_search", { text }).catch(() => {});
   }
   // Which action Enter starts for a result. The backend decides what is allowed;
   // this only names the action.
@@ -609,6 +631,8 @@
 
   function run(text: string) {
     cleared = false;
+    quiet = false;
+    savedSearch = null;
     generation += 1;
     notice = "";
     pending = null;
@@ -652,7 +676,7 @@
     done = u.done;
     filters = u.filters && (u.filters.kind || u.filters.date) ? u.filters : null;
     // Suggestions wait for something to sit among, unless the word is a command.
-    const found = suggest(query, ACTIONS, ui.mode, ui.show);
+    const found = quiet ? [] : suggest(query, ACTIONS, ui.mode, ui.show);
     const intent = found.some((s) => s.exact);
     const ready = u.done || results.length > 0 || intent;
     all = ready ? placeSuggestions(results, found, query, actionItem) : results;
@@ -776,42 +800,48 @@
     loadHotkey();
     loadPinned();
     loadUi();
-    const unlistenShown = listen<{ id: number; hidden_secs: number | null }>("bar-shown", async (event) => {
-      const { hidden_secs } = event.payload;
-      const restore =
-        !cleared &&
-        hidden_secs !== null &&
-        hidden_secs < RESTORE_SECS &&
-        (query.trim() !== "" || panel || disk || setup !== null);
+    const unlistenShown = listen<Shown>("bar-shown", async (event) => {
+      const { hidden_secs, remember_last_search } = event.payload;
+      const search = !panel && !disk && keepsSearch(hidden_secs, remember_last_search, query);
+      const page = keepsPage(hidden_secs, panel || disk || setup !== null, cleared);
       notice = "";
       earlier = null;
+      press = null;
+      refusal = null;
       visible = true;
       opens += 1;
       tipsHovered = false;
       // A confirm card is never brought back: its preview must be seen fresh.
       if (card?.phase === "confirm") invoke("cancel_action", { ticket: card.prepared.ticket });
       card = null;
-      if (restore) {
-        // Same page, same text; the results are asked for again so they are current.
-        if (query.trim() !== "" && !panel && !disk) run(query);
-        else if (query.trim() === "" && !panel && !disk) loadHome();
+      if (search) {
+        bringBackSearch();
       } else {
         query = "";
         all = [];
+        filters = null;
+        understoodLine = "";
+        skip = [];
+        quiet = false;
+        savedSearch = null;
         done = true;
         selected = 0;
         lane = 0;
-        panel = false;
-        disk = false;
+        if (!page) {
+          panel = false;
+          disk = false;
+        }
         loadHome(); // also invalidates anything still in flight
       }
       cleared = false;
       input?.focus();
+      // Typing replaces a restored search; Enter and the arrows work as before.
+      if (search) input?.select();
       loadHotkey();
       // First run: the setup. Not awaited, so showing the bar stays as quick.
       refreshStatus().then(async () => {
         const wasOpen = setup !== null;
-        setup = stepOnShow(setup, !!status?.needs_setup, restore);
+        setup = stepOnShow(setup, !!status?.needs_setup, search || page);
         // A panel that was already open takes the focus back; a new one does that itself.
         if (wasOpen && showSetup) {
           await tick();
@@ -850,6 +880,11 @@
   function onKeydown(e: KeyboardEvent) {
     // Keys that belong to an input method are left to it.
     if (e.isComposing) return;
+    // Esc during a drag cancels the drag, nothing else.
+    if (dragging) {
+      e.preventDefault();
+      return;
+    }
     const plain = !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
     if (earlier !== null) {
       if (plain && e.key === "ArrowUp") {
@@ -950,6 +985,11 @@
         else helpAdvanced = !helpAdvanced;
         return;
       }
+    }
+    if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === "c" && isFile(cur)) {
+      e.preventDefault();
+      if (!e.repeat) copyFile(cur);
+      return;
     }
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && query === "") {
       // With text in the box, Ctrl+Z stays the text field's own undo.
@@ -1096,7 +1136,7 @@
     if (!home) tipsFocused = false;
   });
   const cur = $derived(items[selected] as Item | undefined);
-  const meant = $derived(didYouMean(suggest(query, ACTIONS, ui.mode, ui.show), cur));
+  const meant = $derived(quiet ? "" : didYouMean(suggest(query, ACTIONS, ui.mode, ui.show), cur));
   const previewSource = $derived(previewable(cur) ? { path: pathOf(cur)! } : null);
 
   // Thumbnail of the top hit, through the same safe preview command.
@@ -1192,6 +1232,57 @@
     begin(() => invoke<Prepared>("prepare_action", { action: "copy_clip", id: i.id }));
   }
 
+  const isFile = (i: Item | undefined) => !!i && isFileRow(kindName(i.kind), i.source, i.uri);
+  /** Puts the file itself on the clipboard: what dragging does, from the keyboard. */
+  function copyFile(i: Item | undefined) {
+    if (!i || card) return;
+    remember(query);
+    begin(() => invoke<Prepared>("prepare_action", { action: "copy_file", id: i.id }));
+  }
+
+  // Dragging a file row into another program. A press becomes a drag only after
+  // the pointer has travelled; the shell then runs the drag until the release.
+  let press: { id: string; x: number; y: number } | null = null;
+  let dragging = false;
+  // The click that may follow a drag must not open the result.
+  let dragged = false;
+  // Why the row under the pointer cannot be dragged, shown as its tooltip.
+  let refusal = $state<{ id: string; text: string } | null>(null);
+  function checkDrag(i: Item) {
+    if (!isFile(i)) return;
+    invoke<string | null>("drag_check", { id: i.id })
+      .then((text) => (refusal = text ? { id: i.id, text } : null))
+      .catch(() => {});
+  }
+  function pressRow(e: PointerEvent, i: Item) {
+    dragged = false;
+    press = null;
+    // Shift extends a selection; touch scrolls; a button in the row is its own.
+    if (e.button !== 0 || e.shiftKey || e.pointerType === "touch" || card || !isFile(i)) return;
+    if ((e.target as Element).closest("button")) return;
+    press = { id: i.id, x: e.clientX, y: e.clientY };
+  }
+  function dragMove(e: PointerEvent) {
+    if (!press || dragging) return;
+    if (!(e.buttons & 1)) {
+      press = null;
+      return;
+    }
+    if (!movedEnough(e.clientX - press.x, e.clientY - press.y)) return;
+    const { id } = press;
+    press = null;
+    if (refusal?.id === id) return;
+    dragging = true;
+    dragged = true;
+    notice = "";
+    invoke("start_drag", { id })
+      .catch((err) => (notice = errorText(err)))
+      .finally(() => {
+        dragging = false;
+        input?.focus(); // the press took the focus from the search box
+      });
+  }
+
   const view = $derived.by<View>(() => {
     if (card) return card.phase === "confirm" ? "confirm" : "done";
     if (panel) return "settings";
@@ -1221,6 +1312,8 @@
   onkeydown={onKeydown}
   onblur={() => !pinned && (visible = false)}
   onfocus={() => (visible = true)}
+  onpointermove={dragMove}
+  onpointerup={() => (press = null)}
 />
 <svelte:document onvisibilitychange={() => (visible = document.visibilityState === "visible")} onselectionchange={trackCaret} />
 
@@ -1642,9 +1735,17 @@
                       class="row"
                       class:top
                       class:selected={i === selected}
+                      class:draggable={isFile(item)}
                       data-index={i}
+                      title={refusal?.id === item.id ? refusal.text : undefined}
                       onmousemove={() => (selected = i)}
-                      onclick={() => activate(item)}
+                      onpointerenter={() => checkDrag(item)}
+                      onpointerdown={(e) => pressRow(e, item)}
+                      ondragstart={(e) => e.preventDefault()}
+                      onclick={() => {
+                        if (!dragged) activate(item);
+                        dragged = false;
+                      }}
                       onkeydown={() => {}}
                     >
                       {#if top && thumbSrc}
@@ -1746,6 +1847,9 @@
                 {/if}
                 {#if kindName(cur.kind) === "clipboard" && defaultAction(cur) !== "copy_clip"}
                   <button class="btn small" onclick={() => copyText(cur)}>Copy text</button>
+                {/if}
+                {#if isFile(cur)}
+                  <button class="btn small" title="Ctrl+Shift+C" onclick={() => copyFile(cur)}>Copy file</button>
                 {/if}
                 {#if ui.show.quick_keys && canKey(cur) && !keyFor}
                   <button class="btn small" onclick={() => startKey(cur)}>Set quick key</button>
@@ -2280,6 +2384,10 @@
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
+  }
+  /* A press on a file row starts a drag, not a text selection. */
+  .row.draggable {
+    user-select: none;
   }
   .results {
     list-style: none;

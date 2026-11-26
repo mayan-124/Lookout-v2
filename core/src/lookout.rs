@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use crate::actions::disk::{
-    BatchRemoveAction, CopyPathAction, ExplorerReveal, RecycleAction, RevealAction, ShellRecycler,
-    WindowsClipboardWriter,
+    BatchRemoveAction, CopyFileAction, CopyPathAction, ExplorerReveal, RecycleAction, RevealAction,
+    ShellRecycler, WindowsClipboardWriter,
 };
 use crate::actions::kill_port::{self, KillPort, PortSource};
 use crate::actions::open::{self, Launcher, OpenAction};
@@ -45,6 +45,7 @@ use crate::semantic::{
     SemanticStatus, PLUGIN_ID,
 };
 use crate::settings::Settings;
+use crate::share::{Refusal, Rules};
 use crate::sources::{AppsSource, CalculatorSource, FilesSource, Source, UnitsSource};
 use crate::storage::{Storage, StorageError};
 use crate::synthetic;
@@ -227,6 +228,7 @@ pub struct Lookout {
     /// The folders in the name index, and what is skipped inside them.
     home_roots: Vec<PathBuf>,
     excludes: Excludes,
+    share_rules: Arc<Rules>,
     /// The files of the latest Home "Recent" list, which can be opened too.
     home_targets: Mutex<HashMap<String, Target>>,
 }
@@ -583,6 +585,11 @@ impl Lookout {
             crate::cleanup::Env::current(),
         ));
         let tidy = crate::cleanup::Tidy::new(tidy_store.clone(), pause.clone());
+        // What may be dragged out or copied as a file: the indexer's own skip rules.
+        let share_rules = Arc::new(Rules {
+            excludes: excludes.clone(),
+            roots: roots.clone(),
+        });
         let action_list: Vec<Arc<dyn Action>> = vec![
             Arc::new(OpenAction::new(opts.launcher.clone())),
             Arc::new(KillPort::new(system)),
@@ -593,6 +600,10 @@ impl Lookout {
             Arc::new(crate::timers::CancelAction::new(timers.clone())),
             Arc::new(RevealAction(Arc::new(ExplorerReveal))),
             Arc::new(CopyPathAction(Arc::new(WindowsClipboardWriter))),
+            Arc::new(CopyFileAction(
+                Arc::new(WindowsClipboardWriter),
+                share_rules.clone(),
+            )),
             Arc::new(RecycleAction::new(
                 Arc::new(ShellRecycler),
                 disk_hints.clone(),
@@ -666,6 +677,7 @@ impl Lookout {
             cli_sources,
             home_roots,
             excludes,
+            share_rules,
             home_targets: Mutex::default(),
         })
     }
@@ -1162,6 +1174,13 @@ impl Lookout {
                     .get(id)
                     .cloned()
             })
+    }
+
+    /// The file a result stands for, if it may be dragged into another program.
+    pub fn shareable_path(&self, item_id: &str) -> Result<PathBuf, Refusal> {
+        let target = self.target(item_id).ok_or(Refusal::NotAFile)?;
+        self.share_rules
+            .path(&target.kind, target.uri.as_deref(), target.origin.is_some())
     }
 
     pub fn quick_keys(&self) -> &crate::quickkeys::QuickKeys {

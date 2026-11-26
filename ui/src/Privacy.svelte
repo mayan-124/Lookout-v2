@@ -29,6 +29,7 @@
     cli_access: boolean;
     start_with_windows: boolean;
     remember_searches: boolean;
+    remember_last_search: boolean;
   }
 
   // Manual update check: nothing runs until the user clicks; nothing downloads until the second click.
@@ -321,6 +322,27 @@
     }
   }
 
+  let windowMessage = $state("");
+  async function setRememberLast(el: HTMLInputElement) {
+    windowMessage = "";
+    try {
+      const s = await invoke<PrivacyState>("set_remember_last_search", { on: el.checked });
+      if (info) info.remember_last_search = s.remember_last_search;
+    } catch (e) {
+      el.checked = !el.checked;
+      windowMessage = errorText(e);
+    }
+  }
+  async function resetWindowPosition() {
+    windowMessage = "";
+    try {
+      await invoke("reset_window_position");
+      windowMessage = "Window position reset.";
+    } catch (e) {
+      windowMessage = errorText(e);
+    }
+  }
+
   let startupMessage = $state("");
   async function setStartWithWindows(el: HTMLInputElement) {
     startupMessage = "";
@@ -574,6 +596,19 @@
           {@render toggle(name, `${what} ${where}`, ui.show[key], (el) => choose(setShow(key, el.checked)))}
         {/each}
         {@render cliSwitch()}
+        <h3 class="label-caps">Window</h3>
+        {@render toggle(
+          "Remember my last search for 30 seconds",
+          "Reopened soon, the bar shows it again. It is never saved to disk.",
+          info?.remember_last_search ?? true,
+          setRememberLast,
+          !info,
+        )}
+        <div class="field">
+          {@render field("Window position", "Forgets where you dragged the window, on every screen.")}
+          <button class="btn" onclick={resetWindowPosition}>Reset window position</button>
+        </div>
+        {#if windowMessage}<p class="note" role="status">{windowMessage}</p>{/if}
       {:else if section === "folders"}
         <h2 id="priv-title">Skipped folders</h2>
         <h3 class="label-caps">Folders to skip</h3>

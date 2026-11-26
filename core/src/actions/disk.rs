@@ -8,9 +8,11 @@ use std::sync::Arc;
 use super::{Action, ActionError, Authorized, Executed, Plan, Preview, Risk, Target};
 use crate::diskusage::Hints;
 use crate::item::Kind;
+use crate::share::Rules;
 
 pub const REVEAL: &str = "reveal";
 pub const COPY_PATH: &str = "copy_path";
+pub const COPY_FILE: &str = "copy_file";
 pub const RECYCLE: &str = "recycle";
 /// Said by every Disk confirmation that moves something to the Recycle Bin.
 const RECYCLE_NOTE: &str = "What you remove goes to the Windows Recycle Bin and can be restored from there. Lookout has no in-app undo.";
@@ -167,6 +169,63 @@ impl Action for CopyPathAction {
             .map_err(ActionError::Failed)?;
         Ok(Executed {
             message: "Path copied".into(),
+            undo_token: None,
+        })
+    }
+}
+
+// ------------------------------------------------------------- copy file
+
+pub trait FileClipboard: Send + Sync {
+    fn set_files(&self, paths: &[PathBuf]) -> Result<(), String>;
+}
+
+impl FileClipboard for WindowsClipboardWriter {
+    fn set_files(&self, paths: &[PathBuf]) -> Result<(), String> {
+        crate::share::copy_files(paths)
+    }
+}
+
+/// Puts the file or folder itself on the clipboard, for the same results that
+/// can be dragged.
+pub struct CopyFileAction(pub Arc<dyn FileClipboard>, pub Arc<Rules>);
+
+impl Action for CopyFileAction {
+    fn id(&self) -> &str {
+        COPY_FILE
+    }
+    fn label(&self) -> &str {
+        "Copy file"
+    }
+    fn applies_to(&self, kind: &Kind) -> bool {
+        file_or_folder(kind)
+    }
+    fn plan(&self, target: &Target) -> Result<Plan, ActionError> {
+        let path = self
+            .1
+            .path(&target.kind, target.uri.as_deref(), target.origin.is_some())
+            .map_err(|e| ActionError::Refused(e.to_string()))?;
+        let text = path.to_string_lossy().into_owned();
+        Ok(Plan {
+            risk: Risk::Safe,
+            preview: Preview {
+                from: None,
+                title: "Copy file".into(),
+                lines: vec![text.clone()],
+                warnings: vec![],
+            },
+            undoable: false,
+            snapshot: serde_json::json!({ "path": text }),
+            fingerprint: format!("copy_file|{text}"),
+        })
+    }
+    fn execute(&self, plan: &Plan, _: &Authorized) -> Result<Executed, ActionError> {
+        let path = snapshot_path(plan)?;
+        self.0
+            .set_files(std::slice::from_ref(&path))
+            .map_err(ActionError::Failed)?;
+        Ok(Executed {
+            message: "Copied. Paste it where you want the file.".into(),
             undo_token: None,
         })
     }
@@ -622,6 +681,38 @@ mod tests {
             action.plan(&target(Kind::File, &gone)),
             Err(ActionError::NothingToDo(_))
         ));
+    }
+
+    #[test]
+    fn copy_file_is_safe_and_follows_the_drag_rules() {
+        #[derive(Default)]
+        struct Clip(Mutex<Vec<PathBuf>>);
+        impl FileClipboard for Clip {
+            fn set_files(&self, p: &[PathBuf]) -> Result<(), String> {
+                self.0.lock().unwrap().extend_from_slice(p);
+                Ok(())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        let secret = dir.path().join(".env");
+        std::fs::write(&file, "x").unwrap();
+        std::fs::write(&secret, "x").unwrap();
+        let rules = Rules {
+            roots: vec![dir.path().to_path_buf()],
+            ..Rules::default()
+        };
+        let clip = Arc::new(Clip::default());
+        let copy = CopyFileAction(clip.clone(), Arc::new(rules));
+        assert!(!copy.applies_to(&Kind::App));
+        assert!(matches!(
+            copy.plan(&target(Kind::File, &secret)),
+            Err(ActionError::Refused(_))
+        ));
+        let plan = copy.plan(&target(Kind::File, &file)).unwrap();
+        assert_eq!(plan.risk, Risk::Safe);
+        copy.execute(&plan, &Authorized::for_tests()).unwrap();
+        assert_eq!(*clip.0.lock().unwrap(), [file]);
     }
 
     #[test]

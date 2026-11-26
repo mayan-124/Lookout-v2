@@ -19,14 +19,16 @@ use lookout_core::item::Item;
 use lookout_core::latency::{self, Sample};
 use lookout_core::lookout::{Lookout, StartOptions, Status};
 use lookout_core::pause::PauseState;
-use lookout_core::settings::{
-    monitor_key, position_on_monitor, Appearance, Settings, DEFAULT_HOTKEY,
-};
+use lookout_core::placement::{self, Rect, Screen};
+use lookout_core::settings::{monitor_key, Appearance, Settings, DEFAULT_HOTKEY};
+use lookout_core::share::Refusal;
 use lookout_core::storage::{DataPaths, Storage};
 use lookout_core::uimode::{Mode, Show, Ui, UiState};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewWindow, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, Manager, Monitor, PhysicalPosition, State, WebviewWindow, WindowEvent,
+};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
@@ -81,6 +83,10 @@ struct Shared {
     last_set: Mutex<Option<(i32, i32)>>,
     /// Counts user moves; only the latest one is written to disk.
     move_gen: AtomicU64,
+    /// Moves before this come from a change of display scale, not from the user.
+    ignore_moves_until: Mutex<Option<Instant>>,
+    /// A result is being dragged out: the bar must stay until the drop.
+    dragging: AtomicBool,
 }
 
 /// Longest an action may hold the blur suspension; the action itself keeps running.
@@ -134,6 +140,9 @@ fn blur_hides(pinned: bool, dialog_open: bool, action_suspends: bool) -> bool {
 }
 
 fn blur_hide_allowed(shared: &Shared) -> bool {
+    if shared.dragging.load(Ordering::Acquire) {
+        return false;
+    }
     blur_hides(
         shared.pinned.load(Ordering::Acquire),
         shared.dialog_open.load(Ordering::Acquire),
@@ -221,6 +230,8 @@ struct Shown {
     id: u64,
     /// Seconds since the bar was hidden; none if it never was.
     hidden_secs: Option<u64>,
+    /// The "Remember my last search" setting.
+    remember_last_search: bool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -235,38 +246,71 @@ fn bar_window(app: &AppHandle) -> Result<WebviewWindow, BarError> {
     app.get_webview_window(BAR).ok_or(BarError::NoWindow)
 }
 
-/// Centers the bar horizontally in the upper third of the monitor under the cursor.
-fn position_bar(app: &AppHandle, window: &WebviewWindow) {
-    let monitor = app
-        .cursor_position()
-        .ok()
-        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
-        .or_else(|| app.primary_monitor().ok().flatten());
-    let (Some(monitor), Ok(size)) = (monitor, window.outer_size()) else {
+/// The monitor under the cursor, else the primary one.
+fn cursor_monitor(app: &AppHandle) -> Option<Monitor> {
+    let found = app.cursor_position().ok().and_then(|p| {
+        let mut monitors = app.available_monitors().ok()?;
+        let screens: Vec<Screen> = monitors.iter().map(screen_of).collect();
+        let at = placement::screen_at(&screens, p.x as i32, p.y as i32)?;
+        Some(monitors.swap_remove(at))
+    });
+    found.or_else(|| app.primary_monitor().ok().flatten())
+}
+
+fn screen_of(m: &Monitor) -> Screen {
+    let (p, s, work) = (m.position(), m.size(), m.work_area());
+    Screen {
+        bounds: Rect {
+            x: p.x,
+            y: p.y,
+            w: s.width as i32,
+            h: s.height as i32,
+        },
+        work: Rect {
+            x: work.position.x,
+            y: work.position.y,
+            w: work.size.width as i32,
+            h: work.size.height as i32,
+        },
+        scale: m.scale_factor(),
+    }
+}
+
+/// Puts the bar on `monitor`: where the user last dragged it there, else
+/// centred near the upper third of the work area.
+fn position_bar(app: &AppHandle, window: &WebviewWindow, monitor: Option<Monitor>) {
+    let (Some(monitor), Ok(size), Ok(scale)) =
+        (monitor, window.outer_size(), window.scale_factor())
+    else {
         return;
     };
-    let origin = monitor.position();
-    let area = monitor.size();
-    let mut x = origin.x + (area.width as i32 - size.width as i32) / 2;
-    let mut y = origin.y + (f64::from(area.height) * 0.18) as i32;
-    // The place the user last dragged it to on this monitor, if still on it.
     let key = monitor_key_of(&monitor);
     let saved = app
         .try_state::<Services>()
         .and_then(|s| lock(&s.settings).window_positions.get(&key).copied());
-    if let Some(p) = saved {
-        let mon = (origin.x, origin.y, area.width as i32, area.height as i32);
-        if position_on_monitor(p, size.width as i32, mon) {
-            (x, y) = p;
-        }
+    let screen = screen_of(&monitor);
+    let (x, y) = placement::place(
+        &screen,
+        f64::from(size.width) / scale,
+        f64::from(size.height) / scale,
+        saved,
+    );
+    let shared = app.state::<Shared>();
+    *lock(&shared.last_set) = Some((x, y));
+    // Going to a monitor with another scale resizes the window on the way, which
+    // can nudge it: ignore those moves and place it a second time.
+    let rescaled = (screen.scale - scale).abs() > 0.001;
+    if rescaled {
+        *lock(&shared.ignore_moves_until) = Some(Instant::now() + Duration::from_millis(400));
     }
-    *lock(&app.state::<Shared>().last_set) = Some((x, y));
-    if let Err(e) = window.set_position(PhysicalPosition::new(x, y)) {
-        eprintln!("lookout: could not position bar: {e}");
+    for _ in 0..if rescaled { 2 } else { 1 } {
+        if let Err(e) = window.set_position(PhysicalPosition::new(x, y)) {
+            eprintln!("lookout: could not position bar: {e}");
+        }
     }
 }
 
-fn monitor_key_of(m: &tauri::Monitor) -> String {
+fn monitor_key_of(m: &Monitor) -> String {
     let (p, s) = (m.position(), m.size());
     monitor_key(
         m.name().map_or("", |n| n.as_str()),
@@ -301,6 +345,13 @@ fn on_bar_moved(app: &AppHandle, pos: PhysicalPosition<i32>) {
     let shared = app.state::<Shared>();
     if lock(&shared.last_set).is_some_and(|p| p == (pos.x, pos.y)) {
         return; // our own placement
+    }
+    if lock(&shared.ignore_moves_until).is_some_and(|t| Instant::now() < t) {
+        return;
+    }
+    // Windows moves a hidden window when a screen goes away: not the user's choice.
+    if bar_window(app).is_ok_and(|w| !w.is_visible().unwrap_or(true)) {
+        return;
     }
     let n = shared.move_gen.fetch_add(1, Ordering::AcqRel) + 1;
     let app = app.clone();
@@ -337,6 +388,91 @@ fn set_pinned(pinned: bool, app: AppHandle) {
     persist_window_state(&app, None);
 }
 
+/// "Reset window position": forgets every dragged place and moves the bar back.
+#[tauri::command]
+fn reset_window_position(app: AppHandle, services: State<Services>) -> Result<(), String> {
+    // A drag still waiting to be saved is forgotten too.
+    app.state::<Shared>()
+        .move_gen
+        .fetch_add(1, Ordering::AcqRel);
+    lock(&services.settings).reset_window_positions(&services.paths.settings())?;
+    if let Ok(window) = bar_window(&app) {
+        let monitor = window.current_monitor().ok().flatten();
+        position_bar(&app, &window, monitor);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_remember_last_search(
+    on: bool,
+    services: State<Services>,
+    shared: State<Shared>,
+) -> Result<PrivacyState, String> {
+    lock(&services.settings).set_remember_last_search(on, &services.paths.settings())?;
+    Ok(privacy_of(&services, &shared))
+}
+
+/// Why a result cannot be dragged, if the user should be told: only for files
+/// that are online only.
+#[tauri::command]
+async fn drag_check(id: String, services: State<'_, Services>) -> Result<Option<String>, String> {
+    let lookout = services_of(&services)?;
+    tauri::async_runtime::spawn_blocking(move || match lookout.shareable_path(&id) {
+        Err(Refusal::OnlineOnly) => Some(Refusal::OnlineOnly.to_string()),
+        _ => None,
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Drags the file behind a result into other programs (copy or link). The
+/// webview names only the result; the path and the rules are applied here.
+#[tauri::command]
+async fn start_drag(
+    id: String,
+    app: AppHandle,
+    services: State<'_, Services>,
+) -> Result<(), String> {
+    let lookout = services_of(&services)?;
+    let path = tauri::async_runtime::spawn_blocking(move || lookout.shareable_path(&id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    let (tx, rx) = mpsc::channel();
+    let handle = app.clone();
+    // The drag loop belongs to the thread that owns the window.
+    app.run_on_main_thread(move || {
+        let _ = tx.send(drag_out(&handle, &path));
+    })
+    .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || rx.recv())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?
+}
+
+#[cfg(windows)]
+fn drag_out(app: &AppHandle, path: &std::path::Path) -> Result<(), String> {
+    let window = bar_window(app).map_err(|e| e.to_string())?;
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
+    let shared = app.state::<Shared>();
+    if shared.dragging.swap(true, Ordering::AcqRel) {
+        return Ok(());
+    }
+    let result = lookout_core::share::drag(path, hwnd);
+    shared.dragging.store(false, Ordering::Release);
+    // The blur that was held back: the drop gave another program the focus.
+    if !lookout_core::winfocus::foreground_is_ours() && blur_hide_allowed(&shared) {
+        hide_bar_window(app);
+    }
+    result.map(|_| ())
+}
+#[cfg(not(windows))]
+fn drag_out(_app: &AppHandle, _path: &std::path::Path) -> Result<(), String> {
+    Err("Dragging files out is available on Windows only.".to_owned())
+}
+
 /// Tab in a path query: the next folder name, or `None`.
 #[tauri::command]
 fn complete_path(text: String) -> Option<String> {
@@ -352,7 +488,7 @@ fn skip_list() -> Vec<String> {
 fn show_bar(app: &AppHandle) -> Result<(), BarError> {
     let t0 = Instant::now();
     let window = bar_window(app)?;
-    position_bar(app, &window);
+    position_bar(app, &window, cursor_monitor(app));
     set_webview_visible(&window, true);
     window.show()?;
     window.set_focus()?;
@@ -362,7 +498,18 @@ fn show_bar(app: &AppHandle) -> Result<(), BarError> {
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     *lock(&shared.pending) = Some(Pending { id, t0, native_ms });
     let hidden_secs = lock(&shared.hidden_at).map(|t| t.elapsed().as_secs());
-    app.emit_to(BAR, "bar-shown", Shown { id, hidden_secs })?;
+    let remember_last_search = app
+        .try_state::<Services>()
+        .is_some_and(|s| lock(&s.settings).remember_last_search);
+    app.emit_to(
+        BAR,
+        "bar-shown",
+        Shown {
+            id,
+            hidden_secs,
+            remember_last_search,
+        },
+    )?;
     Ok(())
 }
 
@@ -1026,20 +1173,21 @@ fn bar_resize(
         640.0
     };
     let (w, h): (f64, f64) = (w, h);
-    // Never larger than the screen the bar is on.
-    let (w, h) = match window.current_monitor() {
-        Ok(Some(m)) => {
+    // Never larger than the work area of the screen the bar is on, where it stays.
+    let monitor = window.current_monitor().ok().flatten();
+    let (w, h) = match &monitor {
+        Some(m) => {
             let scale = m.scale_factor();
-            let size = m.size();
+            let work = m.work_area().size;
             (
-                w.min(f64::from(size.width) / scale - 40.0),
-                h.min(f64::from(size.height) / scale - 80.0),
+                w.min(f64::from(work.width) / scale - 40.0),
+                h.min(f64::from(work.height) / scale - 32.0),
             )
         }
-        _ => (w, h),
+        None => (w, h),
     };
     let _ = window.set_size(tauri::LogicalSize::new(w, h));
-    position_bar(&app, &window);
+    position_bar(&app, &window, monitor);
 }
 
 /// Step 1 for an action on a row of the disk view; the rest of the protocol is
@@ -1328,6 +1476,7 @@ struct PrivacyState {
     content_index_max_mb: u64,
     cli_access: bool,
     remember_searches: bool,
+    remember_last_search: bool,
     start_with_windows: bool,
     /// What the setup shows that switch as.
     setup_start_with_windows: bool,
@@ -1356,6 +1505,7 @@ fn privacy_of(services: &Services, shared: &Shared) -> PrivacyState {
         content_index_max_mb: s.content_index_max_mb,
         cli_access: s.cli_access,
         remember_searches: s.remember_searches,
+        remember_last_search: s.remember_last_search,
         start_with_windows: s.starts_with_windows(),
         setup_start_with_windows: s.setup_offers_start_with_windows(),
     }
@@ -2217,6 +2367,8 @@ pub fn run() {
             pinned: AtomicBool::new(false),
             last_set: Mutex::new(None),
             move_gen: AtomicU64::new(0),
+            ignore_moves_until: Mutex::new(None),
+            dragging: AtomicBool::new(false),
         })
         .plugin(tauri_plugin_dialog::init())
         // Only used when the user clicks "Check for updates" in Settings.
@@ -2336,7 +2488,11 @@ pub fn run() {
             window_state,
             set_pinned,
             complete_path,
-            skip_list
+            skip_list,
+            reset_window_position,
+            set_remember_last_search,
+            drag_check,
+            start_drag
         ])
         .setup(setup)
         .run(tauri::generate_context!());
