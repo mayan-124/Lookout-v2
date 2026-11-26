@@ -2087,6 +2087,17 @@ mod tests {
             .unwrap_or_else(|| panic!("no node {name}"))
     }
 
+    /// Waits for a background scan. The limit only catches a hang: how long a
+    /// scan takes depends on the machine, and a throttled one sleeps many times
+    /// longer than it works.
+    fn wait_until(what: &str, done: impl Fn() -> bool) {
+        let limit = Instant::now() + Duration::from_secs(120);
+        while !done() {
+            assert!(Instant::now() < limit, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     /// Denies listing a folder to everyone; allows it again on drop so the
     /// temporary directory can be deleted.
     struct Locked(PathBuf);
@@ -2574,12 +2585,7 @@ mod tests {
         svc.start(dir.path(), true).unwrap();
         svc.cancel();
         // The scan thread notices on its next folder.
-        for _ in 0..200 {
-            if svc.progress().state != ScanState::Scanning {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
+        wait_until("the cancel", || svc.progress().state != ScanState::Scanning);
         assert_eq!(svc.progress().state, ScanState::Cancelled);
         assert!(svc.tree().is_none());
         svc.close();
@@ -2612,30 +2618,19 @@ mod tests {
         }
         let svc = DiskService::new(PauseState::new(), 0.05, None, None, Hints::default());
         svc.start(dir.path(), true).unwrap();
-        for _ in 0..400 {
-            if svc.progress().folders >= 5 || svc.progress().state != ScanState::Scanning {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        wait_until("the scan to get going", || {
+            svc.progress().folders >= 5 || svc.progress().state != ScanState::Scanning
+        });
         let seen = svc.progress().folders;
         svc.cancel();
-        for _ in 0..400 {
-            if svc.progress().state != ScanState::Scanning {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
+        wait_until("the cancel", || svc.progress().state != ScanState::Scanning);
         assert!(seen >= 5, "never got going");
         assert_eq!(svc.progress().state, ScanState::Cancelled);
         assert!(svc.tree().is_none());
         svc.start(dir.path(), false).unwrap();
-        for _ in 0..800 {
-            if svc.progress().state == ScanState::Done {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        wait_until("the new scan", || {
+            svc.progress().state != ScanState::Scanning
+        });
         assert_eq!(svc.progress().state, ScanState::Done);
         assert_eq!(svc.tree().unwrap().total().2, 800);
         svc.close();
@@ -2648,12 +2643,7 @@ mod tests {
         let pause = PauseState::new();
         let svc = DiskService::new(pause.clone(), 1.0, None, None, Hints::default());
         svc.start(dir.path(), false).unwrap();
-        for _ in 0..400 {
-            if svc.progress().state == ScanState::Done {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        wait_until("the scan", || svc.progress().state != ScanState::Scanning);
         let tree = svc.tree().expect("finished");
         let weak = Arc::downgrade(&tree);
         drop(tree);
