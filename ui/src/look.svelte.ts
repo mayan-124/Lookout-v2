@@ -110,8 +110,8 @@ export function resetLook() {
 /** Applies the saved theme; main.ts draws nothing until this is done. */
 export async function loadAppearance() {
   try {
-    const r = await invoke<{ appearance: Appearance | null; existing: boolean }>("get_appearance");
-    const a = r.appearance ?? initialAppearance(old, r.existing);
+    const r = await invoke<{ appearance: Appearance | null }>("get_appearance");
+    const a = r.appearance ?? initialAppearance(old);
     look.theme = a.theme;
     look.accent = normalizeHex(a.accent);
     paint();

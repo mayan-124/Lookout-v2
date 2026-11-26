@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The orb: a static glowing dot that animates only on events (results arrive,
+  // The orb: a static flat dot that animates only on events (results arrive,
   // indexing, error), transform and opacity only. With active=false (the window
   // is hidden) or reduced motion, nothing animates at all.
   type Mode = "idle" | "indexing" | "found" | "error" | "paused";
@@ -28,8 +28,7 @@
   .core {
     width: 16px;
     height: 16px;
-    background: radial-gradient(circle at 35% 30%, var(--text) 0, var(--accent) 45%, var(--accent) 100%);
-    box-shadow: 0 0 10px var(--accent-line);
+    background: var(--accent);
   }
   .ring {
     inset: 1px;
@@ -45,7 +44,6 @@
   }
   [data-mode="error"] .core {
     background: var(--danger);
-    box-shadow: 0 0 10px var(--danger);
     animation: shake 300ms linear 1;
   }
   [data-mode="paused"] .core {

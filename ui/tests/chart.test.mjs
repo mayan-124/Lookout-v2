@@ -216,7 +216,7 @@ test("the name filter keeps matches and their contents bright", () => {
 });
 
 test("colour modes map folders, types and ages to fills", () => {
-  const p = palette("neon-grid", null);
+  const p = palette("carbon", null);
   const now = 1_800_000_000;
   const file = node("x", 1, [], { cat: 2, modified: now - 400 * 86_400 });
   assert.equal(fillFor(file, "folder", 1, 0, p, now), p.folder[1]);
@@ -251,7 +251,7 @@ test("every fill reaches 3:1 on the panel and its text 4.5:1, on every theme", (
         for (let depth = 0; depth < 4; depth++)
           fills.push(fillFor(node("x", 1), "folder", branch, depth, p, 0));
       for (const fill of fills) {
-        for (const ground of [t.base, ...Object.values(panelColors(t))])
+        for (const ground of Object.values(panelColors(t)))
           assert.ok(contrast(fill, ground) >= 3, `${t.id} ${fill} on ${ground}`);
         assert.ok(contrast(fill, textOn(fill)) >= 4.5, `${t.id} text on ${fill}`);
       }
@@ -346,7 +346,7 @@ test("groups and folders carry their type totals, and deleting takes them away",
   const root = folder("r", [node("big.zip", 100_000, [], { cat: 4 }), folder("f", tiny)]);
   const group = mergeSmall(tiny, 100_000).at(-1);
   assert.deepEqual([group.kind, group.cat, group.split], ["other", 3, types({ 0: 20, 3: 40 })]);
-  const p = palette("neon-grid", null);
+  const p = palette("carbon", null);
   // The added types are listed only when the scan has some; "Other" is last.
   assert.deepEqual(
     legend("type", p, 0, root.split).map((k) => k.size),
@@ -416,7 +416,7 @@ test("empty, single-file, all-tiny and very deep folders lay out and draw", () =
   const tiny = folder("tiny", Array.from({ length: 1000 }, (_, i) => node(`t${i}`, 4096)));
   const zero = folder("zero", [node("nothing", 0)]);
   const cases = { empty: folder("empty", []), zero, one: folder("one", [node("only", 1)]), tiny, deep };
-  const p = palette("neon-grid", null);
+  const p = palette("carbon", null);
   const st = { mode: "type", palette: p, now: 0, px: 12, font: "sans-serif", code: "monospace" };
   for (const [name, root] of Object.entries(cases)) {
     for (const [w, h] of [[330, 330], [848, 671], [1, 1]]) {
@@ -444,7 +444,7 @@ test("a slice drawn again reuses its path and label", () => {
   const { ctx, calls } = checkedCanvas();
   const g = ringGeom(600, 600);
   const [arc] = ringArcs(sample());
-  const st = { mode: "folder", palette: palette("neon-grid", null), now: 0, px: 12, font: "sans-serif", code: "monospace" };
+  const st = { mode: "folder", palette: palette("carbon", null), now: 0, px: 12, font: "sans-serif", code: "monospace" };
   const cache = ringCache();
   drawArc(ctx, g, arc, st, cache);
   const first = cache.slices.get(arc);

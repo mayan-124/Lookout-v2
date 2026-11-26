@@ -44,12 +44,12 @@
         tabindex={look.theme === t.id ? 0 : -1}
         onclick={() => setTheme(t.id)}
       >
-        <span>{t.name}</span>
-        <span class="dots" aria-hidden="true">
-          {#each [t.base, t.tint1, t.tint2, t.accent] as color}
-            <i style:background={color}></i>
-          {/each}
+        <span class="sw" aria-hidden="true" style:background={t.panel}>
+          <i class="line" style:background={t.text}></i>
+          <i class="line short" style:background={t.muted}></i>
+          <i class="dot" style:background={t.accent}></i>
         </span>
+        <span>{t.name}</span>
       </button>
     {/each}
   </div>
@@ -135,7 +135,7 @@
   }
   .themes {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
   }
   .theme {
@@ -144,7 +144,7 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    padding: 8px 12px;
+    padding: 8px;
     border: 1px solid var(--hairline);
     border-radius: var(--r-md);
     background: var(--btn-bg);
@@ -163,14 +163,30 @@
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
-  .dots {
+  .sw {
+    position: relative;
     display: flex;
+    flex-direction: column;
+    justify-content: center;
     gap: 6px;
-  }
-  .dots i {
-    width: 12px;
-    height: 12px;
+    height: 44px;
+    padding: 0 10px;
     border: 1px solid var(--hover-border);
+    border-radius: var(--r-sm);
+  }
+  .line {
+    width: 45%;
+    height: 4px;
+    border-radius: var(--r-pill);
+  }
+  .line.short {
+    width: 30%;
+  }
+  .dot {
+    position: absolute;
+    right: 10px;
+    width: 14px;
+    height: 14px;
     border-radius: 50%;
   }
   .accents {

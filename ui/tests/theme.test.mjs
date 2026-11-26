@@ -25,16 +25,17 @@ const files = readdirSync(src).filter((f) => /\.(css|svelte)$/.test(f));
 const source = files.map((f) => readFileSync(new URL(f, src), "utf8")).join("\n");
 
 test("every theme has a unique id and valid hex colors; the default exists", () => {
-  assert.equal(THEMES.length, 8);
+  assert.equal(THEMES.length, 6);
   assert.equal(new Set(THEMES.map((t) => t.id)).size, THEMES.length);
   for (const t of THEMES) {
     assert.ok(t.name, t.id);
-    for (const key of ["base", "tint1", "tint2", "accent"]) assert.match(t[key], HEX, `${t.id} ${key}`);
+    for (const key of ["panel", "text", "muted", "accent"]) assert.match(t[key], HEX, `${t.id} ${key}`);
     // A theme's own accent is never altered.
-    assert.deepEqual(usableAccent(t.accent, t.base), { accent: t.accent, lightened: false }, t.id);
+    assert.deepEqual(usableAccent(t.accent, t.panel), { accent: t.accent, lightened: false }, t.id);
   }
-  assert.equal(themeById(DEFAULT_THEME).id, "neon-grid");
-  assert.equal(themeById("no-such-theme").id, DEFAULT_THEME);
+  assert.equal(themeById(DEFAULT_THEME).id, "carbon");
+  for (const gone of ["no-such-theme", "aurora", "neon-grid", "synthwave", "plasma", "ice-chrome", "solar-flare", "matrix"])
+    assert.equal(themeById(gone).id, "carbon", gone);
 });
 
 test("applying a theme sets every variable the styles use", () => {
@@ -42,9 +43,7 @@ test("applying a theme sets every variable the styles use", () => {
     const set = new Map();
     applyTheme({ style: { setProperty: (k, v) => set.set(k, v) } }, t.id, null);
     assert.deepEqual([...set.keys()].sort(), Object.keys(themeVars(t, null).vars).sort());
-    assert.equal(set.get("--base"), t.base);
-    assert.equal(set.get("--tint1"), t.tint1);
-    assert.equal(set.get("--tint2"), t.tint2);
+    assert.equal(set.get("--base"), t.panel);
     assert.equal(set.get("--accent"), t.accent);
     for (const value of set.values()) assert.ok(value);
     // Every var() without a fallback is defined by the theme, a stylesheet or a component.
@@ -73,32 +72,27 @@ test("a custom accent is lightened until it is readable on the base", () => {
   const hard = ["#000000", "#0000FF", "#1A1A1A", "#7A7A7A", "#FF0000", "#FFFFFF"];
   for (const t of THEMES) {
     for (const c of hard) {
-      const { accent } = usableAccent(c, t.base);
-      assert.ok(contrast(accent, t.base) >= 3, `${t.id} ${c}`);
+      const { accent } = usableAccent(c, t.panel);
+      assert.ok(contrast(accent, t.panel) >= 3, `${t.id} ${c}`);
       assert.ok(contrast(accent, onAccent(accent)) >= 4.5, `${t.id} ${c}`);
     }
   }
-  const base = themeById("neon-grid").base;
+  const base = themeById("carbon").panel;
   assert.equal(usableAccent("#000000", base).lightened, true);
   assert.deepEqual(usableAccent("#FFFFFF", base), { accent: "#FFFFFF", lightened: false });
-  assert.equal(themeVars(themeById("matrix"), "#000000").lightened, true);
-  assert.equal(themeVars(themeById("matrix"), "not a color").vars["--accent"], "#3DFF8A");
+  assert.equal(themeVars(themeById("mint"), "#000000").lightened, true);
+  assert.equal(themeVars(themeById("mint"), "not a color").vars["--accent"], "#3DD6A3");
 });
 
-test("accent and danger text reach 4.5:1 on panels and highlights; the suggestion 3:1", () => {
+test("text reaches 4.5:1 on panels and highlights; the suggestion 3:1", () => {
   for (const t of THEMES) {
     for (const choice of [null, ...ACCENT_PRESETS.map((a) => a.value), "#000000", "#0000FF", "#FF0000"]) {
       const { vars, accent } = themeVars(t, choice);
       const surfaces = textSurfaces(t);
-      const text = [
-        ["--accent-text", highlights(surfaces, accent)],
-        ["--danger", highlights(Object.values(panelColors(t)), accent)],
-      ];
-      for (const [name, lit] of text) {
-        for (const s of [...surfaces, ...lit]) assert.ok(contrast(vars[name], s) >= 4.5, `${t.id} ${choice} ${name} on ${s}`);
-      }
-      for (const p of Object.values(panelColors(t))) {
-        assert.ok(contrast(vars["--ghost"], p) >= 3, `${t.id} ghost on ${p}`);
+      for (const s of [...surfaces, ...highlights(t, surfaces, accent)]) {
+        for (const name of ["--text", "--text-soft", "--muted", "--accent-text", "--danger", "--success"])
+          assert.ok(contrast(vars[name], s) >= 4.5, `${t.id} ${choice} ${name} on ${s}`);
+        assert.ok(contrast(vars["--ghost"], s) >= 3, `${t.id} ghost on ${s}`);
       }
     }
   }
@@ -117,14 +111,13 @@ test("disk chart hues stay distinct and visible on every theme", () => {
     const { vars } = themeVars(t, null);
     const hues = [...Array(11).keys()].map((i) => vars[`--c${i}`]);
     assert.equal(new Set(hues).size, 11, t.id);
-    for (const h of hues) assert.ok(contrast(h, t.base) >= 3, `${t.id} ${h}`);
+    for (const h of hues) assert.ok(contrast(h, t.panel) >= 3, `${t.id} ${h}`);
   }
 });
 
 test("the first appearance keeps a chosen accent and drops old defaults", () => {
-  assert.deepEqual(initialAppearance(null, false), { theme: "neon-grid", accent: null });
-  assert.deepEqual(initialAppearance(null, true), { theme: "graphite", accent: null });
-  const from = (accent, accentChosen) => initialAppearance({ accent, accentChosen }, true).accent;
+  assert.deepEqual(initialAppearance(null), { theme: "carbon", accent: null });
+  const from = (accent, accentChosen) => initialAppearance({ accent, accentChosen }).accent;
   assert.equal(from("#7FE9D0", false), null);
   assert.equal(from("#7fe9d0", true), null);
   assert.equal(from("#9DB8FF", false), "#9DB8FF");

@@ -38,7 +38,7 @@
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 
   /* Colors. theme.ts holds every color value and sets these on <html>:
-     --base --tint1 --tint2 --accent --accent-text --accent-on --glass-border --text
+     --base --accent --accent-text --accent-on --text
      --text-soft --muted --ghost --shade --danger --success --c0..--c10 --c-grey
      --icon-chevron --icon-check. Everything below is derived from them. */
   --accent-bg: var(--accent);
@@ -48,22 +48,16 @@
   --match-text: var(--accent-text);
 
   /* No outer card: the window is transparent and only floating glass pieces draw. */
-  --solid-bg: color-mix(in srgb, var(--base) 95%, var(--text));
+  --solid-bg: var(--base);
+  --glass-border: color-mix(in srgb, var(--text) 14%, transparent);
 
-  /* panel: the shadow stays inside the window bounds */
-  /* a near-opaque base keeps text behind from showing through, the tints sit on it */
+  /* panel: flat, and the shadow stays inside the window bounds */
+  /* a near-opaque fill keeps text behind from showing through */
   --panel-base: color-mix(in srgb, var(--base) 96%, transparent);
-  --glass-bg:
-    linear-gradient(
-      135deg,
-      color-mix(in srgb, var(--tint1) 38%, transparent),
-      var(--panel-base) 55%,
-      color-mix(in srgb, var(--tint2) 26%, transparent)
-    ),
-    var(--panel-base);
+  --glass-bg: var(--panel-base);
   --glass-bg-dock: var(--glass-bg);
   --glass-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--text) 16%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--text) 6%, transparent),
     0 4px 14px color-mix(in srgb, var(--shade) 28%, transparent);
 
   /* controls */
@@ -71,7 +65,6 @@
   --btn-bg-hover: color-mix(in srgb, var(--text) 13%, transparent);
   --hover-border: color-mix(in srgb, var(--text) 40%, transparent);
   --chip-on-border: var(--text);
-  --chip-on-glow: color-mix(in srgb, var(--text) 35%, transparent);
   --field-bg: color-mix(in srgb, var(--base) 70%, transparent);
   --code-bg: color-mix(in srgb, var(--shade) 25%, transparent);
   --lightbox-scrim: color-mix(in srgb, var(--base) 60%, transparent);
@@ -96,7 +89,7 @@
   --chart-halo: color-mix(in srgb, var(--shade) 60%, transparent);
 }
 
-/* Glass effect off: flat solid panels, a shade lighter than the base. */
+/* Glass effect off: opaque panels, no shadow. */
 :root[data-glass="solid"] {
   --glass-bg: var(--solid-bg);
   --glass-bg-dock: var(--solid-bg);

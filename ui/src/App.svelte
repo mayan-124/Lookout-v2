@@ -2340,7 +2340,6 @@
   .chip.on {
     background: var(--accent-bg);
     border-color: var(--chip-on-border);
-    box-shadow: 0 0 0 1px var(--chip-on-glow);
     color: var(--accent-on);
     font-weight: 600;
   }
@@ -2440,7 +2439,6 @@
     height: 62px;
     border-radius: 18px;
     border-color: var(--accent-line);
-    box-shadow: 0 0 24px var(--accent-soft);
   }
   .rrow .icon,
   .rrow .thumb {
@@ -2717,7 +2715,6 @@
     padding: 9px 14px;
     border-radius: 18px;
     border-color: var(--accent);
-    box-shadow: 0 0 26px var(--accent-soft);
   }
   .row.top.selected {
     background: var(--accent-soft);

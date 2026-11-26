@@ -52,18 +52,18 @@ export function palette(themeId: string, accentChoice: string | null): Palette {
   const { vars, accent } = themeVars(theme, accentChoice);
   const hues = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => vars[`--c${i}`]);
   const grey = vars["--c-grey"];
-  const grounds = [theme.base, ...Object.values(panelColors(theme))];
+  const grounds = Object.values(panelColors(theme));
   const visible = (c: string) => grounds.every((g) => contrast(c, g) >= 3);
   // One hue from nearly white (recent) down to the darkest shade still visible.
   const hue = hues[0];
   let sink = 0;
-  while (sink < 0.9 && visible(mix(hue, theme.base, sink + 0.02))) sink += 0.02;
+  while (sink < 0.9 && visible(mix(hue, theme.panel, sink + 0.02))) sink += 0.02;
   const light = mix(hue, WHITE, 0.82);
-  const dark = mix(hue, theme.base, sink);
+  const dark = mix(hue, theme.panel, sink);
   const age = [light, mix(light, hue, 0.55), hue, mix(hue, dark, 0.55), dark];
   return {
-    base: theme.base,
-    surface: mix(theme.base, WHITE, 0.05),
+    base: theme.panel,
+    surface: theme.panel,
     text: vars["--text"],
     soft: vars["--text-soft"],
     accent,
