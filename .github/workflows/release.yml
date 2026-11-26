@@ -105,7 +105,8 @@ jobs:
           $sigFile = "$($exe.FullName).sig"
           if (-not (Test-Path $sigFile)) { throw "Missing signature $sigFile" }
           gh release create $TAG --draft --generate-notes --title $TAG 2>$null
-          $notes = gh release view $TAG --json body --jq .body
+          # gh prints one array element per line; latest.json needs "notes" to be one string
+          $notes = (gh release view $TAG --json body --jq .body) -join "`n"
           $url = "https://github.com/${env:GITHUB_REPOSITORY}/releases/download/$TAG/$($exe.Name)"
           $latest = [ordered]@{
             version  = $version

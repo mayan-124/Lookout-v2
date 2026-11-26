@@ -2,9 +2,9 @@
 
 Lookout is copyright mayan-124 (PolyForm Noncommercial 1.0.0, see LICENSE). It includes the following third-party software.
 
-The Rust crate list was produced from `cargo tree` (normal dependencies, `x86_64-pc-windows-msvc`) for the shipped programs: `lookout`, the five plugins (clipboard, files-tools, semantic, office-text, screenshot) and the `lookout-fastscan` helper. Dev-dependencies, build-only dependencies, procedural-macro crates and Lookout's own crates are left out. For packages offered under a choice of licenses (`OR`), the recipient may use the package under any one of them. License texts below are copied from the license files shipped in each package's own source, not written from memory.
+The Rust crate list was produced from `cargo tree` (normal dependencies, `x86_64-pc-windows-msvc`) for the shipped programs: `lookout`, the `lookout` command (`lookout-cli`), the five plugins (clipboard, files-tools, semantic, office-text, screenshot) and the `lookout-fastscan` helper. Dev-dependencies, build-only dependencies, procedural-macro crates and Lookout's own crates are left out. For packages offered under a choice of licenses (`OR`), the recipient may use the package under any one of them. License texts below are copied from the license files shipped in each package's own source, not written from memory.
 
-Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-into-the-user-interface) · [MPL-2.0 packages](#mpl-20-packages) · [License texts](#license-texts) · [To verify before release](#to-verify-before-release) · [Needs manual check](#needs-manual-check)
+Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-into-the-user-interface) · [Other shipped components](#other-shipped-components) · [MPL-2.0 packages](#mpl-20-packages) · [License texts](#license-texts) · [To verify before release](#to-verify-before-release) · [Needs manual check](#needs-manual-check)
 
 ## Rust crates
 
@@ -439,6 +439,50 @@ Contents: [Rust crates](#rust-crates) · [npm packages](#npm-packages-bundled-in
 - **clsx** 2.1.1 — MIT — <https://github.com/lukeed/clsx> — Copyright (c) Luke Edwards <luke.edwards05@gmail.com> (lukeed.com)
 - **esm-env** 1.2.2 — MIT — <https://github.com/benmccann/esm-env> — Copyright 2022 Benjamin McCann
 
+
+## Other shipped components
+
+Parts of the installer that are not listed as crates or npm packages above.
+
+- **Microsoft WebView2 SDK loader** 1.0.3650.58 (`WebView2LoaderStatic.lib`, shipped inside the `webview2-com-sys` crate and linked into `lookout.exe`). License text below, copied from <https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3650.58/License>. The SDK version is the latest one named in the crate's changelog.
+- **SQLite** 3.54.1 (compiled in through `libsqlite3-sys`) — public domain, <https://www.sqlite.org/copyright.html>.
+- **Rust standard library** — MIT OR Apache-2.0 (texts below), <https://github.com/rust-lang/rust>.
+- **NSIS** (the installer and uninstaller program) — Copyright (C) 1999-2026 Contributors. zlib/libpng license; its LZMA compression module is under the Common Public License 1.0 with a special exception for linking. <https://nsis.sourceforge.io/License>
+- **nsis-tauri-utils** (installer plugin) — Apache-2.0 OR MIT — Copyright (c) 2019 - 2022 Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/nsis-tauri-utils>
+- **OCR** — no OCR model or engine is shipped. Lookout calls the OCR built into Windows (`Windows.Media.Ocr`) with the languages installed on the PC.
+- **WebView2 runtime** and **Visual C++ runtime** — not shipped. The installer downloads Microsoft's WebView2 bootstrapper only if the runtime is missing.
+
+### Microsoft WebView2 SDK license
+
+```text
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * The name of Microsoft Corporation, or the names of its contributors
+may not be used to endorse or promote products derived from this
+software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
 ## MPL-2.0 packages
 
@@ -1435,10 +1479,11 @@ The Apache Software Foundation (http://www.apache.org/).
 
 These items are not Rust crates or npm packages. License not verified for any of them; no license is stated here because none was checked in a file.
 
-- bge-small-en-v1.5 model (`model.onnx`, int8 export) and its `tokenizer.json` — license not verified. Downloaded by the user on request from huggingface.co (see PRIVACY.md); not part of the installer.
-- onnxruntime.dll 1.32.0 (taken from the `onnxruntime-1.32.0-cp312-cp312-win_amd64` wheel) — license not verified. Downloaded by the user on request from files.pythonhosted.org; not part of the installer.
+- bge-small-en-v1.5 model (int8 `model.onnx` export) and its `tokenizer.json` — not part of the installer; downloaded by the user on request from huggingface.co/Xenova/bge-small-en-v1.5 (see PRIVACY.md). The base model, <https://huggingface.co/BAAI/bge-small-en-v1.5>, states MIT. The Xenova repository the files come from states no license, so the license of that export is not verified.
+- onnxruntime.dll 1.32.0 (from the `onnxruntime-1.32.0-cp312-cp312-win_amd64` wheel) — not part of the installer; downloaded by the user on request from files.pythonhosted.org. <https://pypi.org/project/onnxruntime/1.32.0/> states MIT; the license file itself was not read.
 - Application icons in `ui/src-tauri/icons/` — license not verified (origin of the artwork not recorded in the repository): `128x128.png`, `128x128@2x.png`, `32x32.png`, `64x64.png`, `Square107x107Logo.png`, `Square142x142Logo.png`, `Square150x150Logo.png`, `Square284x284Logo.png`, `Square30x30Logo.png`, `Square310x310Logo.png`, `Square44x44Logo.png`, `Square71x71Logo.png`, `Square89x89Logo.png`, `StoreLogo.png`, `icon.icns`, `icon.ico`, `icon.png`.
 - Fonts — none are bundled. The interface uses system font stacks (`Segoe UI Variable`, `Segoe UI`, `Cascadia Code`, `Cascadia Mono`, `Consolas`) from `ui/src/app.css`. No font files were found in the repository.
+- Interface icons — drawn as inline SVG paths in `ui/src`; no icon package or icon font is used. Origin of the paths not recorded in the repository, so not verified.
 
 ## Needs manual check
 
