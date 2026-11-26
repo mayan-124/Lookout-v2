@@ -308,6 +308,7 @@ fn app(e: &Env) -> App {
             synthetic_files: None,
             synthetic_uses_folders: false,
             start_menu_dirs: vec![],
+            store_apps: false,
             storage: Storage::in_memory().unwrap(),
             idle: Arc::new(lookout_core::content::idle::AlwaysIdle),
             ocr: Arc::new(lookout_core::content::ocr::NoOcr),

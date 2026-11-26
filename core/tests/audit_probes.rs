@@ -71,6 +71,7 @@ fn start(dir: &Path, root: &Path, wait: bool) -> App {
             synthetic_files: None,
             synthetic_uses_folders: false,
             start_menu_dirs: vec![start_menu],
+            store_apps: false,
             storage: Storage::with_key(
                 DataPaths::new(dir.join("data")),
                 Key::from_bytes(&[5u8; 32]).unwrap(),

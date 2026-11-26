@@ -65,6 +65,7 @@ fn start(dir: &Path, root: &Path, enable: bool) -> App {
             synthetic_files: None,
             synthetic_uses_folders: false,
             start_menu_dirs: vec![],
+            store_apps: false,
             storage: Storage::with_key(paths, Key::from_bytes(&[5u8; 32]).unwrap()).unwrap(),
             idle: Arc::new(AlwaysIdle),
             ocr: Arc::new(NoOcr),

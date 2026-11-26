@@ -1,4 +1,5 @@
-//! Installed applications, discovered from Start Menu shortcut folders.
+//! Installed applications: Start Menu shortcut folders, and the packaged
+//! (Store) apps Windows lists in its Apps folder, which have no shortcut file.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,111 @@ pub fn default_start_menu_dirs() -> Vec<PathBuf> {
         }
     }
     dirs
+}
+
+/// How a Store app is named: this prefix followed by its app user model id.
+const STORE_PREFIX: &str = r"shell:AppsFolder\";
+
+/// A packaged app's id is `PackageFamilyName!AppName`. Anything else (a path,
+/// a web address, other characters) is refused, so only an app can be started.
+fn is_store_id(id: &str) -> bool {
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    };
+    id.split_once('!')
+        .is_some_and(|(family, app)| plain(family) && plain(app))
+}
+
+/// Whether `uri` names a Store app (it is not a file on disk).
+pub fn is_store_uri(uri: &str) -> bool {
+    uri.strip_prefix(STORE_PREFIX).is_some_and(is_store_id)
+}
+
+/// Adds the Store apps among `listed` (name, app id) to `apps`. A Start Menu
+/// shortcut with the same name wins.
+pub fn add_store_apps(apps: &mut Vec<AppEntry>, listed: Vec<(String, String)>) {
+    let mut seen: HashSet<String> = apps.iter().map(|a| a.lower.clone()).collect();
+    for (name, id) in listed {
+        let lower = crate::ranking::fold_lower(&name);
+        if !is_store_id(&id)
+            || lower.is_empty()
+            || lower.contains("uninstall")
+            || !seen.insert(lower.clone())
+        {
+            continue;
+        }
+        let path = PathBuf::from(format!("{STORE_PREFIX}{id}"));
+        apps.push(AppEntry { name, lower, path });
+    }
+    apps.sort_by(|a, b| a.lower.cmp(&b.lower));
+}
+
+/// Name and id of every entry in the Windows Apps folder. Empty if Windows
+/// cannot be asked.
+#[cfg(windows)]
+pub fn list_apps_folder() -> Vec<(String, String)> {
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+    // Its own thread: COM is set up per thread, and the caller's is unknown.
+    std::thread::spawn(|| {
+        // SAFETY: paired with CoUninitialize on this thread.
+        if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_err() {
+            return Vec::new();
+        }
+        let found = read_apps_folder().unwrap_or_default();
+        // SAFETY: every COM object was dropped when `read_apps_folder` returned.
+        unsafe { CoUninitialize() };
+        found
+    })
+    .join()
+    .unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+pub fn list_apps_folder() -> Vec<(String, String)> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn read_apps_folder() -> windows::core::Result<Vec<(String, String)>> {
+    use windows::Win32::System::Com::{CoTaskMemFree, IBindCtx};
+    use windows::Win32::UI::Shell::{
+        BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, SHGetKnownFolderItem,
+        KF_FLAG_DEFAULT, SIGDN, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
+    };
+
+    fn text(item: &IShellItem, form: SIGDN) -> Option<String> {
+        // SAFETY: the returned string is ours to free, after it has been copied.
+        unsafe {
+            let p = item.GetDisplayName(form).ok()?;
+            let s = p.to_string().ok();
+            CoTaskMemFree(Some(p.0 as *const _));
+            s
+        }
+    }
+
+    // SAFETY: plain COM calls on an initialised thread.
+    let items: IEnumShellItems = unsafe {
+        let folder: IShellItem = SHGetKnownFolderItem(&FOLDERID_AppsFolder, KF_FLAG_DEFAULT, None)?;
+        folder.BindToHandler(None::<&IBindCtx>, &BHID_EnumItems)?
+    };
+    let mut out = Vec::new();
+    loop {
+        let mut next = [None];
+        let mut got = 0;
+        // SAFETY: one slot, and `got` says whether it was filled.
+        unsafe { items.Next(&mut next, Some(&mut got))? };
+        let Some(item) = next[0].take().filter(|_| got == 1) else {
+            return Ok(out);
+        };
+        if let (Some(name), Some(id)) = (
+            text(&item, SIGDN_NORMALDISPLAY),
+            text(&item, SIGDN_PARENTRELATIVEPARSING),
+        ) {
+            out.push((name, id));
+        }
+    }
 }
 
 /// Collects `.lnk` shortcuts below `dirs`, skipping uninstallers and
@@ -95,6 +201,32 @@ mod tests {
         assert_eq!(names, ["Editor", "Mine", "Notepad"]);
         let notepad = apps.iter().find(|a| a.name == "Notepad").unwrap();
         assert_eq!(notepad.path, common.join("Notepad.lnk"));
+    }
+
+    #[test]
+    fn store_apps_are_added_once_and_only_by_app_id() {
+        let mut apps = vec![AppEntry {
+            name: "Mail".into(),
+            lower: "mail".into(),
+            path: PathBuf::from("Mail.lnk"),
+        }];
+        let listed = [
+            ("Mail", "Vendor.Mail_abc!App"),
+            ("Calculator", "Vendor.Calc_abc!App"),
+            ("A desktop program", r"C:\Tools\tool.exe"),
+            ("A link", "https://example.com/!x"),
+            ("Odd", "a!b c"),
+        ];
+        add_store_apps(
+            &mut apps,
+            listed.map(|(n, i)| (n.to_owned(), i.to_owned())).to_vec(),
+        );
+        let names: Vec<_> = apps.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["Calculator", "Mail"]);
+        assert_eq!(apps[1].path, PathBuf::from("Mail.lnk"));
+        assert!(is_store_uri(&apps[0].path.to_string_lossy()));
+        assert!(!is_store_uri(r"shell:AppsFolder\..\x!y"));
+        assert!(!is_store_uri(r"C:\Apps\a!b"));
     }
 
     #[test]

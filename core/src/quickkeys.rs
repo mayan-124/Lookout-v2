@@ -295,6 +295,8 @@ impl QuickKeys {
 
 fn resolved(alias: &str, mut item: Item) -> Item {
     let gone = match &item.kind {
+        // A Store app has no file to check; opening one that was removed fails.
+        Kind::App if item.uri.as_deref().is_some_and(crate::apps::is_store_uri) => false,
         Kind::File | Kind::Folder | Kind::App => {
             item.uri.as_deref().is_none_or(|u| !Path::new(u).exists())
         }

@@ -2,7 +2,7 @@
 //! four, all in the `Instant` tier: calculator, unit conversion, apps and file names.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::apps::AppEntry;
 use crate::calc;
@@ -129,8 +129,11 @@ impl Source for UnitsSource {
     }
 }
 
+/// The app list: Store apps are added to it after start.
+pub type SharedApps = Arc<RwLock<Vec<AppEntry>>>;
+
 pub struct AppsSource {
-    apps: Vec<AppEntry>,
+    apps: SharedApps,
     frecency: Arc<FrecencyStore>,
     weights: RankingWeights,
     clock: fn() -> u32,
@@ -139,15 +142,22 @@ pub struct AppsSource {
 impl AppsSource {
     pub fn new(apps: Vec<AppEntry>, frecency: Arc<FrecencyStore>, weights: RankingWeights) -> Self {
         Self {
-            apps,
+            apps: Arc::new(RwLock::new(apps)),
             frecency,
             weights,
             clock: unix_now,
         }
     }
 
+    pub fn shared(&self) -> SharedApps {
+        self.apps.clone()
+    }
+
     pub fn app_count(&self) -> usize {
-        self.apps.len()
+        self.apps
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     fn item(&self, app: &AppEntry, match_quality: f32, now: i64) -> Item {
@@ -196,8 +206,9 @@ impl Source for AppsSource {
         let folded: Vec<String> = q.tokens.iter().map(|t| ranking::fold_lower(t)).collect();
         let tokens: Vec<&[u8]> = folded.iter().map(String::as_bytes).collect();
         let now = i64::from((self.clock)());
+        let apps = self.apps.read().unwrap_or_else(PoisonError::into_inner);
         let mut items = Vec::new();
-        for app in &self.apps {
+        for app in apps.iter() {
             if ctx.is_cancelled() {
                 return;
             }
@@ -223,7 +234,7 @@ impl Source for AppsSource {
         if items.is_empty() {
             if let [t] = tokens.as_slice() {
                 if t.iter().all(u8::is_ascii_lowercase) {
-                    for app in &self.apps {
+                    for app in apps.iter() {
                         let quality = if (2..=4).contains(&t.len()) {
                             initials_prefix(app.lower.as_bytes(), t).then_some(INITIALS_QUALITY)
                         } else if t.len() >= 5 {

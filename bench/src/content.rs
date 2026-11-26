@@ -170,6 +170,7 @@ fn start(
             synthetic_files: None,
             synthetic_uses_folders: false,
             start_menu_dirs: vec![],
+            store_apps: false,
             storage: Storage::with_key(paths, Key::from_bytes(&[5u8; 32]).ok_or("bad key")?)
                 .map_err(|e| e.to_string())?,
             idle,

@@ -548,6 +548,13 @@ struct ShellLauncher;
 
 impl Launcher for ShellLauncher {
     fn open(&self, path: &std::path::Path) -> std::io::Result<()> {
+        // Explorer starts a Store app from its Apps folder name.
+        if path.to_str().is_some_and(lookout_core::apps::is_store_uri) {
+            return std::process::Command::new("explorer.exe")
+                .arg(path)
+                .spawn()
+                .map(drop);
+        }
         open::that_detached(path)
     }
 }
@@ -1833,6 +1840,7 @@ fn start_lookout(app: &AppHandle, services: &Services) -> Option<Lookout> {
         synthetic_files: services.flags.synthetic_index,
         synthetic_uses_folders: services.flags.synthetic_with_folders,
         start_menu_dirs: default_start_menu_dirs(),
+        store_apps: true,
         storage,
         idle: Arc::new(SystemIdle),
         ocr: Arc::new(WindowsOcr),

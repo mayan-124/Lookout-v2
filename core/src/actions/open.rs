@@ -121,6 +121,21 @@ impl Action for OpenAction {
             .uri
             .as_deref()
             .ok_or_else(|| ActionError::Refused("that result has nothing to open".into()))?;
+        // A Store app is not a file: there is nothing on disk to look at.
+        if target.kind == Kind::App && crate::apps::is_store_uri(uri) {
+            return Ok(Plan {
+                risk: Risk::Safe,
+                preview: Preview {
+                    from: None,
+                    title: "Open app".into(),
+                    lines: vec![uri.to_owned()],
+                    warnings: Vec::new(),
+                },
+                undoable: false,
+                snapshot: serde_json::json!({ "path": uri, "kind": target.kind }),
+                fingerprint: format!("open|{uri}"),
+            });
+        }
         let path = Path::new(uri);
         if !path.is_absolute() {
             return Err(ActionError::Refused(format!("'{uri}' is not a full path")));
@@ -193,8 +208,13 @@ impl Action for OpenAction {
         self.launcher
             .open(Path::new(path))
             .map_err(|e| ActionError::Failed(format!("could not open it: {e}")))?;
+        let message = if crate::apps::is_store_uri(path) {
+            "Opened the app".to_owned()
+        } else {
+            format!("Opened {path}")
+        };
         Ok(Executed {
-            message: format!("Opened {path}"),
+            message,
             undo_token: None,
         })
     }

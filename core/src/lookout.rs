@@ -83,6 +83,8 @@ pub struct StartOptions {
     /// Off unless explicitly asked for, so a generated-data run never reads real folders.
     pub synthetic_uses_folders: bool,
     pub start_menu_dirs: Vec<PathBuf>,
+    /// Also list the Store apps Windows knows about. Tests leave this off.
+    pub store_apps: bool,
     /// Where the encrypted `meta.db`, name snapshot and content index live.
     pub storage: Storage,
     /// When the user last used the keyboard or mouse; content work waits for idleness.
@@ -200,7 +202,7 @@ pub struct Lookout {
     targets: Arc<Mutex<HashMap<String, Target>>>,
     actions: ActionEngine,
     roots: usize,
-    apps: usize,
+    apps: crate::sources::SharedApps,
     needs_setup: bool,
     storage: Storage,
     persister: Mutex<Option<Persister>>,
@@ -466,8 +468,23 @@ impl Lookout {
                 });
         }
 
-        let app_list = apps::scan_start_menu(&opts.start_menu_dirs);
-        let app_count = app_list.len();
+        let apps_source = Arc::new(AppsSource::new(
+            apps::scan_start_menu(&opts.start_menu_dirs),
+            frecency.clone(),
+            weights,
+        ));
+        let app_list = apps_source.shared();
+        if opts.store_apps {
+            // Asking Windows takes about a second, so start does not wait for it.
+            let list = app_list.clone();
+            let _ = std::thread::Builder::new()
+                .name("lookout-store-apps".into())
+                .spawn(move || {
+                    let found = apps::list_apps_folder();
+                    let mut list = list.write().unwrap_or_else(PoisonError::into_inner);
+                    apps::add_store_apps(&mut list, found);
+                });
+        }
         let system = match opts.system.clone() {
             Some(s) => s,
             None => default_system(),
@@ -492,7 +509,7 @@ impl Lookout {
             Arc::new(crate::pathquery::PathSource),
             Arc::new(QuickSource::new(theme.clone())),
             Arc::new(PortSource::new(system.clone())),
-            Arc::new(AppsSource::new(app_list, frecency.clone(), weights)),
+            apps_source,
             files_source.clone(),
         ];
         let mut sources = sources;
@@ -623,7 +640,7 @@ impl Lookout {
             targets,
             actions,
             roots: root_count,
-            apps: app_count,
+            apps: app_list,
             needs_setup: opts.settings.needs_first_run(),
             storage,
             persister: Mutex::new(persister),
@@ -1108,7 +1125,11 @@ impl Lookout {
         Status {
             files: s.map_or(0, |s| s.files),
             folders: s.map_or(0, |s| s.folders),
-            apps: self.apps,
+            apps: self
+                .apps
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
             roots: self.roots,
             indexing: s.is_some_and(|s| s.crawling) || self.populating.load(Ordering::Acquire),
             paused: self.pause.is_paused(),
@@ -1457,6 +1478,7 @@ mod tests {
                 synthetic_files: None,
                 synthetic_uses_folders: false,
                 start_menu_dirs: vec![start_menu],
+                store_apps: false,
                 storage: crate::storage::Storage::with_key(
                     crate::storage::DataPaths::new(dir),
                     test_key(),
@@ -1838,6 +1860,7 @@ mod tests {
                 synthetic_files: None,
                 synthetic_uses_folders: false,
                 start_menu_dirs: Vec::new(),
+                store_apps: false,
                 storage: Storage::with_key(crate::storage::DataPaths::new(&data), test_key())
                     .unwrap(),
                 idle: Arc::new(crate::content::idle::AlwaysIdle),
@@ -1985,6 +2008,7 @@ mod tests {
                     synthetic_files: Some(100),
                     synthetic_uses_folders: uses_folders,
                     start_menu_dirs: Vec::new(),
+                    store_apps: false,
                     storage: Storage::in_memory().unwrap(),
                     idle: Arc::new(crate::content::idle::AlwaysIdle),
                     ocr: Arc::new(crate::content::ocr::NoOcr),
@@ -2025,6 +2049,7 @@ mod tests {
                 synthetic_files: Some(5000),
                 synthetic_uses_folders: false,
                 start_menu_dirs: Vec::new(),
+                store_apps: false,
                 storage: Storage::in_memory().unwrap(),
                 idle: Arc::new(crate::content::idle::AlwaysIdle),
                 ocr: Arc::new(crate::content::ocr::NoOcr),
