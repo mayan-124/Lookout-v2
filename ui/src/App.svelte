@@ -16,6 +16,7 @@
   import { dockItems, footerHints, helpEntries, isDiskCommand, tipsFor, typedSection, type HelpRow, type View } from "./modes";
   import { dismissDiskNotice, loadUi, setHideTips, setShow, ui } from "./uistate.svelte";
   import { indexLine, type IndexCounts } from "./indexstatus";
+  import { EMPTY_DECK, deal, fixedTips, startRotation, turn } from "./tips";
 
   type Kind = string | { custom: string };
   interface Item {
@@ -445,15 +446,38 @@
     setup = FOLDER_STEP;
   }
 
-  // Help and the Home tip come from one fixed table, asked for once.
+  // Help and the Home tips come from one fixed table, asked for once.
   let helpRows: HelpRow[] = $state([]);
   let helpSelected = $state(0);
   let helpAdvanced = $state(false);
   const helpList = $derived(helpEntries(helpRows, ui.mode, ui.show, helpAdvanced));
-  // One tip on Home; the next one at each open.
-  let tipTurn = $state(0);
-  const tips = $derived(tipsFor(helpRows, ui.mode, ui.show));
-  const tip = $derived(ui.hide_tips || tips.length === 0 ? null : tips[tipTurn % tips.length]);
+  // Three tips on Home. With motion, one row at a time is swapped on a timer;
+  // with Reduce motion they only change from one open to the next.
+  let deck = $state(EMPTY_DECK);
+  let opens = $state(-1);
+  let tipsHovered = $state(false);
+  let tipsFocused = $state(false);
+  const tipPool = $derived(tipsFor(helpRows, ui.mode, ui.show));
+  const dealt = $derived(deal(tipPool, deck));
+  const tips = $derived(
+    ui.hide_tips
+      ? []
+      : (look.reduced ? fixedTips(tipPool, Math.max(0, opens)) : dealt.shown).flatMap(
+          (e) => tipPool.find((r) => r.example === e) ?? [],
+        ),
+  );
+  // One simple icon per help group.
+  const TIP_ICONS: Record<string, string> = {
+    Search: "M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zM10.5 10.5L14 14",
+    "Time filters": "M2.5 3.5h11V14h-11zM2.5 7h11M5.5 2v3M10.5 2v3",
+    Timers: "M13 9a5 5 0 1 1-10 0 5 5 0 0 1 10 0zM8 9V6.4M6.5 2h3",
+    "Quick keys": "M7.9 10.8a2.7 2.7 0 1 1-5.4 0 2.7 2.7 0 0 1 5.4 0zM7.2 8.8l6.3-6.3M11 5l1.8 1.8",
+    System: "M10 8a2 2 0 1 1-4 0 2 2 0 0 1 4 0zM8 2v2M8 12v2M2 8h2M12 8h2M3.8 3.8l1.4 1.4M10.8 10.8l1.4 1.4M3.8 12.2l1.4-1.4M10.8 5.2l1.4-1.4",
+    Disk: "M13.5 8a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0zM8 8V2.5M8 8l4 3",
+    Clipboard: "M3.5 3h9v10.5h-9zM6 3V2h4v1M5.8 7h4.4M5.8 9.5h4.4",
+    Capture: "M2 5.5v-2A1.5 1.5 0 0 1 3.5 2h2M10 2h2.5A1.5 1.5 0 0 1 14 3.5v2M14 10.5v2a1.5 1.5 0 0 1-1.5 1.5H10M6 14H3.5A1.5 1.5 0 0 1 2 12.5v-2",
+    "Command line": "M3 4l4 4-4 4M8.5 12.5H13",
+  };
   const showHelp = $derived(isHelpQuery(query) && !panel && !disk && !card);
   async function loadHelp() {
     if (helpRows.length > 0) return;
@@ -634,7 +658,8 @@
         (query.trim() !== "" || panel || disk || setup !== null);
       notice = "";
       visible = true;
-      tipTurn += 1;
+      opens += 1;
+      tipsHovered = false;
       // A confirm card is never brought back: its preview must be seen fresh.
       if (card?.phase === "confirm") invoke("cancel_action", { ticket: card.prepared.ticket });
       card = null;
@@ -876,6 +901,26 @@
     isRunning(i) ? `${leftText(secsLeft(i))} left · ends at ${endClock(i.metadata!.end_ms as number)}` : i.subtitle;
   const home = $derived(query.trim() === "" && !panel && !disk && !card && setup === null);
   const idx = $derived(indexLine(status));
+  // No timer unless the tips are on screen and nobody is reading them.
+  $effect(() =>
+    startRotation(
+      {
+        visible,
+        home,
+        hidden: ui.hide_tips,
+        hovered: tipsHovered,
+        focused: tipsFocused,
+        reduced: look.reduced,
+        poolSize: tipPool.length,
+      },
+      () => (deck = turn(tipPool, dealt)),
+    ),
+  );
+  // Rows that leave the screen send no "pointer left" or "focus left".
+  $effect(() => {
+    if (!visible || !home) tipsHovered = false;
+    if (!home) tipsFocused = false;
+  });
   const cur = $derived(items[selected] as Item | undefined);
   const previewSource = $derived(previewable(cur) ? { path: pathOf(cur)! } : null);
 
@@ -1242,17 +1287,34 @@
             {/if}
           </section>
 
-          <section class="card glass side" aria-label={tip ? "Tip and index" : "Index"}>
-            {#if tip}
-              <h3 class="label-caps">Tip</h3>
-              <div class="tip">
-                <button class="ex" onclick={() => tryExample(tip.fill)}>{tip.example}</button>
-                <span class="what">{tip.what}</span>
-              </div>
-              <div class="tipacts">
-                <button class="btn small" onclick={() => (tipTurn += 1)}>Next tip</button>
+          <section class="card glass side" aria-label={tips.length > 0 ? "Tips and index" : "Index"}>
+            {#if tips.length > 0}
+              <div class="tiphead">
+                <h3 class="label-caps">Tips</h3>
                 <button class="btn small" onclick={() => uiChange(setHideTips(true))}>Hide tips</button>
               </div>
+              <!-- Not a live region: screen readers must not hear each swap. -->
+              <ul
+                class="tips"
+                onpointerenter={() => (tipsHovered = true)}
+                onpointerleave={() => (tipsHovered = false)}
+                onfocusin={() => (tipsFocused = true)}
+                onfocusout={(e) => (tipsFocused = e.currentTarget.contains(e.relatedTarget as Node | null))}
+              >
+                {#each tips as t, n (n)}
+                  <li>
+                    {#key t.example}
+                      <div class="tip" in:fade={{ duration: dur(160) }} out:fade={{ duration: dur(160) }}>
+                        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"
+                          ><path d={TIP_ICONS[t.group] ?? TIP_ICONS.Search} /></svg
+                        >
+                        <span class="what" title={t.what}>{t.what}</span>
+                        <button class="ex" onclick={() => tryExample(t.fill)}>{t.example}</button>
+                      </div>
+                    {/key}
+                  </li>
+                {/each}
+              </ul>
             {/if}
             <div class="idx">
               <div>
@@ -1777,19 +1839,41 @@
   .idx strong {
     font-weight: 500;
   }
-  .tip {
+  .tiphead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .tips {
+    list-style: none;
+    margin: 0;
+    padding: 0;
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-  }
-  .tipacts {
-    display: flex;
-    flex-wrap: wrap;
     gap: 8px;
+  }
+  /* The old and new tip share one cell while they crossfade. */
+  .tips li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tip {
+    grid-area: 1 / 1;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr);
+    align-items: center;
+    column-gap: 10px;
+  }
+  .tip svg {
+    grid-row: span 2;
+    color: var(--muted);
   }
   .ex {
     all: unset;
+    justify-self: start;
+    max-width: 100%;
     cursor: pointer;
     color: var(--text);
     font-size: var(--fs-md);
@@ -1804,6 +1888,12 @@
   .what {
     color: var(--muted);
     font-size: var(--fs-sm);
+  }
+  .what,
+  .ex {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* ---- results ---- */

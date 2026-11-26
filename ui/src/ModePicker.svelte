@@ -4,13 +4,15 @@
   import { setMode, ui } from "./uistate.svelte";
   import { radioKeys } from "./radiokeys";
 
+  let { label = "Mode" }: { label?: string } = $props();
+
   let error = $state("");
   const pick = async (mode: Mode) => (error = await setMode(mode));
 </script>
 
 <div class="field">
   <span class="fl">
-    <span class="ft">Mode: {modeLabel(ui)}</span>
+    <span class="ft">{label}: {modeLabel(ui)}</span>
     <span class="hint">Changes only what you see.</span>
   </span>
   <!-- svelte-ignore a11y_interactive_supports_focus (the radios take focus) -->

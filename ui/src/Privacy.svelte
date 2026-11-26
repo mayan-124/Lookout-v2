@@ -122,23 +122,17 @@
     | "features"
     | "folders"
     | "privacy"
-    | "appearance"
     | "speed"
     | "addons"
-    | "shortcuts"
-    | "status"
-    | "setup"
+    | "quickkeys"
     | "delete";
   const ADVANCED: [Section, string][] = [
     ["features", "Features"],
     ["folders", "Skipped folders"],
     ["privacy", "Privacy"],
-    ["appearance", "Appearance"],
     ["speed", "Speed"],
     ["addons", "Add-ons"],
-    ["shortcuts", "Shortcuts"],
-    ["status", "Status"],
-    ["setup", "Setup and updates"],
+    ["quickkeys", "Quick keys"],
     ["delete", "Delete my data"],
   ];
   // [switch, name, what it is, where it shows]
@@ -391,11 +385,11 @@
   </span>
 {/snippet}
 
-{#snippet toggle(title: string, hint: string, on: boolean, change: (el: HTMLInputElement) => void)}
+{#snippet toggle(title: string, hint: string, on: boolean, change: (el: HTMLInputElement) => void, disabled = false)}
   <label class="field">
     {@render field(title, hint)}
     <span class="switch">
-      <input type="checkbox" role="switch" checked={on} onchange={(e) => change(e.currentTarget)} />
+      <input type="checkbox" role="switch" checked={on} {disabled} onchange={(e) => change(e.currentTarget)} />
       <span class="track"></span>
     </span>
   </label>
@@ -437,12 +431,13 @@
       {#if section === "general"}
         <h2 id="priv-title">General</h2>
         <div class="scard">
-          <h3 class="stitle">Folders to search</h3>
+          <h3 class="stitle">Folders</h3>
           <p class="hint">Lookout only reads files inside these folders.</p>
           {@render folderList(roots, "No folders chosen", (p) => (roots = roots.filter((r) => r !== p)), "Remove")}
           <p><button bind:this={first} class="btn" onclick={() => add("roots")}>Add folder…</button></p>
         </div>
         <div class="scard">
+          <h3 class="stitle">Shortcuts</h3>
           <div class="field">
             {@render field("Open Lookout", "Click the box, then press new keys.")}
             <input
@@ -455,26 +450,64 @@
             />
           </div>
           {#if openMessage}<p class="note" role="status">{openMessage}</p>{/if}
-          <label class="field">
-            {@render field("Start with Windows", "Keeps the hotkey working after restarts.")}
-            <span class="switch">
-              <input
-                type="checkbox"
-                role="switch"
-                checked={info?.start_with_windows ?? false}
-                disabled={!info}
-                onchange={(e) => setStartWithWindows(e.currentTarget)}
-              />
-              <span class="track"></span>
-            </span>
-          </label>
+          <div class="field">
+            {@render field("Read text from the screen", "Click the box, then press new keys.")}
+            <input
+              class="code"
+              type="text"
+              readonly
+              value={info?.grab_hotkey ?? ""}
+              onkeydown={(e) => hotkeyKeydown("set_grab_hotkey", e, (t) => (grabMessage = t))}
+              aria-label="Grab text hotkey"
+            />
+          </div>
+          {#if grabMessage}<p class="note" role="status">{grabMessage}</p>{/if}
+          <div class="field">
+            {@render field("Pause", "Pauses and resumes background work from anywhere.")}
+            {#if info?.pause_hotkey}<kbd>{info.pause_hotkey}</kbd>{/if}
+          </div>
+        </div>
+        <div class="scard">
+          <h3 class="stitle">Appearance</h3>
+          <ThemePicker part="theme" />
+          <ThemePicker part="accent" />
+          {@render toggle("Glass effect", "Tinted panels. Off makes them solid.", look.glass, (el) => setGlass(el.checked))}
+          {@render toggle("Reduce motion", "Stops animations. Follows Windows until you change it.", look.reduced, (el) => setReduceMotion(el.checked))}
+          {@render toggle("Tips on Home", "Short examples of what to type.", !ui.hide_tips, (el) => choose(setHideTips(!el.checked)))}
+        </div>
+        <div class="scard">
+          <h3 class="stitle">Mode</h3>
+          <ModePicker label="Current" />
+        </div>
+        <div class="scard">
+          <h3 class="stitle">Start with Windows</h3>
+          {@render toggle("Open at sign-in", "Keeps the hotkey working after restarts.", info?.start_with_windows ?? false, setStartWithWindows, !info)}
           {#if startupMessage}<p class="hint" role="alert">{startupMessage}</p>{/if}
         </div>
         <div class="scard">
-          <ModePicker />
+          <h3 class="stitle">Setup</h3>
+          <div class="field">
+            {@render field("First-run setup", dirty ? "Save or discard your changes first." : "Folders, shortcuts, mode and theme, step by step.")}
+            <button class="btn" disabled={dirty} onclick={onsetup}>Run setup again</button>
+          </div>
         </div>
         <div class="scard">
-          <ThemePicker part="theme" />
+          <h3 class="stitle">Updates</h3>
+          <div class="field">
+            {@render field(`Version ${appVersion}`, "Connects to the internet only when you click a button here, and only receives files.")}
+            <button class="btn" disabled={updBusy} onclick={checkUpdates}>Check for updates</button>
+          </div>
+          {#if upd}
+            <div class="field">
+              {@render field(`Version ${upd.version} is available`, upd.body ?? "")}
+              <button class="btn primary" disabled={updBusy} onclick={installUpdate}>Download and install</button>
+            </div>
+          {/if}
+          {#if updMsg}<p role="status">{updMsg}</p>{/if}
+        </div>
+        <div class="scard">
+          <h3 class="stitle">Status</h3>
+          <Health />
         </div>
         <div class="scard">
           {#if confirmingReset}
@@ -547,12 +580,6 @@
         {#if contentMessage}<p class="hint" role="alert">{contentMessage}</p>{/if}
         <h3 class="label-caps">Other programs</h3>
         {@render cliSwitch()}
-      {:else if section === "appearance"}
-        <h2 id="priv-title">Appearance</h2>
-        <ThemePicker part="accent" />
-        {@render toggle("Glass effect", "Tinted panels. Off makes them solid.", look.glass, (el) => setGlass(el.checked))}
-        {@render toggle("Reduce motion", "Stops animations. Follows Windows until you change it.", look.reduced, (el) => setReduceMotion(el.checked))}
-        {@render toggle("Tips on Home", "One tip each time you open Lookout.", !ui.hide_tips, (el) => choose(setHideTips(!el.checked)))}
       {:else if section === "speed"}
         <h2 id="priv-title">Speed</h2>
         <label class="field">
@@ -590,25 +617,8 @@
       {:else if section === "addons"}
         <h2 id="priv-title">Add-ons</h2>
         <Plugins />
-      {:else if section === "shortcuts"}
-        <h2 id="priv-title">Shortcuts</h2>
-        <div class="field">
-          {@render field("Read text from the screen", "Click the box, then press new keys.")}
-          <input
-            class="code"
-            type="text"
-            readonly
-            value={info?.grab_hotkey ?? ""}
-            onkeydown={(e) => hotkeyKeydown("set_grab_hotkey", e, (t) => (grabMessage = t))}
-            aria-label="Grab text hotkey"
-          />
-        </div>
-        {#if grabMessage}<p class="note" role="status">{grabMessage}</p>{/if}
-        <div class="field">
-          {@render field("Pause", "Pauses and resumes background work from anywhere.")}
-          {#if info?.pause_hotkey}<kbd>{info.pause_hotkey}</kbd>{/if}
-        </div>
-        <h3 class="label-caps">Quick keys</h3>
+      {:else if section === "quickkeys"}
+        <h2 id="priv-title">Quick keys</h2>
         <p class="hint">
           A short word for anything you open often. Type it and a space to put it on top. For apps and system actions,
           select the result and click Set quick key.
@@ -642,26 +652,6 @@
           <button class="btn small primary" onclick={addKey}>Add</button>
         </div>
         {#if qkError}<p class="danger-text" role="alert">{qkError}</p>{/if}
-      {:else if section === "status"}
-        <h2 id="priv-title">Status</h2>
-        <Health />
-      {:else if section === "setup"}
-        <h2 id="priv-title">Setup and updates</h2>
-        <div class="field">
-          {@render field("First-run setup", dirty ? "Save or discard your changes first." : "Folders, shortcuts, mode and theme, step by step.")}
-          <button class="btn" disabled={dirty} onclick={onsetup}>Run setup again</button>
-        </div>
-        <div class="field">
-          {@render field("Updates", `Version ${appVersion}. Connects to the internet only when you click a button here, and only receives files.`)}
-          <button class="btn" disabled={updBusy} onclick={checkUpdates}>Check for updates</button>
-        </div>
-        {#if upd}
-          <div class="field">
-            {@render field(`Version ${upd.version} is available`, upd.body ?? "")}
-            <button class="btn primary" disabled={updBusy} onclick={installUpdate}>Download and install</button>
-          </div>
-        {/if}
-        {#if updMsg}<p role="status">{updMsg}</p>{/if}
       {:else}
         <h2 id="priv-title" class="danger-text">Delete my data</h2>
         {#if confirmingDelete}
