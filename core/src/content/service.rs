@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::hash::{BuildHasher, RandomState};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU8;
@@ -583,7 +584,7 @@ impl Worker {
     /// images), works the queue, and drops documents of files that are gone,
     /// excluded or no longer under a root.
     fn full_scan(&mut self) {
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut seen = Seen::default();
         let mut complete = true;
         self.more = false;
         self.refresh_size();
@@ -596,17 +597,18 @@ impl Worker {
                 break;
             }
         }
+        // The queue may wait hours for the user to be away: only what it needs
+        // is held meanwhile.
+        let known = self.known.take().unwrap_or_default();
+        let gone: Vec<String> = known
+            .into_keys()
+            .filter(|k| complete && !seen.contains(k))
+            .collect();
+        drop(seen);
         if complete && !self.run_queue(queue) {
             complete = false;
         }
         if complete && !self.stopped() {
-            let gone: Vec<String> = self
-                .known
-                .iter()
-                .flat_map(HashMap::keys)
-                .filter(|k| !seen.contains(*k))
-                .cloned()
-                .collect();
             for p in gone {
                 let _ = self.cfg.store.remove_path(&p);
                 self.uncommitted += 1;
@@ -616,7 +618,6 @@ impl Worker {
                 self.rescan = true;
             }
         }
-        self.known = None;
         self.clear_progress();
         self.commit();
     }
@@ -637,7 +638,7 @@ impl Worker {
     /// Walks `dir` and adds every file that needs reading to `out`. Online-only
     /// cloud files are never opened (that would download them). Returns false
     /// if interrupted by a stop.
-    fn collect(&mut self, dir: &Path, seen: &mut HashSet<String>, out: &mut Vec<Cand>) -> bool {
+    fn collect(&mut self, dir: &Path, seen: &mut Seen, out: &mut Vec<Cand>) -> bool {
         let mut stack = vec![dir.to_owned()];
         while let Some(d) = stack.pop() {
             if !self.gate() {
@@ -658,7 +659,7 @@ impl Worker {
                 }
                 let meta = ent.metadata().ok();
                 if ft.is_file() {
-                    seen.insert(super::store::path_key(&path.to_string_lossy()));
+                    seen.insert(&super::store::path_key(&path.to_string_lossy()));
                 }
                 if meta.as_ref().is_some_and(is_online_only) {
                     continue;
@@ -819,7 +820,7 @@ impl Worker {
             }
             Ok(m) if m.file_type().is_symlink() => {}
             Ok(m) if m.is_dir() => {
-                let mut seen = HashSet::new();
+                let mut seen = Seen::default();
                 let mut queue = Vec::new();
                 if self.collect(path, &mut seen, &mut queue) {
                     self.run_queue(queue);
@@ -938,6 +939,24 @@ impl Worker {
         if instant || self.uncommitted >= batch {
             self.commit();
         }
+    }
+}
+
+/// The files a walk has met, as hashes of their keys: the folders may hold many
+/// times more files than the index, and their paths would take tens of MB.
+#[derive(Default)]
+struct Seen {
+    hasher: RandomState,
+    hashes: HashSet<u64>,
+}
+
+impl Seen {
+    fn insert(&mut self, key: &str) {
+        self.hashes.insert(self.hasher.hash_one(key));
+    }
+
+    fn contains(&self, key: &str) -> bool {
+        self.hashes.contains(&self.hasher.hash_one(key))
     }
 }
 
