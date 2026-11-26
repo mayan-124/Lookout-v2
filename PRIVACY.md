@@ -8,4 +8,6 @@ Two things use the network, and only when you ask:
 
 **Updates (optional, manual).** Lookout never checks for updates by itself. It connects to github.com only when you click "Check for updates" or "Download and install" in Settings, and it only receives files: a small `latest.json` describing the newest version, and the installer if you choose to install it. Nothing about you, your PC or your files is sent (no telemetry, no machine ID). The update's signature is checked before it is installed; if the check or the download fails, nothing changes. GitHub sees the usual connection data (your IP address).
 
+The text of recent searches (at most 50, never text that looks like a secret) is kept encrypted on your PC. "Remember my searches" and "Clear history" are in Settings > Privacy.
+
 Nothing is indexed until you pick folders. "Delete my index" and "Delete my meaning index" in Settings remove what Lookout built, and the uninstaller can remove all application data.

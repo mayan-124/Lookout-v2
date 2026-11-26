@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { tipsFor } from "../src/modes.ts";
 import { EMPTY_DECK, TIP_MS, deal, fixedTips, startRotation, turn } from "../src/tips.ts";
 
-const row = (example, advanced = false) => ({ group: "Search", what: example, example, fill: example, feature: null, advanced });
+const row = (example, advanced = false) => ({ id: example, category: "Search", example, mode: "simple", advanced });
 const POOL = ["a", "b", "c", "d", "e"].map((e) => row(e));
 
 const ON = { visible: true, home: true, hidden: false, hovered: false, focused: false, reduced: false, poolSize: 5 };

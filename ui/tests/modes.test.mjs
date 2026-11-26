@@ -19,23 +19,23 @@ const SHOW = {
   full: { disk: true, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true },
 };
 
-const row = (group, feature = null, advanced = false) => ({
-  group,
-  what: group,
-  example: group,
-  fill: group,
+const row = (category, feature = null, advanced = false, mode = "simple") => ({
+  id: category,
+  category,
+  example: category,
   feature,
   advanced,
+  mode,
 });
 const ROWS = [
   row("Search"),
   row("Timers", "timers"),
-  row("Quick keys", "quick_keys", true),
+  row("Quick keys", "quick_keys", true, "standard"),
   row("System", null, true),
-  row("Disk", "disk", true),
-  row("Clipboard", "clipboard"),
+  row("Disk", "disk", true, "full"),
+  row("Clipboard", "clipboard", false, "standard"),
 ];
-const names = (entries) => entries.map((e) => ("row" in e ? e.row.group : "advanced"));
+const names = (entries) => entries.map((e) => ("row" in e ? e.row.category : "advanced"));
 
 test("the dock lists what each mode shows and keeps section numbers", () => {
   const dock = (mode) => dockItems(SHOW[mode]).map((d) => d.name);
@@ -61,14 +61,14 @@ test("help folds advanced groups outside Full", () => {
     "System",
   ]);
   assert.deepEqual(names(helpEntries(ROWS, "simple", SHOW.simple, true)), ["Search", "Timers", "advanced", "System"]);
-  assert.deepEqual(names(helpEntries(ROWS, "full", SHOW.full, false)), ROWS.map((r) => r.group));
+  assert.deepEqual(names(helpEntries(ROWS, "full", SHOW.full, false)), ROWS.map((r) => r.category));
 });
 
 test("tips follow the mode and the switches", () => {
-  const tips = (mode, show = SHOW[mode]) => tipsFor(ROWS, mode, show).map((r) => r.group);
+  const tips = (mode, show = SHOW[mode]) => tipsFor(ROWS, mode, show).map((r) => r.category);
   assert.deepEqual(tips("simple"), ["Search", "Timers"]);
   assert.deepEqual(tips("standard"), ["Search", "Timers", "Clipboard"]);
-  assert.deepEqual(tips("full"), ROWS.map((r) => r.group));
+  assert.deepEqual(tips("full"), ROWS.map((r) => r.category));
   // A switch turned on shows its basic tips; advanced ones still wait for Full.
   assert.deepEqual(tips("standard", { ...SHOW.standard, disk: true, timers: false }), ["Search", "Clipboard"]);
 });

@@ -134,6 +134,8 @@ pub struct Settings {
     pub chart_colors: String,
     /// The window stays on top and does not hide when it loses focus.
     pub pinned: bool,
+    /// Keeps the text of recent searches (encrypted) for the Up arrow.
+    pub remember_searches: bool,
     /// Lets programs running as this Windows user search through the `lookout`
     /// command (a local named pipe). Off unless the user turns it on.
     pub cli_access: bool,
@@ -211,6 +213,7 @@ impl Default for Settings {
             content_index_max_mb: DEFAULT_CONTENT_INDEX_MB,
             appearance: None,
             chart_colors: CHART_COLORS[0].to_owned(),
+            remember_searches: true,
             cli_access: false,
             start_with_windows: None,
             pinned: false,
@@ -221,6 +224,16 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Saves the "Remember my searches" switch; on any error nothing changes.
+    pub fn set_remember_searches(&mut self, on: bool, path: &Path) -> Result<(), String> {
+        let mut next = self.clone();
+        next.remember_searches = on;
+        next.save(path)
+            .map_err(|e| format!("Could not save settings: {e}"))?;
+        *self = next;
+        Ok(())
+    }
+
     /// The content index cap in bytes. The settings screen enforces
     /// [`MIN_CONTENT_INDEX_MB`]; a hand-edited file may go lower (never 0).
     pub fn content_index_max_bytes(&self) -> u64 {
@@ -519,6 +532,18 @@ mod tests {
     }
 
     #[test]
+    fn remembering_searches_is_on_until_switched_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        // Also for a settings file from before the switch existed.
+        std::fs::write(&path, r#"{"first_run_done": true}"#).unwrap();
+        let mut s = Settings::load(&path).unwrap();
+        assert!(s.remember_searches);
+        s.set_remember_searches(false, &path).unwrap();
+        assert!(!Settings::load(&path).unwrap().remember_searches);
+    }
+
+    #[test]
     fn skipping_the_setup_is_remembered() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
@@ -757,6 +782,7 @@ mod tests {
             }),
             chart_colors: "type".into(),
             pinned: true,
+            remember_searches: false,
             cli_access: true,
             start_with_windows: Some(true),
             window_positions: [("M|0,0|1x1".to_owned(), (5, 6))].into(),

@@ -28,7 +28,7 @@ pub mod engine;
 pub mod exclude;
 pub mod fixture_image;
 pub mod frecency;
-pub mod help;
+pub mod history;
 pub mod index_service;
 pub mod item;
 pub mod latency;

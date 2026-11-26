@@ -1,7 +1,7 @@
 <script lang="ts">
-  // What Lookout can do. The rows come from a fixed table in the app; the mode
-  // decides which are listed.
-  import type { HelpEntry } from "./modes";
+  // What Lookout can do. The rows come from the registry; the mode decides which
+  // are listed.
+  import type { Action, HelpEntry } from "./modes";
 
   let {
     entries,
@@ -11,7 +11,7 @@
   }: {
     entries: HelpEntry[];
     selected: number;
-    onpick: (text: string) => void;
+    onpick: (action: Action) => void;
     ontoggle: () => void;
   } = $props();
 
@@ -24,12 +24,12 @@
     const e = entries[i];
     const before = entries[i - 1];
     if (!("row" in e)) return null;
-    return before && "row" in before && before.row.group === e.row.group ? null : e.row.group;
+    return before && "row" in before && before.row.category === e.row.category ? null : e.row.category;
   }
 </script>
 
 <div class="help" bind:this={list}>
-  {#each entries as e, i ("row" in e ? e.row.example : "advanced")}
+  {#each entries as e, i ("row" in e ? e.row.id : "advanced")}
     {#if heading(i)}
       <h3 class="label-caps">{heading(i)}</h3>
     {/if}
@@ -42,10 +42,10 @@
       aria-expanded={"row" in e ? undefined : e.open}
       onmousemove={() => (selected = i)}
       onfocus={() => (selected = i)}
-      onclick={() => ("row" in e ? onpick(e.row.fill) : ontoggle())}
+      onclick={() => ("row" in e ? onpick(e.row) : ontoggle())}
     >
       {#if "row" in e}
-        <span class="what">{e.row.what}</span>
+        <span class="what">{e.row.description}</span>
         <span class="code example">{e.row.example}</span>
       {:else}
         <span class="label-caps">{e.open ? "▾" : "▸"} Advanced</span>

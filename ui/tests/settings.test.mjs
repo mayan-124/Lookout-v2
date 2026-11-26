@@ -39,6 +39,11 @@ test("none of those controls is repeated or left under Advanced", () => {
   }
 });
 
+test("Privacy has the history switch and Clear history", () => {
+  const privacy = rest.slice(rest.indexOf('section === "privacy"}'), rest.indexOf('section === "speed"}'));
+  for (const c of ['"Remember my searches"', "onclick={clearHistory}"]) assert.ok(privacy.includes(c), c);
+});
+
 test("the Advanced menu lists only what stayed there, each with a page", () => {
   const menu = src.slice(src.indexOf("const ADVANCED"), src.indexOf("// [switch, name"));
   const ids = [...menu.matchAll(/\["(\w+)", "/g)].map((m) => m[1]);

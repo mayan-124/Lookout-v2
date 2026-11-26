@@ -13,7 +13,9 @@
   import Setup from "./Setup.svelte";
   import Help from "./Help.svelte";
   import { FOLDER_STEP, chooseFoldersTarget, isHelpQuery, stepOnShow } from "./setupflow";
-  import { dockItems, footerHints, helpEntries, isDiskCommand, tipsFor, typedSection, type HelpRow, type View } from "./modes";
+  import { dockItems, footerHints, helpEntries, isDiskCommand, tipsFor, typedSection, type Action, type View } from "./modes";
+  import { ACTIONS, ICONS, actionById, homeActions } from "./registry";
+  import { ghostFor, opensHistory, placeSuggestions, readLine, suggest, worthRemembering } from "./discover";
   import { dismissDiskNotice, loadUi, setHideTips, setShow, ui } from "./uistate.svelte";
   import { indexLine, type IndexCounts } from "./indexstatus";
   import { EMPTY_DECK, deal, fixedTips, startRotation, turn } from "./tips";
@@ -194,6 +196,8 @@
       | undefined,
   );
   let done = $state(true);
+  // How the last answered command was read ("Timer · 10 minutes").
+  let understoodLine = $state("");
   // Date and kind words the backend understood ("PDF", "modified last week"),
   // shown as removable labels. `skip` lists the ones the user removed.
   let filters = $state<{ kind: string | null; date: string | null } | null>(null);
@@ -314,6 +318,7 @@
     link: "Link",
     timer: "Timer",
     quickkey: "Quick key",
+    action: "Action",
   };
   // Plugin results carry messages (a rename preview, an error): wrap, never cut off.
   const isPlugin = (i: Item) => !(i.source in GROUPS);
@@ -371,14 +376,125 @@
     tick().then(() => input?.focus());
   }
   function tryExample(text: string) {
+    setInput(text);
+  }
+  /** Puts text in the box, searches for it and leaves the cursor at its end. */
+  function setInput(text: string) {
     query = text;
+    skip = [];
+    earlier = null;
     run(text);
-    input?.focus();
+    tick().then(() => {
+      input?.focus();
+      input?.setSelectionRange(text.length, text.length);
+      caretAtEnd = true;
+    });
+  }
+
+  // An action that starts one result as soon as the search for it has answered.
+  let pending: { generation: number; find: (i: Item) => boolean; missing: string } | null = null;
+  function runItem(text: string, find: (i: Item) => boolean, missing: string) {
+    setInput(text);
+    pending = { generation, find, missing };
+  }
+  let settingsStart: "general" | "appearance" | "privacy" = $state("general");
+  function openSettings(start: typeof settingsStart) {
+    disk = false;
+    earlier = null;
+    settingsStart = start;
+    panel = true;
+  }
+  /** Choosing a suggestion or a quick-action button. */
+  function runAction(a: Action) {
+    if (card) return;
+    switch (a.run) {
+      case "fill":
+      case "show":
+        setInput(a.stem ?? a.example);
+        break;
+      case "disk":
+        openDisk();
+        break;
+      case "settings":
+        openSettings("general");
+        break;
+      case "appearance":
+        openSettings("appearance");
+        break;
+      case "privacy":
+        openSettings("privacy");
+        break;
+      case "setup":
+        query = "";
+        run("");
+        runSetupAgain();
+        break;
+      case "theme":
+        runItem(a.example, (i) => i.id === "system:dark_mode", "");
+        break;
+      case "capture":
+        runItem(
+          a.commands?.[0] ?? a.example,
+          (i) => i.metadata?.plugin_action === a.target,
+          "Capture needs the Screenshot add-on. Turn it on in Settings > Advanced > Add-ons.",
+        );
+        break;
+    }
+  }
+  /** A help row or tip: shows its example; screens open at once. */
+  function pickAction(a: Action) {
+    if (a.try === undefined && ["settings", "appearance", "privacy", "setup"].includes(a.run)) runAction(a);
+    else tryExample(a.try ?? a.example);
+  }
+  const actionItem = (a: Action): Item => ({
+    id: `action:${a.id}`,
+    kind: "action",
+    title: a.name,
+    subtitle: a.description,
+    uri: null,
+    source: "action",
+    score: 0,
+    metadata: { action: a.id, example: a.example },
+  });
+  const actionOf = (i: Item) => (i.source === "action" ? actionById(i.metadata!.action as string) : undefined);
+
+  // Earlier searches, newest first; asked for only when the list is opened.
+  let earlier = $state<string[] | null>(null);
+  let earlierAt = $state(0);
+  // The faint rest of a command. Not while an input method is composing, with
+  // the cursor elsewhere, or after Esc dismissed it for this text.
+  let caretAtEnd = $state(true);
+  let composing = $state(false);
+  let ghostOff = $state<string | null>(null);
+  function trackCaret() {
+    if (input) caretAtEnd = input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
+  }
+  const ghost = $derived(
+    caretAtEnd && !composing && ghostOff !== query && !panel && !disk && !card && earlier === null
+      ? ghostFor(query, ACTIONS, ui.mode, ui.show)
+      : "",
+  );
+
+  async function openHistory() {
+    const asked = query;
+    const found = await invoke<string[]>("search_history").catch(() => []);
+    if (query !== asked || found.length === 0 || panel || disk || card) return;
+    earlier = found;
+    earlierAt = 0;
+  }
+  // Leaving the search view drops the list and the page Settings was asked for.
+  $effect(() => {
+    if (panel || disk || card) earlier = null;
+    if (!panel) settingsStart = "general";
+  });
+  function remember(text: string) {
+    if (worthRemembering(text)) invoke("record_search", { text }).catch(() => {});
   }
   // Which action Enter starts for a result. The backend decides what is allowed;
   // this only names the action.
   const defaultAction = (i: Item | undefined): string | null => {
     if (!i) return null;
+    if (i.source === "action") return "action";
     const plugin = i.metadata?.default_action;
     if (typeof plugin === "string") return plugin;
     if (i.kind === "file" || i.kind === "folder" || i.kind === "app") return "open";
@@ -446,18 +562,17 @@
     setup = FOLDER_STEP;
   }
 
-  // Help and the Home tips come from one fixed table, asked for once.
-  let helpRows: HelpRow[] = $state([]);
+  // Help, the Home tips and the quick actions all come from the registry.
   let helpSelected = $state(0);
   let helpAdvanced = $state(false);
-  const helpList = $derived(helpEntries(helpRows, ui.mode, ui.show, helpAdvanced));
+  const helpList = $derived(helpEntries(ACTIONS, ui.mode, ui.show, helpAdvanced));
   // Three tips on Home. With motion, one row at a time is swapped on a timer;
   // with Reduce motion they only change from one open to the next.
   let deck = $state(EMPTY_DECK);
   let opens = $state(-1);
   let tipsHovered = $state(false);
   let tipsFocused = $state(false);
-  const tipPool = $derived(tipsFor(helpRows, ui.mode, ui.show));
+  const tipPool = $derived(tipsFor(ACTIONS, ui.mode, ui.show));
   const dealt = $derived(deal(tipPool, deck));
   const tips = $derived(
     ui.hide_tips
@@ -466,24 +581,8 @@
           (e) => tipPool.find((r) => r.example === e) ?? [],
         ),
   );
-  // One simple icon per help group.
-  const TIP_ICONS: Record<string, string> = {
-    Search: "M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zM10.5 10.5L14 14",
-    "Time filters": "M2.5 3.5h11V14h-11zM2.5 7h11M5.5 2v3M10.5 2v3",
-    Timers: "M13 9a5 5 0 1 1-10 0 5 5 0 0 1 10 0zM8 9V6.4M6.5 2h3",
-    "Quick keys": "M7.9 10.8a2.7 2.7 0 1 1-5.4 0 2.7 2.7 0 0 1 5.4 0zM7.2 8.8l6.3-6.3M11 5l1.8 1.8",
-    System: "M10 8a2 2 0 1 1-4 0 2 2 0 0 1 4 0zM8 2v2M8 12v2M2 8h2M12 8h2M3.8 3.8l1.4 1.4M10.8 10.8l1.4 1.4M3.8 12.2l1.4-1.4M10.8 5.2l1.4-1.4",
-    Disk: "M13.5 8a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0zM8 8V2.5M8 8l4 3",
-    Clipboard: "M3.5 3h9v10.5h-9zM6 3V2h4v1M5.8 7h4.4M5.8 9.5h4.4",
-    Capture: "M2 5.5v-2A1.5 1.5 0 0 1 3.5 2h2M10 2h2.5A1.5 1.5 0 0 1 14 3.5v2M14 10.5v2a1.5 1.5 0 0 1-1.5 1.5H10M6 14H3.5A1.5 1.5 0 0 1 2 12.5v-2",
-    "Command line": "M3 4l4 4-4 4M8.5 12.5H13",
-  };
+  const quickActions = $derived(homeActions(ui.mode, ui.show));
   const showHelp = $derived(isHelpQuery(query) && !panel && !disk && !card);
-  async function loadHelp() {
-    if (helpRows.length > 0) return;
-    helpRows = await invoke<HelpRow[]>("help_entries").catch(() => []);
-  }
-
   function closePanel() {
     panel = false;
     loadPinned();
@@ -496,6 +595,8 @@
     cleared = false;
     generation += 1;
     notice = "";
+    pending = null;
+    understoodLine = "";
     if (text.trim() === "") {
       all = [];
       filters = null;
@@ -512,7 +613,6 @@
       done = true;
       selected = 0;
       helpSelected = 0;
-      loadHelp();
       return;
     }
     done = false;
@@ -541,14 +641,30 @@
     // One block per group, in the order each group first appears; similar-meaning matches go last.
     const rest = u.items.filter((i) => i.source !== "semantic");
     const order = [...new Set(rest.map(groupOf))];
-    all = [
+    const results = [
       ...order.flatMap((g) => rest.filter((i) => groupOf(i) === g)),
       ...u.items.filter((i) => i.source === "semantic"),
     ];
     done = u.done;
     filters = u.filters && (u.filters.kind || u.filters.date) ? u.filters : null;
-    const at = keep ? items.findIndex((i) => i.id === keep) : -1;
+    // Suggestions wait for something to sit among, unless the word is a command.
+    const found = suggest(query, ACTIONS, ui.mode, ui.show);
+    const ready = u.done || results.length > 0 || found.some((s) => s.command);
+    all = ready ? placeSuggestions(results, found, query, actionItem) : results;
+    understoodLine = readLine(results, query);
+    // A suggestion never keeps the selection when better rows arrive above it.
+    const at = keep && !keep.startsWith("action:") ? items.findIndex((i) => i.id === keep) : -1;
     selected = at >= 0 ? at : 0;
+    if (pending?.generation === u.generation) {
+      const wanted = results.find(pending.find);
+      if (wanted) {
+        pending = null;
+        activate(wanted);
+      } else if (u.done) {
+        notice = pending.missing;
+        pending = null;
+      }
+    }
   }
 
   // Every action starts with `prepare`, which builds the preview from the live
@@ -593,6 +709,12 @@
   function activate(item: Item | undefined) {
     const action = defaultAction(item);
     if (!item || !action || card) return;
+    const suggested = actionOf(item);
+    if (suggested) {
+      runAction(suggested);
+      return;
+    }
+    remember(query);
     begin(() => invoke<Prepared>("prepare_action", { action, id: item.id }));
   }
 
@@ -648,7 +770,6 @@
     loadHotkey();
     loadPinned();
     loadUi();
-    loadHelp();
     const unlistenShown = listen<{ id: number; hidden_secs: number | null }>("bar-shown", async (event) => {
       const { hidden_secs } = event.payload;
       const restore =
@@ -657,6 +778,7 @@
         hidden_secs < RESTORE_SECS &&
         (query.trim() !== "" || panel || disk || setup !== null);
       notice = "";
+      earlier = null;
       visible = true;
       opens += 1;
       tipsHovered = false;
@@ -720,6 +842,52 @@
   });
 
   function onKeydown(e: KeyboardEvent) {
+    // Keys that belong to an input method are left to it.
+    if (e.isComposing) return;
+    const plain = !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
+    if (earlier !== null) {
+      const n = earlier.length;
+      if (plain && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+        e.preventDefault();
+        earlierAt = (earlierAt + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+        return;
+      }
+      if (plain && e.key === "Enter" && e.target === input) {
+        e.preventDefault();
+        setInput(earlier[earlierAt]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        earlier = null;
+        return;
+      }
+      // Any other key goes back to typing; Tab and a button's Enter reach the list.
+      if (!["Shift", "Tab"].includes(e.key) && !(e.key === "Enter" && e.target instanceof HTMLButtonElement)) earlier = null;
+    }
+    if (ghost && plain && e.target === input) {
+      if (e.key === "Tab") {
+        e.preventDefault();
+        setInput(query + ghost);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        ghostOff = query;
+        return;
+      }
+    }
+    if (
+      plain &&
+      e.key === "ArrowUp" &&
+      e.target === input &&
+      !panel && !disk && !card && !showHelp &&
+      opensHistory(query, input!.selectionStart, input!.selectionEnd, selected)
+    ) {
+      e.preventDefault();
+      openHistory();
+      return;
+    }
     if (e.ctrlKey && !e.shiftKey && !e.altKey && ["1", "2", "3", "4", "5"].includes(e.key)) {
       e.preventDefault();
       gotoSection(Number(e.key) - 1);
@@ -773,7 +941,7 @@
         e.preventDefault();
         const entry = helpList[helpSelected];
         if (!entry || e.repeat) return;
-        if ("row" in entry) tryExample(entry.row.fill);
+        if ("row" in entry) pickAction(entry.row);
         else helpAdvanced = !helpAdvanced;
         return;
       }
@@ -786,8 +954,8 @@
     }
     switch (e.key) {
       case "Tab":
-        // Away from the search box, on help and with no folders, Tab moves focus.
-        if (e.target !== input || showHelp || (noFolders && items.length === 0)) break;
+        // Away from the search box, on Home, on help and with no folders, Tab moves focus.
+        if (e.target !== input || home || showHelp || (noFolders && items.length === 0)) break;
         if (!e.shiftKey && PATHLIKE.test(query)) {
           e.preventDefault();
           completePath();
@@ -800,6 +968,7 @@
         break;
       case "Escape":
         e.preventDefault();
+        remember(query);
         if (pinned && query !== "") {
           // A pinned window stays: the first Esc clears the query, the next hides it.
           query = "";
@@ -1007,7 +1176,11 @@
     keyFor = null;
     keyDone = "";
   });
-  const openLabel = (i: Item | undefined) => ACTION_LABEL[defaultAction(i) ?? ""] ?? "Run";
+  const openLabel = (i: Item | undefined) => {
+    const a = i && actionOf(i);
+    if (a) return a.run === "fill" ? "Type it" : "Open";
+    return ACTION_LABEL[defaultAction(i) ?? ""] ?? "Run";
+  };
   function copyText(i: Item | undefined) {
     if (!i || card) return;
     begin(() => invoke<Prepared>("prepare_action", { action: "copy_clip", id: i.id }));
@@ -1039,7 +1212,7 @@
   onblur={() => !pinned && (visible = false)}
   onfocus={() => (visible = true)}
 />
-<svelte:document onvisibilitychange={() => (visible = document.visibilityState === "visible")} />
+<svelte:document onvisibilitychange={() => (visible = document.visibilityState === "visible")} onselectionchange={trackCaret} />
 
 {#snippet exactRow()}
   <li role="presentation" class="entry">
@@ -1069,9 +1242,18 @@
   </li>
 {/snippet}
 
+{#snippet glyph(category: string)}
+  <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"
+    ><path d={ICONS[category] ?? ICONS.Search} /></svg
+  >
+{/snippet}
+
 {#snippet tile(it: Item)}
   {@const k = iconKind(it)}
-  {#if isRunning(it)}
+  {@const act = actionOf(it)}
+  {#if act}
+    <span class="icon" aria-hidden="true">{@render glyph(act.category)}</span>
+  {:else if isRunning(it)}
     <span class="icon ring" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round">
         <circle cx="12" cy="12" r="9" stroke="var(--hairline)" />
@@ -1137,12 +1319,26 @@
     <div class="head">
     <div class="searchrow glass" data-tauri-drag-region>
       <Orb mode={orbMode} active={visible && !look.reduced} />
+      <div class="searchbox">
+      {#if ghost}
+        <span class="ghost" aria-hidden="true"><span class="typed">{query}</span>{ghost}</span>
+      {/if}
       <input
         bind:this={input}
         bind:value={query}
         oninput={() => {
           skip = [];
+          earlier = null;
+          trackCaret();
           run(query);
+        }}
+        onkeyup={trackCaret}
+        onclick={trackCaret}
+        onselect={trackCaret}
+        oncompositionstart={() => (composing = true)}
+        oncompositionend={() => {
+          composing = false;
+          trackCaret();
         }}
         class="search"
         type="text"
@@ -1157,6 +1353,8 @@
         aria-activedescendant={items.length > 0 && items[selected] ? `result-${selected}` : undefined}
         aria-label="Search"
       />
+      </div>
+      <span class="sr" aria-live="polite">{ghost ? `Suggestion: ${query}${ghost}. Press Tab to accept.` : ""}</span>
       {#if query.trim() !== "" && !panel && !disk && !card && !showHelp}
         <span class="count" aria-live="polite">{items.length} {items.length === 1 ? "result" : "results"}</span>
       {/if}
@@ -1172,6 +1370,29 @@
       <kbd aria-hidden="true" data-tauri-drag-region>Esc</kbd>
     </div>
 
+    {#if earlier !== null}
+      <div class="history glass" data-no-drag>
+        <h3 class="label-caps">Recent searches</h3>
+        <ul role="listbox" aria-label="Recent searches">
+          {#each earlier as h, n (h)}
+            <li role="presentation">
+              <button
+                type="button"
+                class="hline"
+                class:selected={n === earlierAt}
+                role="option"
+                aria-selected={n === earlierAt}
+                onfocus={() => (earlierAt = n)}
+                onmousemove={() => (earlierAt = n)}
+                onclick={() => setInput(h)}>{h}</button
+              >
+            </li>
+          {/each}
+        </ul>
+        <!-- Focus stays in the search box, so the chosen line is announced. -->
+        <span class="sr" aria-live="polite">{earlier[earlierAt]}</span>
+      </div>
+    {/if}
     {#if !panel && !disk && !card && !showHelp && !showSetup}
       <div class="chips" role="tablist" aria-label="Filter results">
         {#each LANES as l, n}
@@ -1204,7 +1425,7 @@
       {:else if disk}
         <div class="page glass diskpage"><Disk onclose={closeDisk} /></div>
       {:else if panel}
-        <div class="page glass"><Privacy bind:this={privacy} onclose={closePanel} onsetup={runSetupAgain} /></div>
+        <div class="page glass"><Privacy bind:this={privacy} start={settingsStart} onclose={closePanel} onsetup={runSetupAgain} /></div>
       {:else if card?.phase === "confirm"}
         {@const p = card.prepared}
         <div
@@ -1255,10 +1476,17 @@
         </section>
       {:else if showHelp}
         <div class="card glass">
-          <Help entries={helpList} bind:selected={helpSelected} onpick={tryExample} ontoggle={() => (helpAdvanced = !helpAdvanced)} />
+          <Help entries={helpList} bind:selected={helpSelected} onpick={pickAction} ontoggle={() => (helpAdvanced = !helpAdvanced)} />
         </div>
       {:else if home}
         <div class="home" out:fade={{ duration: dur(70) }}>
+          <div class="quick" role="group" aria-label="Quick actions">
+            {#each quickActions as a (a.id)}
+              <button type="button" class="qa" title={a.name} aria-label={a.name} onclick={() => runAction(a)}>
+                {@render glyph(a.category)}
+              </button>
+            {/each}
+          </div>
           <section class="card glass pick" aria-label="Recent">
             <h3 class="label-caps">Recent</h3>
             {#if recent.length === 0}
@@ -1306,10 +1534,10 @@
                     {#key t.example}
                       <div class="tip" in:fade={{ duration: dur(160) }} out:fade={{ duration: dur(160) }}>
                         <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"
-                          ><path d={TIP_ICONS[t.group] ?? TIP_ICONS.Search} /></svg
+                          ><path d={ICONS[t.category] ?? ICONS.Search} /></svg
                         >
-                        <span class="what" title={t.what}>{t.what}</span>
-                        <button class="ex" onclick={() => tryExample(t.fill)}>{t.example}</button>
+                        <span class="what" title={t.description}>{t.description}</span>
+                        <button class="ex" onclick={() => pickAction(t)}>{t.example}</button>
                       </div>
                     {/key}
                   </li>
@@ -1373,6 +1601,7 @@
                 {/if}
               </div>
             {/if}
+            {#if understoodLine}<p class="readline" role="status">{understoodLine}</p>{/if}
             {#if corrected}<p class="note">Showing results for <b>{corrected}</b></p>{/if}
             {#if items.length > 0}
               <ul id="results" class="results" role="listbox" bind:this={list}>
@@ -1435,6 +1664,9 @@
                           >
                         {/if}
                       </span>
+                      {#if item.source === "action"}
+                        <kbd class="qk" title="Example">{item.metadata?.example}</kbd>
+                      {/if}
                       {#if typeof item.metadata?.quick_key === "string"}
                         <kbd class="qk" title="Quick key">{item.metadata.quick_key}</kbd>
                       {/if}
@@ -1486,6 +1718,7 @@
                 <div class="plain">
                   <strong class="nm">{mask(cur.title)}</strong>
                   {#if cur.subtitle}<span class="sub wrap">{mask(cur.subtitle)}</span>{/if}
+                  {#if cur.source === "action"}<span class="sub">Example: <span class="code">{cur.metadata?.example}</span></span>{/if}
                   <span class="sub">{groupOf(cur)}</span>
                 </div>
               {/if}
@@ -1637,6 +1870,13 @@
     color: var(--accent);
     border-color: var(--accent-line);
   }
+  .searchbox {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+  }
   .search {
     all: unset;
     box-sizing: border-box;
@@ -1645,6 +1885,98 @@
     font-size: 24px;
     font-weight: 500;
     caret-color: var(--accent);
+  }
+  .ghost {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    white-space: pre;
+    pointer-events: none;
+    font-size: 24px;
+    font-weight: 500;
+    color: var(--muted);
+    opacity: 0.6;
+  }
+  .ghost .typed {
+    visibility: hidden;
+  }
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .history {
+    padding: 10px 12px;
+    border-radius: var(--r-tile);
+  }
+  .history h3 {
+    margin: 0 8px 4px;
+  }
+  .history ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  .hline {
+    all: unset;
+    box-sizing: border-box;
+    display: block;
+    width: 100%;
+    padding: 5px 12px;
+    border: 1px solid transparent;
+    border-radius: var(--r-md);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .hline.selected {
+    background: var(--accent-soft);
+    border-color: var(--accent-line);
+  }
+  .hline:focus-visible,
+  .qa:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .quick {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+  }
+  .qa {
+    all: unset;
+    box-sizing: border-box;
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--r-pill);
+    background: var(--glass-bg);
+    color: var(--text-soft);
+    cursor: pointer;
+  }
+  .qa:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent-line);
+  }
+  .readline {
+    margin: 0;
+    padding: 8px 20px 0;
+    color: var(--text-soft);
+    font-size: var(--fs-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .search[readonly] {
     caret-color: transparent;

@@ -1,6 +1,6 @@
 // Which tips Home shows and when one is swapped. No DOM, so node can test it.
-// The pool is `tipsFor` (modes.ts): the help table, filtered by mode.
-import type { HelpRow } from "./modes";
+// The pool is `tipsFor` (modes.ts): the registry, filtered by mode.
+import type { Action } from "./modes";
 
 export const TIPS_SHOWN = 3;
 export const TIP_MS = 8000;
@@ -17,7 +17,7 @@ export interface Deck {
 export const EMPTY_DECK: Deck = { shown: [], cursor: 0, slot: 0 };
 
 /** The first tip from `cursor` on that is not in `taken`. */
-function nextTip(pool: HelpRow[], taken: string[], cursor: number) {
+function nextTip(pool: Action[], taken: string[], cursor: number) {
   for (let i = 0; i < pool.length; i++) {
     const at = (cursor + i) % pool.length;
     if (!taken.includes(pool[at].example)) return { example: pool[at].example, cursor: at + 1 };
@@ -26,7 +26,7 @@ function nextTip(pool: HelpRow[], taken: string[], cursor: number) {
 }
 
 /** Fits the deck to the pool: rows keep their tip while it is in it, gaps are filled. */
-export function deal(pool: HelpRow[], deck: Deck): Deck {
+export function deal(pool: Action[], deck: Deck): Deck {
   const inPool = new Set(pool.map((r) => r.example));
   const shown = deck.shown.map((e) => (inPool.has(e) ? e : ""));
   let cursor = deck.cursor;
@@ -43,7 +43,7 @@ export function deal(pool: HelpRow[], deck: Deck): Deck {
 }
 
 /** Replaces one row with the next tip of the pool. */
-export function turn(pool: HelpRow[], deck: Deck): Deck {
+export function turn(pool: Action[], deck: Deck): Deck {
   const now = deal(pool, deck);
   const next = nextTip(pool, now.shown, now.cursor);
   if (!next) return now;
@@ -53,7 +53,7 @@ export function turn(pool: HelpRow[], deck: Deck): Deck {
 }
 
 /** Reduce motion: three fixed tips, the next three at each later open (0 is the first). */
-export function fixedTips(pool: HelpRow[], opens: number): string[] {
+export function fixedTips(pool: Action[], opens: number): string[] {
   const size = Math.min(TIPS_SHOWN, pool.length);
   return Array.from({ length: size }, (_, i) => pool[(opens * TIPS_SHOWN + i) % pool.length].example);
 }

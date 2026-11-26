@@ -1,4 +1,5 @@
 // When the first-run setup is open, and on which step.
+import { actionById } from "./registry.ts";
 
 export const STEPS = ["Welcome", "Folders", "Shortcuts", "Theme", "Try it"] as const;
 /** Step numbers start at 1; "Choose folders to search" opens this one. */
@@ -25,8 +26,7 @@ export function chooseFoldersTarget(needsSetup: boolean): "setup" | "settings" {
 export const isHelpQuery = (text: string) => /^\s*(help|\?)\s*$/i.test(text);
 
 /** The examples of the last step. */
-export const TRY_EXAMPLES: [string, string][] = [
-  ["report", "Find a file by name"],
-  ["timer 5 min", "Start a timer"],
-  ["pdf last week", "Find files by date"],
-];
+export const TRY_EXAMPLES: [string, string][] = ["find", "timer", "bydate"].map((id) => {
+  const a = actionById(id)!;
+  return [a.example, a.description];
+});

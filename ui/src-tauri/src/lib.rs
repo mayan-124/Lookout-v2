@@ -680,10 +680,47 @@ fn index_status(services: State<Services>) -> Option<Status> {
     Some(status)
 }
 
-/// The rows of the help view (a fixed table in the app).
+// ----------------------------------------------------------- search history
+
+/// The newest searches for the Up arrow; none while remembering is off.
 #[tauri::command]
-fn help_entries() -> &'static [lookout_core::help::Help] {
-    lookout_core::help::entries()
+fn search_history(services: State<Services>) -> Vec<String> {
+    if !lock(&services.settings).remember_searches {
+        return Vec::new();
+    }
+    services
+        .current()
+        .and_then(|l| l.history().recent(10).ok())
+        .unwrap_or_default()
+}
+
+/// Async: saving rewrites the encrypted database.
+#[tauri::command]
+async fn record_search(text: String, services: State<'_, Services>) -> Result<(), String> {
+    let remember = lock(&services.settings).remember_searches;
+    services_of(&services)?
+        .history()
+        .record(&text, remember)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn clear_search_history(services: State<'_, Services>) -> Result<(), String> {
+    services_of(&services)?
+        .history()
+        .clear()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_remember_searches(
+    on: bool,
+    services: State<Services>,
+    shared: State<Shared>,
+) -> Result<PrivacyState, String> {
+    lock(&services.settings).set_remember_searches(on, &services.paths.settings())?;
+    Ok(privacy_of(&services, &shared))
 }
 
 // ---------------------------------------------------------------- disk usage
@@ -1265,6 +1302,7 @@ struct PrivacyState {
     index_speed: lookout_core::settings::IndexSpeed,
     content_index_max_mb: u64,
     cli_access: bool,
+    remember_searches: bool,
     start_with_windows: bool,
     /// What the setup shows that switch as.
     setup_start_with_windows: bool,
@@ -1292,6 +1330,7 @@ fn privacy_of(services: &Services, shared: &Shared) -> PrivacyState {
         index_speed: s.index_speed,
         content_index_max_mb: s.content_index_max_mb,
         cli_access: s.cli_access,
+        remember_searches: s.remember_searches,
         start_with_windows: s.starts_with_windows(),
         setup_start_with_windows: s.setup_offers_start_with_windows(),
     }
@@ -2209,7 +2248,10 @@ pub fn run() {
             dismiss_disk_notice,
             reset_ui,
             pick_folder,
-            help_entries,
+            search_history,
+            record_search,
+            clear_search_history,
+            set_remember_searches,
             setup_folders,
             setup_start,
             setup_finish,

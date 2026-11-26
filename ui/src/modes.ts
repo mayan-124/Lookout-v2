@@ -1,4 +1,4 @@
-// What each mode shows: dock, help, tips and footer hints. Visibility only;
+// What each mode shows: dock, help, tips, actions and footer hints. Visibility only;
 // no imports and no DOM, so node can test it as it is.
 
 export type Mode = "simple" | "standard" | "full";
@@ -42,24 +42,65 @@ export const isDiskCommand = (q: string) => /^disk( usage| analy[sz]er)?$/i.test
 export const typedSection = (q: string) =>
   /^\s*(clip|clipboard|clips)(\s|$)/i.test(q) ? 2 : /^\s*(shot|screenshot)(\s|$)/i.test(q) ? 3 : 0;
 
-export interface HelpRow {
-  group: string;
-  what: string;
+/** One entry of the registry (registry.json). */
+export interface Action {
+  id: string;
+  name: string;
+  /** The help heading and the icon. */
+  category: string;
+  /** The Settings > Features switch that shows it, if any. */
+  feature?: Feature;
+  /** The smallest mode that advertises it. */
+  mode: Mode;
+  /** Folded under "Advanced" in Simple and Standard. */
+  advanced?: boolean;
+  /** Plain words and common typos that suggest it. */
+  synonyms: string[];
+  /** Words that are the command itself: its suggestion goes first. */
+  commands?: string[];
   example: string;
-  fill: string;
-  feature: Feature | null;
-  advanced: boolean;
+  description: string;
+  /** What choosing it does. "fill" needs more typing; the rest run. */
+  run: "fill" | "show" | "disk" | "settings" | "appearance" | "privacy" | "setup" | "theme" | "capture";
+  /** The text put in the search box by "fill" and "show". */
+  stem?: string;
+  /** The add-on action "capture" starts. */
+  target?: string;
+  /** Commands completed by the faint text, and how much must be typed first. */
+  ghost?: string[];
+  ghostMin?: number;
+  /** A result source, id or add-on that makes the suggestion needless. */
+  covered?: string;
+  /** What a help row or tip types instead of the example. */
+  try?: string;
+  /** Place in the Home quick-actions row. */
+  home?: number;
+}
+
+const RANK: Record<Mode, number> = { simple: 0, standard: 1, full: 2 };
+/** The switches Simple turns off (core/src/uimode.rs). */
+const SIMPLE_OFF: Feature[] = ["disk", "clipboard", "capture", "quick_keys"];
+
+/**
+ * Whether help, tips, the quick row and ghost text list an action. A switch that
+ * is on always lists it. One that is off hides it, except where Simple itself
+ * turned it off and the action is meant for every mode (capture).
+ */
+export function advertised(a: Action, mode: Mode, show: Show): boolean {
+  if (a.feature && show[a.feature]) return true;
+  if (RANK[mode] < RANK[a.mode]) return false;
+  return !a.feature || (mode === "simple" && SIMPLE_OFF.includes(a.feature));
 }
 
 /** A help row, or the line that folds the advanced groups. */
-export type HelpEntry = { row: HelpRow } | { toggle: true; open: boolean };
+export type HelpEntry = { row: Action } | { toggle: true; open: boolean };
 
-const shown = (rows: HelpRow[], show: Show) => rows.filter((r) => !r.feature || show[r.feature]);
+const shown = (rows: Action[], mode: Mode, show: Show) => rows.filter((r) => advertised(r, mode, show));
 
 /** Full lists everything in table order; else the basic groups, then "Advanced". */
-export function helpEntries(rows: HelpRow[], mode: Mode, show: Show, open: boolean): HelpEntry[] {
-  const list = shown(rows, show);
-  const entry = (row: HelpRow): HelpEntry => ({ row });
+export function helpEntries(rows: Action[], mode: Mode, show: Show, open: boolean): HelpEntry[] {
+  const list = shown(rows, mode, show);
+  const entry = (row: Action): HelpEntry => ({ row });
   if (mode === "full") return list.map(entry);
   const advanced = list.filter((r) => r.advanced);
   return [
@@ -70,8 +111,8 @@ export function helpEntries(rows: HelpRow[], mode: Mode, show: Show, open: boole
 }
 
 /** The rows Home may show as a tip. Advanced ones only in Full. */
-export const tipsFor = (rows: HelpRow[], mode: Mode, show: Show) =>
-  shown(rows, show).filter((r) => mode === "full" || !r.advanced);
+export const tipsFor = (rows: Action[], mode: Mode, show: Show) =>
+  shown(rows, mode, show).filter((r) => mode === "full" || !r.advanced);
 
 export type View = "home" | "results" | "help" | "setup" | "settings" | "disk" | "confirm" | "done";
 

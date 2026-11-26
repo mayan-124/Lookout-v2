@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import Plugins from "./Plugins.svelte";
   import Health from "./Health.svelte";
   import ThemePicker from "./ThemePicker.svelte";
@@ -28,6 +28,7 @@
     content_index_max_mb: number;
     cli_access: boolean;
     start_with_windows: boolean;
+    remember_searches: boolean;
   }
 
   // Manual update check: nothing runs until the user clicks; nothing downloads until the second click.
@@ -153,7 +154,11 @@
     "password-manager folders",
   ];
 
-  let { onclose, onsetup }: { onclose: () => void; onsetup: () => void } = $props();
+  let {
+    onclose,
+    onsetup,
+    start = "general",
+  }: { onclose: () => void; onsetup: () => void; start?: "general" | "appearance" | "privacy" } = $props();
 
   let skipList: string[] = $state([]);
   invoke<string[]>("skip_list").then((l) => (skipList = l)).catch(() => {});
@@ -170,6 +175,7 @@
   let maxMb = $state(2048);
   let speed: "gentle" | "balanced" | "fast" = $state("balanced");
   let first: HTMLButtonElement | undefined = $state();
+  let appearanceCard: HTMLDivElement | undefined = $state();
 
   let discarding = $state(false);
 
@@ -222,6 +228,15 @@
       message = errorText(e);
     }
     first?.focus();
+    // Opened for one thing: go straight to it.
+    if (start === "privacy") {
+      section = "privacy";
+      choose(setAdvancedOpen(true));
+    } else if (start === "appearance") {
+      await tick();
+      appearanceCard?.scrollIntoView({ block: "start" });
+      appearanceCard?.querySelector<HTMLElement>("button, input")?.focus({ preventScroll: true });
+    }
   });
 
   async function add(list: "roots" | "excluded") {
@@ -276,6 +291,26 @@
       el.checked = false;
       if (info) info.cli_access = false;
       cliMessage = errorText(e);
+    }
+  }
+
+  let historyMessage = $state("");
+  async function setRememberSearches(el: HTMLInputElement) {
+    historyMessage = "";
+    try {
+      const s = await invoke<PrivacyState>("set_remember_searches", { on: el.checked });
+      if (info) info.remember_searches = s.remember_searches;
+    } catch (e) {
+      el.checked = !el.checked;
+      historyMessage = errorText(e);
+    }
+  }
+  async function clearHistory() {
+    try {
+      await invoke("clear_search_history");
+      historyMessage = "Cleared your search history.";
+    } catch (e) {
+      historyMessage = errorText(e);
     }
   }
 
@@ -467,7 +502,7 @@
             {#if info?.pause_hotkey}<kbd>{info.pause_hotkey}</kbd>{/if}
           </div>
         </div>
-        <div class="scard">
+        <div class="scard" bind:this={appearanceCard}>
           <h3 class="stitle">Appearance</h3>
           <ThemePicker part="theme" />
           <ThemePicker part="accent" />
@@ -558,7 +593,7 @@
       {:else if section === "privacy"}
         <h2 id="priv-title">Privacy</h2>
         <h3 class="label-caps">What is stored</h3>
-        <p class="hint">File names, file text, usage history and the undo log. Nothing leaves this PC.</p>
+        <p class="hint">File names, file text, usage and search history and the undo log. Nothing leaves this PC.</p>
         <h3 class="label-caps">How it is protected</h3>
         <p class="hint">
           Encrypted with a key only your Windows account can unlock. API keys, private keys and card numbers are
@@ -578,6 +613,15 @@
           (el) => setContentOption("ocr", el),
         )}
         {#if contentMessage}<p class="hint" role="alert">{contentMessage}</p>{/if}
+        <h3 class="label-caps">Search history</h3>
+        {@render toggle(
+          "Remember my searches",
+          "Press Up in the search box to see them. Text that looks like a secret is never kept.",
+          info?.remember_searches ?? true,
+          setRememberSearches,
+        )}
+        <p><button class="btn small" onclick={clearHistory}>Clear history</button></p>
+        {#if historyMessage}<p class="hint" role="status">{historyMessage}</p>{/if}
         <h3 class="label-caps">Other programs</h3>
         {@render cliSwitch()}
       {:else if section === "speed"}
@@ -656,7 +700,7 @@
         <h2 id="priv-title" class="danger-text">Delete my data</h2>
         {#if confirmingDelete}
           <p class="warning" role="alert">
-            This deletes your saved file names, file text, usage history, the undo log and the encryption key.
+            This deletes your saved file names, file text, usage and search history, the undo log and the encryption key.
             Your files are not touched. You will be asked to choose folders again.
           </p>
           <div class="row">

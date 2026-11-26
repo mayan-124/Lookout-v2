@@ -216,6 +216,7 @@ pub struct Lookout {
     /// Clean up list and duplicate finder (on demand).
     tidy: crate::cleanup::Tidy,
     quick_keys: Arc<crate::quickkeys::QuickKeys>,
+    history: crate::history::SearchHistory,
     timers: Arc<crate::timers::TimerService>,
     /// Results of the latest update that may get a quick key.
     keyable: Arc<Mutex<HashMap<String, crate::item::Item>>>,
@@ -452,6 +453,7 @@ impl Lookout {
         };
         let theme: Arc<dyn quick_actions::ThemeBackend> = Arc::new(WindowsTheme);
         let quick_keys = Arc::new(crate::quickkeys::QuickKeys::new(storage.db.clone())?);
+        let history = crate::history::SearchHistory::new(storage.db.clone())?;
         let timer_store = Arc::new(crate::timers::TimerStore::new(storage.db.clone())?);
         let timers = Arc::new(
             crate::timers::TimerService::start(
@@ -619,6 +621,7 @@ impl Lookout {
             ),
             tidy,
             quick_keys,
+            history,
             timers,
             keyable,
             cli_sources,
@@ -1082,6 +1085,11 @@ impl Lookout {
 
     pub fn quick_keys(&self) -> &crate::quickkeys::QuickKeys {
         &self.quick_keys
+    }
+
+    /// Recent searches (the typed text only).
+    pub fn history(&self) -> &crate::history::SearchHistory {
+        &self.history
     }
 
     /// Gives a result from the latest update a quick key. The result is
