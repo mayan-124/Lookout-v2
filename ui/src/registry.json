@@ -115,7 +115,7 @@
     "category": "Timers",
     "feature": "timers",
     "mode": "simple",
-    "synonyms": ["countdown", "count down", "alarm", "remind me", "reminder", "stopwatch", "pomodoro", "timr", "tiemr"],
+    "synonyms": ["countdown", "count down", "alarm", "remind me", "reminder", "stopwatch", "pomodoro", "timr", "tiemr", "timer", "remind"],
     "commands": ["timer"],
     "example": "timer 5 min",
     "description": "Start a timer; add a name after the time",
@@ -163,21 +163,23 @@
     "example": "settings",
     "description": "Open Lookout's settings",
     "run": "settings",
-    "ghost": ["settings"],
-    "home": 5
+    "ghost": ["settings"]
   },
   {
     "id": "appearance",
     "name": "Theme and appearance",
     "category": "Settings",
     "mode": "simple",
-    "synonyms": ["themes", "colors", "colours", "accent color", "glass effect", "reduce motion", "look and feel", "apperance", "apearance"],
+    "synonyms": ["themes", "colors", "colours", "accent color", "glass effect", "reduce motion", "look and feel", "apperance", "apearance", "theme", "colour", "color", "accent", "look"],
     "commands": ["theme", "appearance"],
     "example": "theme",
     "description": "Change theme, accent and motion",
     "run": "appearance",
     "ghost": ["appearance"],
-    "ghostMin": 4
+    "ghostMin": 4,
+    "home": 3,
+    "homeMin": "standard",
+    "label": "Appearance"
   },
   {
     "id": "darkmode",
@@ -185,13 +187,15 @@
     "category": "Settings",
     "mode": "simple",
     "advanced": true,
-    "synonyms": ["darkmode", "dark theme", "light theme", "night mode", "switch theme", "lightmode", "drak mode"],
+    "synonyms": ["darkmode", "dark theme", "light theme", "night mode", "switch theme", "lightmode", "drak mode", "dark", "night", "light mode"],
     "commands": ["dark mode", "light mode"],
     "example": "dark mode",
     "description": "Switch dark or light mode",
     "run": "theme",
     "ghost": ["dark mode"],
-    "covered": "system:dark_mode"
+    "covered": "system:dark_mode",
+    "home": 2,
+    "homeMin": "standard"
   },
   {
     "id": "privacy",
@@ -253,13 +257,12 @@
     "feature": "disk",
     "mode": "full",
     "advanced": true,
-    "synonyms": ["disk analyser", "disk space", "storage usage", "large files", "big files", "free space", "treesize", "dsik usage"],
+    "synonyms": ["disk analyser", "disk space", "storage usage", "large files", "big files", "free space", "treesize", "dsik usage", "storage", "drive space", "space", "what is using space", "cleanup", "free up space", "treemap"],
     "commands": ["disk", "disk usage"],
     "example": "disk usage",
     "description": "See what uses space, then press Enter",
     "run": "disk",
-    "ghost": ["disk usage"],
-    "home": 4
+    "ghost": ["disk usage"]
   },
   {
     "id": "clipboard",
@@ -267,7 +270,7 @@
     "category": "Clipboard",
     "feature": "clipboard",
     "mode": "standard",
-    "synonyms": ["copy history", "copied text", "paste history", "clip board", "clipbord", "clipborad", "pasteboard"],
+    "synonyms": ["copy history", "copied text", "paste history", "clip board", "clipbord", "clipborad", "pasteboard", "clipboard", "copied"],
     "commands": ["clip", "clips", "clipboard"],
     "example": "clip",
     "description": "Find copied text (needs the add-on)",
@@ -275,8 +278,7 @@
     "stem": "clip ",
     "ghost": ["clip", "clipboard"],
     "covered": "plugin:com.lookout.clipboard",
-    "try": "clip ",
-    "home": 3
+    "try": "clip "
   },
   {
     "id": "screenshot",
@@ -284,15 +286,14 @@
     "category": "Capture",
     "feature": "capture",
     "mode": "simple",
-    "synonyms": ["capture", "screen capture", "snip", "snipping tool", "print screen", "screen grab", "screengrab", "screnshot", "scrennshot", "screen shot"],
+    "synonyms": ["capture", "screen capture", "snip", "snipping tool", "print screen", "screen grab", "screengrab", "screnshot", "scrennshot", "screen shot", "snipping", "screenshot", "grab", "prtsc"],
     "commands": ["shot", "screenshot"],
     "example": "shot",
     "description": "Take a screenshot (needs the add-on)",
     "run": "capture",
     "target": "take_screenshot",
     "ghost": ["shot", "screenshot"],
-    "covered": "plugin:dev.lookout.screenshot",
-    "home": 2
+    "covered": "plugin:dev.lookout.screenshot"
   },
   {
     "id": "scrolling",
@@ -356,13 +357,13 @@
     "name": "Help",
     "category": "Help",
     "mode": "simple",
-    "synonyms": ["commands", "what can i do", "how to", "guide", "manual", "instructions", "hepl", "halp"],
+    "synonyms": ["commands", "what can i do", "how to", "guide", "manual", "instructions", "hepl", "halp", "help", "how", "what can i type"],
     "commands": ["help"],
     "example": "help",
     "description": "See everything Lookout can do",
     "run": "show",
     "stem": "help",
     "ghost": ["help"],
-    "home": 6
+    "home": 4
   }
 ]

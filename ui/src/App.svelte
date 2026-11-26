@@ -15,9 +15,10 @@
   import { FOLDER_STEP, chooseFoldersTarget, isHelpQuery, stepOnShow } from "./setupflow";
   import { dockItems, footerHints, helpEntries, isDiskCommand, tipsFor, typedSection, type Action, type View } from "./modes";
   import { ACTIONS, ICONS, actionById, homeActions } from "./registry";
-  import { ghostFor, opensHistory, placeSuggestions, readLine, suggest, worthRemembering } from "./discover";
+  import { didYouMean, ghostFor, opensHistory, placeSuggestions, readLine, suggest, worthRemembering } from "./discover";
+  import { recentRows } from "./home";
   import { dismissDiskNotice, loadUi, setHideTips, setShow, ui } from "./uistate.svelte";
-  import { indexLine, type IndexCounts } from "./indexstatus";
+  import { footerStatus, indexLine, type IndexCounts } from "./indexstatus";
   import { EMPTY_DECK, deal, fixedTips, startRotation, turn } from "./tips";
 
   type Kind = string | { custom: string };
@@ -120,18 +121,21 @@
     const g = LANES[lane].groups;
     return g ? all.filter((i) => (g as readonly string[]).includes(groupOf(i))) : all;
   });
-  // Home list: the latest clips, then recently modified indexed files. Both come
-  // from ordinary queries ("clip " and "past week"); nothing is stored.
+  // Home list: the latest clips (an ordinary "clip " query), then the recently
+  // changed files the backend picked. Nothing is stored.
   let homeGen = 0;
-  let homeGen2 = 0;
   let homeClips: Item[] = $state([]);
   let homeFiles: Item[] = $state([]);
   const mask = (t: string) => t.replaceAll("[masked]", "\u2022\u2022\u2022\u2022");
   function loadHome() {
     generation += 1;
-    homeGen = generation;
-    homeGen2 = 0;
+    const asked = (homeGen = generation);
     invoke("query", { generation, text: "clip " }).catch(() => {});
+    invoke<Item[]>("recent_files")
+      .then((files) => {
+        if (asked === homeGen) homeFiles = files;
+      })
+      .catch(() => {});
   }
   const AGE = /(\d+)\s*(min|h|days?)\s+ago$/;
   // A clip's age is the last part of its subtitle ("5 min ago", "just now").
@@ -143,7 +147,7 @@
     const n = Number(m[1]);
     return now - n * (m[2] === "min" ? 60 : m[2] === "h" ? 3600 : 86400);
   }
-  // Temp-folder paths and hidden or .tmp files are noise in the recent list.
+  // A clip of a temp-folder path is noise in the recent list.
   const TEMPISH = /[\\/]temp[\\/]/i;
   const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   function dayLabel(ts: number): string {
@@ -161,18 +165,15 @@
     ts: number;
     clip: boolean;
   }
-  const recent = $derived.by<Recent[]>(() => {
-    const rows: Recent[] = [
+  const recent = $derived.by<Recent[]>(() =>
+    recentRows<Recent>([
       ...homeClips
         .filter((i) => !TEMPISH.test(i.title))
         .slice(0, 3)
         .map((item) => ({ item, ts: clipTime(item), clip: true })),
-      ...homeFiles
-        .filter((i) => i.modified_at && !TEMPISH.test(i.uri ?? "") && !/(^|[\\/])\.[^\\/]*$|\.tmp$/i.test(i.uri ?? i.title))
-        .map((item) => ({ item, ts: item.modified_at as number, clip: false })),
-    ];
-    return rows.sort((a, b) => b.ts - a.ts).slice(0, 6);
-  });
+      ...homeFiles.map((item) => ({ item, ts: item.modified_at ?? 0, clip: false })),
+    ]),
+  );
   function openRecent(r: Recent) {
     if (r.clip) gotoSection(2);
     else activate(r.item);
@@ -458,9 +459,24 @@
   });
   const actionOf = (i: Item) => (i.source === "action" ? actionById(i.metadata!.action as string) : undefined);
 
-  // Earlier searches, newest first; asked for only when the list is opened.
+  // Earlier searches, newest first; asked for only when Up opens them in the
+  // Recent card.
   let earlier = $state<string[] | null>(null);
   let earlierAt = $state(0);
+  let historyList: HTMLElement | undefined = $state();
+  function moveEarlier(to: number) {
+    earlierAt = to;
+    tick().then(() => historyList?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" }));
+  }
+  async function forgetSearch() {
+    if (earlier === null) return;
+    const text = earlier[earlierAt];
+    const left = earlier.filter((h) => h !== text);
+    earlier = left.length > 0 ? left : null;
+    moveEarlier(Math.max(0, Math.min(earlierAt, left.length - 1)));
+    input?.focus();
+    await invoke("remove_search", { text }).catch((e) => (notice = errorText(e)));
+  }
   // The faint rest of a command. Not while an input method is composing, with
   // the cursor elsewhere, or after Esc dismissed it for this text.
   let caretAtEnd = $state(true);
@@ -482,9 +498,9 @@
     earlier = found;
     earlierAt = 0;
   }
-  // Leaving the search view drops the list and the page Settings was asked for.
+  // Leaving Home drops the list; leaving Settings, the page it was asked for.
   $effect(() => {
-    if (panel || disk || card) earlier = null;
+    if (!home) earlier = null;
     if (!panel) settingsStart = "general";
   });
   function remember(text: string) {
@@ -623,18 +639,6 @@
     if (u.generation !== generation) return;
     if (u.generation === homeGen) {
       homeClips = u.items.filter((i) => kindName(i.kind) === "clipboard").slice(0, 3);
-      if (u.done) {
-        generation += 1;
-        homeGen2 = generation;
-        invoke("query", { generation, text: "past week" }).catch(() => {});
-      }
-      return;
-    }
-    if (u.generation === homeGen2) {
-      homeFiles = u.items
-        .filter((i) => ["file", "screenshot"].includes(kindName(i.kind)) && i.modified_at)
-        .sort((a, b) => (b.modified_at ?? 0) - (a.modified_at ?? 0))
-        .slice(0, 6);
       return;
     }
     const keep = items[selected]?.id;
@@ -649,12 +653,14 @@
     filters = u.filters && (u.filters.kind || u.filters.date) ? u.filters : null;
     // Suggestions wait for something to sit among, unless the word is a command.
     const found = suggest(query, ACTIONS, ui.mode, ui.show);
-    const ready = u.done || results.length > 0 || found.some((s) => s.command);
+    const intent = found.some((s) => s.exact);
+    const ready = u.done || results.length > 0 || intent;
     all = ready ? placeSuggestions(results, found, query, actionItem) : results;
     understoodLine = readLine(results, query);
     // A suggestion never keeps the selection when better rows arrive above it.
     const at = keep && !keep.startsWith("action:") ? items.findIndex((i) => i.id === keep) : -1;
-    selected = at >= 0 ? at : 0;
+    // An intent word's action is selected unless the user has moved off the top.
+    selected = at >= 0 && !(intent && selected === 0) ? at : 0;
     if (pending?.generation === u.generation) {
       const wanted = results.find(pending.find);
       if (wanted) {
@@ -846,10 +852,14 @@
     if (e.isComposing) return;
     const plain = !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
     if (earlier !== null) {
-      const n = earlier.length;
-      if (plain && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      if (plain && e.key === "ArrowUp") {
         e.preventDefault();
-        earlierAt = (earlierAt + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+        moveEarlier((earlierAt + 1) % earlier.length);
+        return;
+      }
+      if (plain && e.key === "Delete") {
+        e.preventDefault();
+        forgetSearch();
         return;
       }
       if (plain && e.key === "Enter" && e.target === input) {
@@ -857,9 +867,10 @@
         setInput(earlier[earlierAt]);
         return;
       }
-      if (e.key === "Escape") {
+      if (e.key === "Escape" || (plain && e.key === "ArrowDown")) {
         e.preventDefault();
         earlier = null;
+        input?.focus();
         return;
       }
       // Any other key goes back to typing; Tab and a button's Enter reach the list.
@@ -877,13 +888,7 @@
         return;
       }
     }
-    if (
-      plain &&
-      e.key === "ArrowUp" &&
-      e.target === input &&
-      !panel && !disk && !card && !showHelp &&
-      opensHistory(query, input!.selectionStart, input!.selectionEnd, selected)
-    ) {
+    if (plain && e.key === "ArrowUp" && e.target === input && opensHistory(view, query)) {
       e.preventDefault();
       openHistory();
       return;
@@ -1091,6 +1096,7 @@
     if (!home) tipsFocused = false;
   });
   const cur = $derived(items[selected] as Item | undefined);
+  const meant = $derived(didYouMean(suggest(query, ACTIONS, ui.mode, ui.show), cur));
   const previewSource = $derived(previewable(cur) ? { path: pathOf(cur)! } : null);
 
   // Thumbnail of the top hit, through the same safe preview command.
@@ -1192,7 +1198,8 @@
     if (disk) return "disk";
     if (showSetup) return "setup";
     if (showHelp) return "help";
-    return query.trim() === "" ? "home" : "results";
+    if (query.trim() !== "") return "results";
+    return earlier === null ? "home" : "history";
   });
   const hints = $derived(
     footerHints(view, {
@@ -1203,6 +1210,9 @@
       clears: pinned && query !== "",
     }),
   );
+
+  // One quiet line: the status only while something happens, then the keys.
+  const footText = $derived([footerStatus(status), ...hints].filter(Boolean).join(" · "));
 
   const dur = (n: number) => (look.reduced ? 0 : n);
 </script>
@@ -1370,29 +1380,6 @@
       <kbd aria-hidden="true" data-tauri-drag-region>Esc</kbd>
     </div>
 
-    {#if earlier !== null}
-      <div class="history glass" data-no-drag>
-        <h3 class="label-caps">Recent searches</h3>
-        <ul role="listbox" aria-label="Recent searches">
-          {#each earlier as h, n (h)}
-            <li role="presentation">
-              <button
-                type="button"
-                class="hline"
-                class:selected={n === earlierAt}
-                role="option"
-                aria-selected={n === earlierAt}
-                onfocus={() => (earlierAt = n)}
-                onmousemove={() => (earlierAt = n)}
-                onclick={() => setInput(h)}>{h}</button
-              >
-            </li>
-          {/each}
-        </ul>
-        <!-- Focus stays in the search box, so the chosen line is announced. -->
-        <span class="sr" aria-live="polite">{earlier[earlierAt]}</span>
-      </div>
-    {/if}
     {#if !panel && !disk && !card && !showHelp && !showSetup}
       <div class="chips" role="tablist" aria-label="Filter results">
         {#each LANES as l, n}
@@ -1480,38 +1467,61 @@
         </div>
       {:else if home}
         <div class="home" out:fade={{ duration: dur(70) }}>
-          <div class="quick" role="group" aria-label="Quick actions">
-            {#each quickActions as a (a.id)}
-              <button type="button" class="qa" title={a.name} aria-label={a.name} onclick={() => runAction(a)}>
-                {@render glyph(a.category)}
-              </button>
-            {/each}
-          </div>
-          <section class="card glass pick" aria-label="Recent">
-            <h3 class="label-caps">Recent</h3>
-            {#if recent.length === 0}
-              <p class="empty">{noFolders ? "Nothing yet. Choose folders to search." : "Nothing yet. Type to search."}</p>
-            {:else}
-              <ul class="recent">
-                {#each recent as r, n (r.item.id)}
-                  <li>
-                    <button class="row rrow" class:top={n === 0} onclick={() => openRecent(r)}>
-                      {#if n === 0 && thumbSrc}
-                        <img class="thumb" src={thumbSrc} alt="" />
-                      {:else}
-                        {@render tile(r.item)}
-                      {/if}
-                      <span class="text">
-                        <span class="title">{r.clip ? mask(r.item.title) : r.item.title}</span>
-                        <span class="sub" class:code={!r.clip}
-                          >{r.clip ? "Copied" : (r.item.uri ?? r.item.subtitle ?? "")}</span
-                        >
-                      </span>
-                      <span class="when">{dayLabel(r.ts)}</span>
-                    </button>
-                  </li>
-                {/each}
-              </ul>
+          <section class="card glass pick" aria-label={earlier === null ? "Recent" : "Recent searches"}>
+            <!-- Recent keeps its place under the searches, so the height never changes. -->
+            <div class="face" class:away={earlier !== null}>
+              <h3 class="label-caps">Recent</h3>
+              {#if recent.length === 0}
+                <p class="empty">{noFolders ? "Nothing yet. Choose folders to search." : "Nothing yet. Type to search."}</p>
+              {:else}
+                <ul class="recent">
+                  {#each recent as r, n (r.item.id)}
+                    <li>
+                      <button class="row rrow" class:top={n === 0} onclick={() => openRecent(r)}>
+                        {#if n === 0 && thumbSrc}
+                          <img class="thumb" src={thumbSrc} alt="" />
+                        {:else}
+                          {@render tile(r.item)}
+                        {/if}
+                        <span class="text">
+                          <span class="title">{r.clip ? mask(r.item.title) : r.item.title}</span>
+                          <span class="sub" class:code={!r.clip}
+                            >{r.clip ? "Copied" : (r.item.uri ?? r.item.subtitle ?? "")}</span
+                          >
+                        </span>
+                        <span class="when">{dayLabel(r.ts)}</span>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+            {#if earlier !== null}
+              <div class="face over" data-no-drag>
+                <h3 class="label-caps">Recent searches</h3>
+                <ul class="recent" role="listbox" aria-label="Recent searches" bind:this={historyList}>
+                  {#each earlier as h, n (h)}
+                    <li role="presentation">
+                      <button
+                        type="button"
+                        class="row rrow"
+                        class:top={n === earlierAt}
+                        class:picked={n === earlierAt}
+                        role="option"
+                        aria-selected={n === earlierAt}
+                        onfocus={() => (earlierAt = n)}
+                        onmousemove={() => (earlierAt = n)}
+                        onclick={() => setInput(h)}
+                      >
+                        <span class="icon" aria-hidden="true">{@render glyph("Search")}</span>
+                        <span class="text"><span class="title">{h}</span></span>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+                <!-- Focus stays in the search box, so the chosen line is announced. -->
+                <span class="sr" aria-live="polite">{earlier[earlierAt]}</span>
+              </div>
             {/if}
           </section>
 
@@ -1544,6 +1554,13 @@
                 {/each}
               </ul>
             {/if}
+            <div class="qgrid" role="group" aria-label="Quick actions">
+              {#each quickActions as a (a.id)}
+                <button type="button" class="btn small qa" onclick={() => runAction(a)}>
+                  {@render glyph(a.category)}<span>{a.label ?? a.name}</span>
+                </button>
+              {/each}
+            </div>
             <div class="idx">
               <div>
                 <strong>{idx.text}</strong>
@@ -1601,6 +1618,7 @@
                 {/if}
               </div>
             {/if}
+            {#if meant}<p class="readline" role="status">{meant}</p>{/if}
             {#if understoodLine}<p class="readline" role="status">{understoodLine}</p>{/if}
             {#if corrected}<p class="note">Showing results for <b>{corrected}</b></p>{/if}
             {#if items.length > 0}
@@ -1781,15 +1799,8 @@
       </nav>
     {/if}
 
-    <footer>
-      {#if status}<span>{idx.text}</span>{/if}
-      <span>
-        {#if notice}
-          <span class="warn">{notice}</span>
-        {:else}
-          {hints.join(" · ")}
-        {/if}
-      </span>
+    <footer title={notice || footText}>
+      {#if notice}<span class="warn" role="alert">{notice}</span>{:else}{footText}{/if}
     </footer>
     </div>
   </div>
@@ -1821,7 +1832,7 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
-    padding: 20px 0 24px;
+    padding: 20px 0 14px;
     min-height: 0;
   }
 
@@ -1909,65 +1920,6 @@
     overflow: hidden;
     clip-path: inset(50%);
     white-space: nowrap;
-  }
-  .history {
-    padding: 10px 12px;
-    border-radius: var(--r-tile);
-  }
-  .history h3 {
-    margin: 0 8px 4px;
-  }
-  .history ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    max-height: 240px;
-    overflow-y: auto;
-  }
-  .hline {
-    all: unset;
-    box-sizing: border-box;
-    display: block;
-    width: 100%;
-    padding: 5px 12px;
-    border: 1px solid transparent;
-    border-radius: var(--r-md);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-  .hline.selected {
-    background: var(--accent-soft);
-    border-color: var(--accent-line);
-  }
-  .hline:focus-visible,
-  .qa:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-  }
-  .quick {
-    grid-column: 1 / -1;
-    display: flex;
-    justify-content: center;
-    gap: 8px;
-  }
-  .qa {
-    all: unset;
-    box-sizing: border-box;
-    width: 36px;
-    height: 36px;
-    display: grid;
-    place-items: center;
-    border: 1px solid var(--glass-border);
-    border-radius: var(--r-pill);
-    background: var(--glass-bg);
-    color: var(--text-soft);
-    cursor: pointer;
-  }
-  .qa:hover {
-    background: var(--accent-soft);
-    border-color: var(--accent-line);
   }
   .readline {
     margin: 0;
@@ -2126,7 +2078,45 @@
     font-size: var(--fs-sm);
   }
   .pick {
+    position: relative;
     min-height: 230px;
+  }
+  .face {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+  }
+  .face.away {
+    visibility: hidden;
+  }
+  .face.over {
+    position: absolute;
+    inset: 18px 22px;
+  }
+  .rrow.picked {
+    background: var(--accent-soft);
+  }
+  .qgrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .qa {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .qa :global(svg) {
+    flex: none;
+  }
+  .qa span {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   .side {
     padding: 18px 20px;
@@ -2637,22 +2627,21 @@
     outline-offset: 2px;
   }
 
+  /* No box: the shadow keeps it readable over whatever is behind the window. */
   footer {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
     flex: none;
-    align-self: center;
-    box-sizing: border-box;
     max-width: 100%;
-    padding: 5px 14px;
-    border-radius: var(--r-pill);
-    background: var(--glass-bg-dock);
-    border: 1px solid var(--glass-border);
+    box-sizing: border-box;
+    padding: 0 14px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     text-align: center;
     color: var(--muted);
     font-size: var(--fs-xs);
+    text-shadow:
+      0 0 4px var(--panel-base),
+      0 0 8px var(--panel-base);
   }
   .warn {
     color: var(--accent);

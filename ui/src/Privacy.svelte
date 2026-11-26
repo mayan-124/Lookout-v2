@@ -146,6 +146,8 @@
     ["filters", "Date and kind filters", "Search like “pdf last week”.", "Shows in help and tips."],
   ];
   const ALWAYS_SKIPPED = [
+    "Lookout's own data and cache folders",
+    "AppData (unless you add a folder inside it)",
     "node_modules",
     ".git",
     "Windows",
@@ -295,17 +297,22 @@
   }
 
   let historyMessage = $state("");
+  // Asked once each time remembering is switched off.
+  let askClear = $state(false);
   async function setRememberSearches(el: HTMLInputElement) {
     historyMessage = "";
+    askClear = false;
     try {
       const s = await invoke<PrivacyState>("set_remember_searches", { on: el.checked });
       if (info) info.remember_searches = s.remember_searches;
+      askClear = !s.remember_searches;
     } catch (e) {
       el.checked = !el.checked;
       historyMessage = errorText(e);
     }
   }
   async function clearHistory() {
+    askClear = false;
     try {
       await invoke("clear_search_history");
       historyMessage = "Cleared your search history.";
@@ -577,10 +584,8 @@
         <h3 class="label-caps">Always skipped</h3>
         <p class="hint">These are never read, whatever you choose above.</p>
         <div class="tags">{#each ALWAYS_SKIPPED as t}<span class="tag">{t}</span>{/each}</div>
-        <h3 class="label-caps">Not read inside AppData</h3>
-        <p class="hint">
-          Files in AppData\Local and AppData\Roaming show up by name, but text in these cache and log folders is not read.
-        </p>
+        <h3 class="label-caps">Not read inside AppData folders you add</h3>
+        <p class="hint">In a folder inside AppData that you add yourself, these cache and log folders are not read.</p>
         <div class="tags">{#each skipList as t}<span class="tag">{t}</span>{/each}</div>
 
         <h3 class="label-caps">Pause</h3>
@@ -616,11 +621,19 @@
         <h3 class="label-caps">Search history</h3>
         {@render toggle(
           "Remember my searches",
-          "Press Up in the search box to see them. Text that looks like a secret is never kept.",
+          "Press the Up arrow in an empty box to see your last searches.",
           info?.remember_searches ?? true,
           setRememberSearches,
         )}
-        <p><button class="btn small" onclick={clearHistory}>Clear history</button></p>
+        {#if askClear}
+          <p class="warning" role="alert">Also clear the searches already saved?</p>
+          <div class="row end">
+            <button class="btn small" onclick={() => (askClear = false)}>Keep them</button>
+            <button class="btn small primary" onclick={clearHistory}>Clear them</button>
+          </div>
+        {:else}
+          <p><button class="btn small" onclick={clearHistory}>Clear history now</button></p>
+        {/if}
         {#if historyMessage}<p class="hint" role="status">{historyMessage}</p>{/if}
         <h3 class="label-caps">Other programs</h3>
         {@render cliSwitch()}

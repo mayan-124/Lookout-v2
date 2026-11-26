@@ -1,6 +1,6 @@
 // Plain words to features: suggestions, ghost text, the "what I understood"
 // line. Pure functions over the registry; no DOM and no calls to the backend.
-import { advertised, type Action, type Mode, type Show } from "./modes.ts";
+import { advertised, type Action, type Mode, type Show, type View } from "./modes.ts";
 
 export const MAX_SUGGESTIONS = 2;
 const MIN_QUERY = 3;
@@ -60,8 +60,10 @@ function tier(q: string, words: string[], keys: Keys): number {
 
 export interface Suggestion {
   action: Action;
-  /** The text is exactly a command word or stem: the row goes first. */
-  command: boolean;
+  /** The whole text is its name, a command word or a synonym: it goes first. */
+  exact: boolean;
+  /** Found by a synonym only: no command word or name begins as typed. */
+  synonym: boolean;
 }
 
 /**
@@ -72,7 +74,7 @@ export function suggest(query: string, actions: Action[], mode: Mode, show: Show
   const q = fold(query);
   if (q.length < MIN_QUERY) return [];
   const words = q.split(" ");
-  const found: { action: Action; command: boolean; tier: number; rank: number }[] = [];
+  const found: (Suggestion & { tier: number; rank: number })[] = [];
   for (const action of actions) {
     // The stem is already in the box: the user is typing the rest.
     if (action.stem && query === action.stem && query.endsWith(" ")) continue;
@@ -82,7 +84,9 @@ export function suggest(query: string, actions: Action[], mode: Mode, show: Show
     const listed = advertised(action, mode, show);
     if (t < 3 && !listed) continue;
     const command = keys.commands.includes(q);
-    found.push({ action, command, tier: t, rank: t * 4 + (command ? 2 : 0) + (listed ? 1 : 0) });
+    const synonym = ![fold(action.name), ...keys.commands].some((k) => k.startsWith(q));
+    const rank = t * 4 + (command ? 2 : 0) + (listed ? 1 : 0);
+    found.push({ action, exact: t === 3, synonym, tier: t, rank });
   }
   // A whole word was typed: nothing is guessed from it.
   const whole = found.some((f) => f.tier === 3);
@@ -90,7 +94,7 @@ export function suggest(query: string, actions: Action[], mode: Mode, show: Show
     .filter((f) => !whole || f.tier > 1)
     .sort((a, b) => b.rank - a.rank)
     .slice(0, MAX_SUGGESTIONS)
-    .map(({ action, command }) => ({ action, command }));
+    .map(({ action, exact, synonym }) => ({ action, exact, synonym }));
 }
 
 export interface Row {
@@ -119,18 +123,41 @@ function outranks(r: Row, q: string): boolean {
 }
 
 /**
- * Puts the suggestion rows among the results without reordering those: an exact
- * command word first, anything else below the last row that outranks it.
+ * Puts the suggestion rows among the results. For a whole intent word its action
+ * goes first, even above a file or folder of that name; results that already do
+ * it take that place instead. Anything else goes below the last row that
+ * outranks it. The other results keep their order.
  */
 export function placeSuggestions<T extends Row>(rows: T[], found: Suggestion[], query: string, make: (a: Action) => T): T[] {
-  const open = found.filter((s) => !rows.some((r) => covers(s.action, r)));
-  if (open.length === 0) return rows;
+  const first: T[] = [];
+  const later: T[] = [];
+  const moved = new Set<T>();
+  for (const { action, exact } of found) {
+    const doing = rows.filter((r) => covers(action, r));
+    if (!exact) {
+      if (doing.length === 0) later.push(make(action));
+    } else if (doing.length === 0) {
+      first.push(make(action));
+    } else {
+      for (const r of doing.filter((r) => !moved.has(r))) {
+        moved.add(r);
+        first.push(r);
+      }
+    }
+  }
+  if (first.length + later.length === 0) return rows;
   const q = fold(query);
-  const first = open.filter((s) => s.command).map((s) => make(s.action));
-  const later = open.filter((s) => !s.command).map((s) => make(s.action));
-  let after = rows.length;
-  while (after > 0 && !outranks(rows[after - 1], q)) after--;
-  return [...first, ...rows.slice(0, after), ...later, ...rows.slice(after)];
+  const others = rows.filter((r) => !moved.has(r));
+  let after = others.length;
+  while (after > 0 && !outranks(others[after - 1], q)) after--;
+  return [...first, ...others.slice(0, after), ...later, ...others.slice(after)];
+}
+
+/** The line under the box when Enter would start an action found by a synonym. */
+export function didYouMean(found: Suggestion[], selected: Row | undefined): string {
+  if (selected?.source !== "action") return "";
+  const hit = found.find((s) => s.synonym && s.action.id === selected.metadata?.action);
+  return hit ? `Did you mean ${hit.action.name.toLowerCase()}? Press Enter` : "";
 }
 
 /** The faint rest of a command, or "". Only listed commands, never plain searches. */
@@ -183,6 +210,5 @@ export const worthRemembering = (query: string) => {
   return q !== "" && !["help", "?", "clip", "shot"].includes(q);
 };
 
-/** Up opens the history: an empty box, or the cursor at its start on the first row. */
-export const opensHistory = (query: string, start: number | null, end: number | null, selected: number) =>
-  query === "" || (start === 0 && end === 0 && selected === 0);
+/** Up opens the recent searches only in the empty box on Home; elsewhere it moves. */
+export const opensHistory = (view: View, query: string) => view === "home" && query === "";

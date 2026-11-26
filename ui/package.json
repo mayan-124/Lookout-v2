@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test": "node --test tests/theme.test.mjs tests/chart.test.mjs tests/setup.test.mjs tests/modes.test.mjs tests/tips.test.mjs tests/settings.test.mjs tests/discover.test.mjs",
+    "test": "node --test tests/theme.test.mjs tests/chart.test.mjs tests/setup.test.mjs tests/modes.test.mjs tests/tips.test.mjs tests/settings.test.mjs tests/discover.test.mjs tests/home.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

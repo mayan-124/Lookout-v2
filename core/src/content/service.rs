@@ -521,15 +521,20 @@ impl Worker {
             .store(self.cfg.store.size_bytes(), Ordering::Relaxed);
     }
 
-    fn root_of(&self, path: &Path) -> Option<&PathBuf> {
-        self.cfg.roots.iter().find(|r| path.starts_with(r))
+    fn excluded(&self, path: &Path) -> bool {
+        self.cfg.excludes.excluded_under(path, &self.cfg.roots)
     }
 
-    fn excluded(&self, path: &Path) -> bool {
-        match self.root_of(path) {
-            Some(root) => self.cfg.excludes.excludes_path(path, root),
-            None => true,
+    /// Removes documents that are in a skipped place (or under no root) before
+    /// anything is read, so a stricter skip list applies at once.
+    fn tidy(&mut self) {
+        for p in self.cfg.store.all_paths() {
+            if self.excluded(Path::new(&p)) {
+                let _ = self.cfg.store.remove_path(&p);
+                self.uncommitted += 1;
+            }
         }
+        self.commit();
     }
 
     /// Walks every root, queues what is new or changed (documents first, then
@@ -540,6 +545,7 @@ impl Worker {
         let mut complete = true;
         self.more = false;
         self.refresh_size();
+        self.tidy();
         self.known = Some(self.cfg.store.all_mtimes());
         let mut queue = Vec::new();
         for root in self.cfg.roots.clone() {

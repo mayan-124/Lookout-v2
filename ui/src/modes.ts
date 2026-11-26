@@ -73,16 +73,20 @@ export interface Action {
   covered?: string;
   /** What a help row or tip types instead of the example. */
   try?: string;
-  /** Place in the Home quick-actions row. */
+  /** Place in the Home quick-action grid. */
   home?: number;
+  /** The grid leaves it out below this mode. */
+  homeMin?: Mode;
+  /** A shorter name for the grid button. */
+  label?: string;
 }
 
-const RANK: Record<Mode, number> = { simple: 0, standard: 1, full: 2 };
+export const RANK: Record<Mode, number> = { simple: 0, standard: 1, full: 2 };
 /** The switches Simple turns off (core/src/uimode.rs). */
 const SIMPLE_OFF: Feature[] = ["disk", "clipboard", "capture", "quick_keys"];
 
 /**
- * Whether help, tips, the quick row and ghost text list an action. A switch that
+ * Whether help, tips, the quick grid and ghost text list an action. A switch that
  * is on always lists it. One that is off hides it, except where Simple itself
  * turned it off and the action is meant for every mode (capture).
  */
@@ -114,30 +118,26 @@ export function helpEntries(rows: Action[], mode: Mode, show: Show, open: boolea
 export const tipsFor = (rows: Action[], mode: Mode, show: Show) =>
   shown(rows, mode, show).filter((r) => mode === "full" || !r.advanced);
 
-export type View = "home" | "results" | "help" | "setup" | "settings" | "disk" | "confirm" | "done";
+export type View = "home" | "history" | "results" | "help" | "setup" | "settings" | "disk" | "confirm" | "done";
 
-export const MAX_HINTS = 5;
+export const MAX_HINTS = 3;
 
 /** The key hints under the dock: only what works in this view. */
 export function footerHints(
   view: View,
   o: { mode: Mode; hotkey: string; enter?: string | null; path?: boolean; clears?: boolean },
 ): string[] {
-  const jump = o.mode === "full" ? ["Ctrl+1–5 sections"] : [];
+  const jump = o.mode === "full" ? ["Ctrl+1–5 sections"] : o.hotkey ? [`${o.hotkey} opens Lookout`] : [];
   const esc = o.clears ? "Esc clear" : "Esc hide";
+  const enter = o.enter ? `Enter ${o.enter.replace("…", "").toLowerCase()}` : "↑↓ pick";
   const hints: Record<View, string[]> = {
-    home: ["Type ? for help", esc, ...(o.hotkey ? [`${o.hotkey} opens Lookout`] : []), ...jump],
-    results: [
-      ...(o.enter ? [`Enter ${o.enter.replace("…", "").toLowerCase()}`] : []),
-      "↑↓ pick",
-      o.path ? "Tab complete" : "Tab filter",
-      esc,
-      ...jump,
-    ],
+    home: ["Type ? for help", esc, ...jump],
+    history: ["Enter use", "Del remove", "Esc back"],
+    results: [enter, o.path ? "Tab complete" : "Tab filter", esc],
     help: ["↑↓ pick", "Enter try", esc],
     setup: ["Tab next", "Enter choose", "Esc skip setup"],
     settings: ["Tab next", "Esc close"],
-    disk: ["↑↓ move", "→ expand", "Backspace up", "Esc close"],
+    disk: ["↑↓ move", "→ expand", "Esc close"],
     confirm: ["Tab move", "Enter choose", "Esc cancel"],
     done: ["Esc close"],
   };

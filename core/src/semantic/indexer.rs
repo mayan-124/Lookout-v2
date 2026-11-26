@@ -256,10 +256,7 @@ impl Worker {
     }
 
     fn excluded(&self, path: &Path) -> bool {
-        match self.cfg.roots.iter().find(|r| path.starts_with(r)) {
-            Some(root) => self.cfg.excludes.excludes_path(path, root),
-            None => true,
-        }
+        self.cfg.excludes.excluded_under(path, &self.cfg.roots)
     }
 
     /// Files known to the content index, best candidates first: recently

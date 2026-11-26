@@ -45,6 +45,7 @@ pub mod query;
 pub mod quick;
 pub mod quickkeys;
 pub mod ranking;
+pub mod recent;
 #[cfg(windows)]
 pub mod screengrab;
 pub mod securedb;

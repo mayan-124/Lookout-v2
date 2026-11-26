@@ -69,6 +69,16 @@ impl SearchHistory {
         })
     }
 
+    /// Forgets one search.
+    pub fn remove(&self, text: &str) -> Result<(), DbError> {
+        // Overwrite the freed pages: the file is rewritten from them.
+        self.db.write(|c| {
+            c.execute_batch("PRAGMA secure_delete = ON")?;
+            c.execute("DELETE FROM search_history WHERE text = ?1", params![text])?;
+            Ok(())
+        })
+    }
+
     pub fn clear(&self) -> Result<(), DbError> {
         // Overwrite the freed pages: the file is rewritten from them.
         self.db
@@ -118,6 +128,15 @@ mod tests {
         assert!(!h.record(&"x".repeat(MAX_CHARS + 1), true).unwrap());
         assert!(h.recent(100).unwrap().is_empty());
         assert!(h.record("tax report 2025", true).unwrap());
+    }
+
+    #[test]
+    fn one_entry_can_be_removed() {
+        let h = history();
+        h.record("alpha", true).unwrap();
+        h.record("beta", true).unwrap();
+        h.remove("alpha").unwrap();
+        assert_eq!(h.recent(10).unwrap(), ["beta"]);
     }
 
     #[test]

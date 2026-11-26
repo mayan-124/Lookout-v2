@@ -955,6 +955,51 @@ mod cap {
         .unwrap()
     }
 
+    #[test]
+    fn documents_in_skipped_places_are_removed_before_anything_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let store = Arc::new(ContentStore::open_in_ram().unwrap());
+        let doc = |path: std::path::PathBuf| lookout_core::content::store::ContentDoc {
+            path: path.to_string_lossy().into_owned(),
+            mtime: 1,
+            text: "tidyword".into(),
+            kind: lookout_core::content::store::DocKind::Text,
+        };
+        // Neither file exists: only the skipped one may go while paused.
+        store.upsert(&doc(root.join("kept.txt"))).unwrap();
+        store
+            .upsert(&doc(root.join("AppData").join("old.txt")))
+            .unwrap();
+        store.commit().unwrap();
+        assert_eq!(store.doc_count(), 2);
+        let pause = PauseState::new();
+        pause.set(true);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("waiting.txt"), "not read while paused").unwrap();
+        let mut svc = ContentService::start(ContentConfig {
+            roots: vec![root.clone()],
+            excludes: Excludes::default(),
+            store: store.clone(),
+            ocr: None,
+            office: None,
+            idle: Arc::new(AlwaysIdle),
+            idle_secs: 0,
+            duty: 1.0,
+            commit_every: 1,
+            pause,
+            max_bytes: 512 * 1024 * 1024,
+            fast: false,
+        })
+        .unwrap();
+        eventually("tidied", || store.doc_count() == 1);
+        assert_eq!(
+            store.all_paths(),
+            [root.join("kept.txt").to_string_lossy().into_owned()]
+        );
+        svc.stop();
+    }
+
     /// Waits for the first scan round to have run and finished.
     fn wait_done(svc: &ContentService) {
         let stats = svc.stats();

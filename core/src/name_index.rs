@@ -538,6 +538,41 @@ impl NameIndex {
         }
     }
 
+    /// Removes every folder `skip(folder, its root)` rejects, with everything
+    /// below it. Returns how many entries went.
+    pub fn prune_dirs(&mut self, mut skip: impl FnMut(&Path, &Path) -> bool) -> usize {
+        let before = self.dead_entries;
+        // The root of each folder: a parent always comes before its children.
+        let mut roots: Vec<u32> = Vec::with_capacity(self.dirs.len());
+        for i in 0..self.dirs.len() {
+            let id = i as u32;
+            let parent = self.dirs[i].parent;
+            let root = if parent == NO_PARENT {
+                id
+            } else {
+                roots[parent as usize]
+            };
+            roots.push(root);
+            if self.dirs[i].dead {
+                continue;
+            }
+            let gone = (parent != NO_PARENT && self.dirs[parent as usize].dead)
+                || match (self.dir_path(id), self.dir_path(root)) {
+                    (Some(dir), Some(root)) => skip(&dir, &root),
+                    _ => false,
+                };
+            self.dirs[i].dead = gone;
+        }
+        for i in 0..self.entries.len() {
+            if self.dirs[self.entries[i].dir as usize].dead {
+                self.kill(i);
+            }
+        }
+        let removed = self.dead_entries - before;
+        self.compact();
+        removed
+    }
+
     /// Rebuilds the arenas without tombstoned entries.
     pub fn compact(&mut self) {
         if self.dead_entries == 0 {

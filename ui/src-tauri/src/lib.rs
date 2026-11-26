@@ -15,6 +15,7 @@ use lookout_core::cli::{parse_dev_flags, parse_measure_args, MeasureArgs};
 use lookout_core::content::idle::SystemIdle;
 use lookout_core::content::ocr::WindowsOcr;
 use lookout_core::engine::Sink;
+use lookout_core::item::Item;
 use lookout_core::latency::{self, Sample};
 use lookout_core::lookout::{Lookout, StartOptions, Status};
 use lookout_core::pause::PauseState;
@@ -680,6 +681,14 @@ fn index_status(services: State<Services>) -> Option<Status> {
     Some(status)
 }
 
+/// The Home "Recent" files. Async: it looks at each file on disk.
+#[tauri::command]
+async fn recent_files(services: State<'_, Services>) -> Result<Vec<Item>, String> {
+    Ok(services
+        .current()
+        .map_or_else(Vec::new, |l| l.recent_files(6)))
+}
+
 // ----------------------------------------------------------- search history
 
 /// The newest searches for the Up arrow; none while remembering is off.
@@ -702,6 +711,15 @@ async fn record_search(text: String, services: State<'_, Services>) -> Result<()
         .history()
         .record(&text, remember)
         .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Forgets one recent search.
+#[tauri::command]
+async fn remove_search(text: String, services: State<'_, Services>) -> Result<(), String> {
+    services_of(&services)?
+        .history()
+        .remove(&text)
         .map_err(|e| e.to_string())
 }
 
@@ -2237,6 +2255,8 @@ pub fn run() {
             quickkey_rename,
             quickkey_delete,
             index_status,
+            recent_files,
+            remove_search,
             privacy_state,
             get_appearance,
             set_appearance,

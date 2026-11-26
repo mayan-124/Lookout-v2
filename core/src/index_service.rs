@@ -205,7 +205,11 @@ impl IndexService {
         config: IndexConfig,
         pause: PauseState,
     ) -> Result<Self, ServiceError> {
-        let roots: Vec<PathBuf> = config.roots.into_iter().filter(|r| r.is_dir()).collect();
+        let roots: Vec<PathBuf> = config
+            .roots
+            .into_iter()
+            .filter(|r| r.is_dir() && !config.excludes.is_excluded_folder(r))
+            .collect();
         let stop = Arc::new(AtomicBool::new(false));
         let crawling = Arc::new(AtomicBool::new(!roots.is_empty()));
         let rescans = Arc::new(AtomicU64::new(0));
@@ -511,10 +515,7 @@ fn rescan(ctx: &Ctx) {
 
 fn apply_changes(ctx: &Ctx, paths: impl Iterator<Item = PathBuf>) {
     for path in paths {
-        let Some(root) = ctx.roots.iter().find(|r| path.starts_with(r)) else {
-            continue;
-        };
-        if ctx.excludes.excludes_path(&path, root) {
+        if ctx.excludes.excluded_under(&path, &ctx.roots) {
             continue;
         }
         if let Some(hook) = &ctx.on_path {

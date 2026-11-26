@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ghostFor, opensHistory, placeSuggestions, readLine, suggest, within1, worthRemembering } from "../src/discover.ts";
+import { didYouMean, ghostFor, opensHistory, placeSuggestions, readLine, suggest, within1, worthRemembering } from "../src/discover.ts";
 import { helpEntries, tipsFor } from "../src/modes.ts";
 import { ACTIONS, ICONS, actionById, homeActions } from "../src/registry.ts";
 
@@ -86,16 +86,64 @@ test("anything else stays below strong file, app and System rows", () => {
   const strong = place("tim", [file("timer notes.txt"), file("Time Sheet.lnk", "apps")]);
   assert.deepEqual(strong.slice(0, 2), ["files:timer notes.txt", "apps:Time Sheet.lnk"]);
   assert.ok(strong[2].startsWith("action:"));
-  // A synonym is not a command word.
-  assert.deepEqual(place("countdown", [file("countdown.mp4")]), ["files:countdown.mp4", "action:timer"]);
+  // A typo is not the word: a file that begins as typed stays on top.
+  assert.deepEqual(place("countdwn", [file("countdwn.mp4")]), ["files:countdwn.mp4", "action:timer"]);
   // Weak matches (inside a word) come after the suggestion, in their own order.
-  assert.deepEqual(place("countdown", [file("mycountdowns"), file("xcountdown")]), [
+  assert.deepEqual(place("countdwn", [file("mycountdwns"), file("xcountdwn")]), [
     "action:timer",
-    "files:mycountdowns",
-    "files:xcountdown",
+    "files:mycountdwns",
+    "files:xcountdwn",
   ]);
   const system = { id: "system:sound", kind: { custom: "system" }, title: "Open Sound settings", source: "system" };
   assert.equal(place("sound settings", [system])[0], "system:sound");
+});
+
+test("a plain intent word puts its action first, even above a folder of that name", () => {
+  for (const [q, id] of [
+    ["snip", "screenshot"],
+    ["storage", "disk"],
+    ["alarm", "timer"],
+    ["screenshot", "screenshot"],
+    ["grab", "screenshot"],
+    ["space", "disk"],
+    ["theme", "appearance"],
+    ["countdown", "timer"],
+    ["SNÍP", "screenshot"],
+    ["prtsc", "screenshot"],
+    ["treemap", "disk"],
+    ["pomodoro", "timer"],
+    ["copied", "clipboard"],
+    ["night", "darkmode"],
+    ["dark", "darkmode"],
+    ["colour", "appearance"],
+    ["how", "help"],
+    ["what can i type", "help"],
+  ]) {
+    const folder = { id: `folder:${q}`, kind: "folder", title: q, source: "files" };
+    for (const mode of ["simple", "standard", "full"]) {
+      assert.equal(suggest(q, ACTIONS, mode, SHOW[mode])[0]?.action.id, id, `${mode} ${q}`);
+    }
+    assert.deepEqual(place(q, [folder]).slice(0, 1), [`action:${id}`], q);
+    assert.ok(place(q, [folder]).includes(`folder:${q}`));
+    assert.ok(ids(q).length <= 2, q);
+  }
+  // A longer query only contains the word: files keep the top.
+  assert.deepEqual(place("snip notes", [file("snip notes.txt")]), ["files:snip notes.txt"]);
+  assert.deepEqual(place("storage report", [file("storage report.pdf")]), ["files:storage report.pdf"]);
+});
+
+test("a synonym says what Enter will do; a command beginning does not", () => {
+  const hint = (q) => {
+    const found = suggest(q, ACTIONS, "full", SHOW.full);
+    const rows = placeSuggestions([], found, q, (a) => ({ id: a.id, source: "action", metadata: { action: a.id } }));
+    return didYouMean(found, rows[0]);
+  };
+  assert.equal(hint("alarm"), "Did you mean timer? Press Enter");
+  assert.equal(hint("storage"), "Did you mean disk analyzer? Press Enter");
+  for (const q of ["timer", "tim", "disk", "screenshot", "theme", "report"]) assert.equal(hint(q), "", q);
+  assert.equal(didYouMean(suggest("alarm", ACTIONS, "full", SHOW.full), file("alarm.txt")), "");
+  // Synonyms never become faint text.
+  for (const q of ["ala", "alar", "snip", "stor", "spac"]) assert.equal(ghost(q), "", q);
 });
 
 test("a result that already does it needs no suggestion", () => {
@@ -130,12 +178,11 @@ test("suggestions follow the mode, but a whole word always finds its action", ()
 
 test("the quick actions follow the mode", () => {
   const row = (mode, show = SHOW[mode]) => homeActions(mode, show).map((a) => a.id);
-  assert.deepEqual(row("simple"), ["timer", "screenshot", "settings", "help"]);
-  assert.deepEqual(row("standard"), ["timer", "screenshot", "clipboard", "settings", "help"]);
-  assert.deepEqual(row("full"), ["timer", "screenshot", "clipboard", "disk", "settings", "help"]);
+  assert.deepEqual(row("simple"), ["timer", "help"]);
+  assert.deepEqual(row("standard"), ["timer", "darkmode", "appearance", "help"]);
+  assert.deepEqual(row("full"), ["timer", "darkmode", "appearance", "help"]);
   // The user's own switches count.
-  assert.deepEqual(row("standard", { ...SHOW.standard, capture: false, disk: true }), ["timer", "clipboard", "disk", "settings", "help"]);
-  assert.ok(!row("simple", { ...SHOW.simple, timers: false }).includes("timer"));
+  assert.deepEqual(row("simple", { ...SHOW.simple, timers: false }), ["help"]);
 });
 
 test("every registry action appears in help", () => {
@@ -182,12 +229,11 @@ test("Tab takes the faint text; Esc dismisses it; neither acts during compositio
   assert.match(app, /aria-live="polite">\{ghost \?/);
 });
 
-test("Up opens the history in an empty box or at its start", () => {
-  assert.ok(opensHistory("", 0, 0, 0));
-  assert.ok(opensHistory("report", 0, 0, 0));
-  assert.ok(!opensHistory("report", 6, 6, 0));
-  assert.ok(!opensHistory("report", 0, 6, 0));
-  assert.ok(!opensHistory("report", 0, 0, 2));
+test("Up opens the history only in the empty box on Home", () => {
+  assert.ok(opensHistory("home", ""));
+  assert.ok(!opensHistory("results", "report"));
+  assert.ok(!opensHistory("help", "?"));
+  assert.ok(!opensHistory("settings", ""));
   for (const q of ["report", "clip invoices"]) assert.ok(worthRemembering(q), q);
   for (const q of ["", "  ", "help", "?", "clip ", "shot "]) assert.ok(!worthRemembering(q), q);
 });

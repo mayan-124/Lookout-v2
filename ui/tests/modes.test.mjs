@@ -82,13 +82,13 @@ test("hidden features still answer to typed commands", () => {
   assert.equal(typedSection("timer 5 min"), 0);
 });
 
-test("the footer shows at most five hints for the view", () => {
+test("the footer shows at most three hints for the view", () => {
   const o = { mode: "full", hotkey: "Alt+Space", enter: "Stop…" };
   for (const view of ["home", "results", "help", "setup", "settings", "disk", "confirm", "done"]) {
     const hints = footerHints(view, o);
     assert.ok(hints.length > 0 && hints.length <= MAX_HINTS, view);
   }
-  assert.deepEqual(footerHints("results", o), ["Enter stop", "↑↓ pick", "Tab filter", "Esc hide", "Ctrl+1–5 sections"]);
+  assert.deepEqual(footerHints("results", o), ["Enter stop", "Tab filter", "Esc hide"]);
   assert.deepEqual(footerHints("results", { mode: "simple", hotkey: "", path: true, clears: true }), [
     "↑↓ pick",
     "Tab complete",

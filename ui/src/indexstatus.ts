@@ -38,3 +38,14 @@ export function indexLine(s: IndexCounts | null): { state: IndexState; text: str
   }
   return { state: "done", text: `${files(s.files)} ready` };
 }
+
+/**
+ * The status part of the footer line: only while something is happening. How
+ * many files are ready is said on Home alone.
+ */
+export function footerStatus(s: IndexCounts | null): string {
+  const { state, text } = indexLine(s);
+  if (state === "paused") return "Indexing paused";
+  if (state !== "running" && state !== "waiting") return "";
+  return text.replace(/ · [\d,]+ files? ready$/, "");
+}

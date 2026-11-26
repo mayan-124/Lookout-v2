@@ -1,12 +1,25 @@
 //! Names that are never indexed (brief section 9): system folders,
-//! `node_modules`, `.git`, browser profiles and password-manager directories.
-//! `AppData` is searchable by folder name; the contents of its cache-like
-//! folders are not read (see [`APPDATA_SKIPPED`]).
-//! Matching is by lowercase file or folder name at any depth below a root. A
-//! root the user chose explicitly is never excluded itself.
+//! `node_modules`, `.git`, browser profiles, password-manager directories and
+//! the `AppData` tree. Matching is by lowercase file or folder name at any
+//! depth below a root. A root the user chose explicitly is never excluded
+//! itself, so a folder inside `AppData` can be added on its own; the contents
+//! of its cache-like folders are still not read (see [`APPDATA_SKIPPED`]).
+//! Lookout's own data folders are always excluded, whatever the roots are.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Name of Lookout's data folder under `%APPDATA%` and `%LOCALAPPDATA%`.
+pub const APP_ID: &str = "dev.lookout.app";
+
+/// Lookout's own data and cache folders on this PC.
+pub fn own_data_folders() -> Vec<PathBuf> {
+    ["APPDATA", "LOCALAPPDATA"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(|dir| PathBuf::from(dir).join(APP_ID))
+        .collect()
+}
 
 const DEFAULT_EXCLUDED: &[&str] = &[
     // System
@@ -18,6 +31,8 @@ const DEFAULT_EXCLUDED: &[&str] = &[
     "system volume information",
     "$windows.~bt",
     "recovery",
+    // Program data of this and every other app
+    "appdata",
     // Developer noise
     "node_modules",
     ".git",
@@ -30,9 +45,9 @@ const DEFAULT_EXCLUDED: &[&str] = &[
     "lastpass",
 ];
 
-/// Folders inside `AppData` whose contents are never indexed: browser and
-/// Electron caches, temp, crash dumps, logs and package caches. The folders'
-/// own names stay searchable. Shown in Settings.
+/// Folders whose contents are never indexed inside a folder of `AppData` that
+/// the user added: browser and Electron caches, temp, crash dumps, logs and
+/// package caches. The folders' own names stay searchable. Shown in Settings.
 pub const APPDATA_SKIPPED: &[&str] = &[
     "Cache",
     "Code Cache",
@@ -96,7 +111,7 @@ impl Default for Excludes {
     fn default() -> Self {
         Self {
             names: DEFAULT_EXCLUDED.iter().map(|s| (*s).to_owned()).collect(),
-            folders: Vec::new(),
+            folders: own_data_folders().iter().map(|f| folder_key(f)).collect(),
         }
     }
 }
@@ -133,14 +148,6 @@ impl Excludes {
         })
     }
 
-    /// For readers of file contents (text, OCR, semantic): same rules, and
-    /// `AppData` is not read at all.
-    pub fn for_contents(&self) -> Self {
-        let mut c = self.clone();
-        c.names.insert("appdata".to_owned());
-        c
-    }
-
     pub fn is_excluded(&self, name: &str) -> bool {
         self.names.contains(&name.to_lowercase())
     }
@@ -170,6 +177,15 @@ impl Excludes {
         }
         false
     }
+
+    /// True if none of `roots` reaches `path`. With nested roots one is enough:
+    /// a folder inside `AppData` added on its own is read although the root
+    /// above it skips it.
+    pub fn excluded_under(&self, path: &Path, roots: &[PathBuf]) -> bool {
+        !roots
+            .iter()
+            .any(|r| path.starts_with(r) && !self.excludes_path(path, r))
+    }
 }
 
 #[cfg(test)]
@@ -183,8 +199,42 @@ mod tests {
             assert!(e.is_excluded(n), "{n}");
         }
         assert!(!e.is_excluded("Documents"));
-        assert!(!e.is_excluded("AppData"), "AppData is searchable by name");
-        assert!(e.for_contents().is_excluded("AppData"));
+        assert!(e.is_excluded("AppData"));
+    }
+
+    #[test]
+    fn lookout_data_folders_are_excluded_even_below_or_as_a_root() {
+        let e = Excludes::default();
+        let own = own_data_folders();
+        assert_eq!(own.len(), 2, "APPDATA and LOCALAPPDATA are set");
+        for dir in own {
+            assert!(dir.ends_with(APP_ID));
+            let file = dir.join("content").join("meta.json");
+            for root in [dir.clone(), dir.parent().unwrap().to_path_buf()] {
+                assert!(e.excludes_path(&file, &root), "{}", root.display());
+            }
+        }
+    }
+
+    #[test]
+    fn appdata_is_skipped_unless_a_folder_inside_it_is_a_root() {
+        let e = Excludes::default();
+        let home = PathBuf::from(r"C:\Users\u");
+        let inner = home.join("AppData").join("Roaming").join("MyApp");
+        let file = inner.join("notes.txt");
+        let temp = home
+            .join("AppData")
+            .join("Local")
+            .join("Temp")
+            .join("a.txt");
+        let only_home = [home.clone()];
+        assert!(e.excluded_under(&file, &only_home));
+        assert!(e.excluded_under(&temp, &only_home));
+        let both = [home.clone(), inner.clone()];
+        assert!(!e.excluded_under(&file, &both));
+        assert!(e.excluded_under(&temp, &both), "only the added folder");
+        assert!(e.excluded_under(&inner.join("Cache").join("f"), &both));
+        assert!(!e.excluded_under(&home.join("a.txt"), &both));
     }
 
     #[test]

@@ -1,16 +1,18 @@
-// The one list of what Lookout can do. Help, the Home tips, the quick-actions
-// row, suggestions and ghost text all read it. To add a feature, add an entry to
+// The one list of what Lookout can do. Help, the Home tips, the quick-action
+// grid, suggestions and ghost text all read it. To add a feature, add an entry to
 // registry.json; core/tests/registry.rs checks its example is understood.
 import data from "./registry.json" with { type: "json" };
-import { advertised, type Action, type Mode, type Show } from "./modes.ts";
+import { RANK, advertised, type Action, type Mode, type Show } from "./modes.ts";
 
 export const ACTIONS = data as Action[];
 
 export const actionById = (id: string) => ACTIONS.find((a) => a.id === id);
 
-/** The quick-actions row on Home, in its own order. */
+/** The quick-action grid on Home, in its own order. */
 export const homeActions = (mode: Mode, show: Show) =>
-  ACTIONS.filter((a) => a.home && advertised(a, mode, show)).sort((a, b) => a.home! - b.home!);
+  ACTIONS.filter((a) => a.home && RANK[mode] >= RANK[a.homeMin ?? "simple"] && advertised(a, mode, show)).sort(
+    (a, b) => a.home! - b.home!,
+  );
 
 /** One simple 16x16 line icon per category. */
 export const ICONS: Record<string, string> = {

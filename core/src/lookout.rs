@@ -222,10 +222,15 @@ pub struct Lookout {
     keyable: Arc<Mutex<HashMap<String, crate::item::Item>>>,
     /// The same sources the bar uses, for command-line searches (see `cli_search`).
     cli_sources: Vec<Arc<dyn Source>>,
+    /// The folders in the name index, and what is skipped inside them.
+    home_roots: Vec<PathBuf>,
+    excludes: Excludes,
+    /// The files of the latest Home "Recent" list, which can be opened too.
+    home_targets: Mutex<HashMap<String, Target>>,
 }
 
-/// Adds `%LOCALAPPDATA%` and `%APPDATA%` (names only; contents are never read)
-/// to a non-empty root list, unless an existing root already covers them.
+/// The roots earlier versions indexed: they added `%LOCALAPPDATA%` and
+/// `%APPDATA%` on their own. Only used to load such a snapshot and prune it.
 fn with_appdata_roots(mut roots: Vec<PathBuf>) -> Vec<PathBuf> {
     if roots.is_empty() {
         return roots;
@@ -269,15 +274,17 @@ impl Lookout {
             roots
         };
         let root_count = roots.len();
-        // AppData\Local and \Roaming are searchable by name once indexing is on.
-        let roots = if opts.roots_override.is_empty() && opts.storage.paths.is_some() {
-            with_appdata_roots(roots)
-        } else {
-            roots
-        };
-        let excludes = Excludes::default()
+        let mut excludes = Excludes::default()
             .with_extra(opts.settings.excluded_names.clone())
             .with_folders(opts.settings.excluded_folders.clone());
+        // A data folder somewhere else (developer flag) is skipped too, unless
+        // the indexed folders themselves live inside it.
+        if let Some(paths) = &storage.paths {
+            let data = paths.root();
+            if !content_roots.iter().any(|r| r.starts_with(data)) {
+                excludes = excludes.with_folders([data.to_path_buf()]);
+            }
+        }
         // After the first crawl and after every rescan, lift files the user has opened before.
         let (hook_index, hook_store) = (index.clone(), frecency.clone());
         let on_reindexed: ReindexHook = Arc::new(move || {
@@ -288,18 +295,28 @@ impl Lookout {
             (Some(p), Some(k), None) => Some((p.names_file(), k.clone())),
             _ => None,
         };
-        let fingerprint = names_store::fingerprint(
-            &roots,
-            &names_store::excludes_key(
-                &opts.settings.excluded_names,
-                &opts.settings.excluded_folders,
-            ),
+        let excludes_key = names_store::excludes_key(
+            &opts.settings.excluded_names,
+            &opts.settings.excluded_folders,
         );
+        let fingerprint = names_store::fingerprint(&roots, &excludes_key);
+        // Entries a loaded snapshot held in places that are skipped now.
+        let mut tidied = 0;
         let preloaded = match &snapshot_path {
             Some((path, key)) if !roots.is_empty() => {
-                match names_store::load(path, key, &fingerprint, opts.settings.snapshot_max_entries)
-                {
-                    Some(idx) => {
+                let max = opts.settings.snapshot_max_entries;
+                let loaded = names_store::load(path, key, &fingerprint, max).or_else(|| {
+                    let old = with_appdata_roots(roots.clone());
+                    let old = names_store::fingerprint(&old, &excludes_key);
+                    names_store::load(path, key, &old, max)
+                });
+                match loaded {
+                    Some(mut idx) => {
+                        tidied = idx.prune_dirs(|dir, root| {
+                            !roots.iter().any(|r| r == root)
+                                || excludes.is_excluded_folder(dir)
+                                || excludes.excludes_path(dir, root)
+                        });
                         *write(&index) = idx;
                         apply_frecency(&index, &frecency, i64::from(unix_now()));
                         true
@@ -325,6 +342,10 @@ impl Lookout {
             ),
             None => None,
         };
+        // Save the tidied snapshot even if nothing else changes.
+        if let (Some(p), true) = (&persister, tidied > 0) {
+            p.mark_dirty();
+        }
         let on_changed: Option<ReindexHook> =
             persister.as_ref().map(Persister::dirty_flag).map(|d| {
                 let hook: ReindexHook = Arc::new(move || d.store(true, Ordering::Release));
@@ -363,7 +384,7 @@ impl Lookout {
                 } else {
                     let cfg = ContentConfig {
                         roots: content_roots.clone(),
-                        excludes: excludes.for_contents(),
+                        excludes: excludes.clone(),
                         store: store.clone(),
                         ocr: opts.settings.ocr.then(|| opts.ocr.clone()),
                         office: plugin_host
@@ -517,7 +538,7 @@ impl Lookout {
                 let indexer = SemanticIndexer::start(SemanticConfig {
                     client: client.clone(),
                     roots: content_roots.clone(),
-                    excludes: excludes.for_contents(),
+                    excludes: excludes.clone(),
                     store: c.store.clone(),
                     content: c.stats.clone(),
                     ocr: opts.settings.ocr.then(|| opts.ocr.clone()),
@@ -588,6 +609,7 @@ impl Lookout {
             inner(update);
         });
         let cli_sources = sources.clone();
+        let home_roots = roots.clone();
         let engine =
             Engine::new(sources, wrapped, EngineConfig::default()).map_err(StartError::Engine)?;
 
@@ -625,6 +647,9 @@ impl Lookout {
             timers,
             keyable,
             cli_sources,
+            home_roots,
+            excludes,
+            home_targets: Mutex::default(),
         })
     }
 
@@ -1019,9 +1044,40 @@ impl Lookout {
         last.map(|u| u.items)
             .unwrap_or_default()
             .into_iter()
+            .filter(|i| !self.in_skipped_folder(i))
             .filter(|i| kind.is_none_or(|k| matches_kind(i, k)))
             .take(limit)
             .collect()
+    }
+
+    /// A search hit inside Lookout's own data or a folder the user excluded.
+    fn in_skipped_folder(&self, item: &Item) -> bool {
+        matches!(item.source.as_str(), "files" | "content" | "semantic")
+            && item
+                .uri
+                .as_deref()
+                .is_some_and(|u| self.excludes.is_excluded_folder(std::path::Path::new(u)))
+    }
+
+    /// The Home "Recent" files: recently changed, nothing skipped, hidden or
+    /// temporary, the user's own kinds of files first.
+    pub fn recent_files(&self, limit: usize) -> Vec<Item> {
+        let items = crate::recent::files(
+            &self.index,
+            &self.home_roots,
+            &self.excludes,
+            unix_now(),
+            limit,
+        );
+        let targets = items
+            .iter()
+            .filter_map(|i| target_of(i).map(|t| (i.id.clone(), t)))
+            .collect();
+        *self
+            .home_targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = targets;
+        items
     }
 
     /// Logs a command-line request like other actions: its kind and the length
@@ -1074,13 +1130,17 @@ impl Lookout {
         }
     }
 
-    /// The target of a result from the most recent update, if it can be acted on.
+    /// The target of a result from the most recent update or the Home list,
+    /// if it can be acted on.
     pub fn target(&self, id: &str) -> Option<Target> {
-        self.targets
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(id)
-            .cloned()
+        [&*self.targets, &self.home_targets]
+            .into_iter()
+            .find_map(|map| {
+                map.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get(id)
+                    .cloned()
+            })
     }
 
     pub fn quick_keys(&self) -> &crate::quickkeys::QuickKeys {
@@ -1721,6 +1781,82 @@ mod tests {
             "excluded folder is never indexed: {r:?}"
         );
         assert_eq!(f.lookout.status().files, 2);
+    }
+
+    #[test]
+    fn an_old_snapshot_is_pruned_of_skipped_places_without_a_reindex() {
+        let dir = tempfile::tempdir().unwrap();
+        make_files(dir.path());
+        let files = dir.path().join("files");
+        let paths = paths_in(dir.path());
+        let old = new_shared_index();
+        {
+            let mut w = write(&old);
+            let root = w.add_root(&files, 0).unwrap();
+            w.add_file(root, "kept budget.txt", 0).unwrap();
+            let appdata = w.add_dir(root, "AppData", 0).unwrap();
+            let roaming = w.add_dir(appdata, "Roaming", 0).unwrap();
+            w.add_file(roaming, "meta.json", 0).unwrap();
+            // A root this version no longer indexes.
+            let gone = w.add_root(&dir.path().join("elsewhere"), 0).unwrap();
+            w.add_file(gone, "BrowserMetrics", 0).unwrap();
+        }
+        let fingerprint = names_store::fingerprint(
+            std::slice::from_ref(&files),
+            &names_store::excludes_key(&[], &[]),
+        );
+        names_store::save(&old, &paths.names_file(), &test_key(), &fingerprint).unwrap();
+
+        // Paused, so no crawl: the index is the pruned snapshot.
+        let pause = PauseState::new();
+        pause.set(true);
+        let (lookout, updates) = launch_with(dir.path(), Settings::default(), pause);
+        let f = Fixture {
+            lookout,
+            updates,
+            _dir: tempfile::tempdir().unwrap(),
+        };
+        let s = f.lookout.status();
+        assert_eq!((s.files, s.folders), (1, 1));
+        assert!(f.ask(1, "meta").items.is_empty());
+        assert_eq!(f.ask(2, "budget").items.len(), 1);
+    }
+
+    #[test]
+    fn lookout_data_is_never_indexed_even_below_a_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = dir.path().join("files");
+        let data = files.join(crate::exclude::APP_ID);
+        fs::create_dir_all(data.join("content")).unwrap();
+        fs::write(data.join("content").join("zebra meta.json"), b"x").unwrap();
+        fs::write(files.join("zebra.txt"), b"x").unwrap();
+        let sink: Sink = Arc::new(|_| {});
+        let lookout = Lookout::start(
+            StartOptions {
+                settings: Settings::default(),
+                roots_override: vec![files],
+                synthetic_files: None,
+                synthetic_uses_folders: false,
+                start_menu_dirs: Vec::new(),
+                storage: Storage::with_key(crate::storage::DataPaths::new(&data), test_key())
+                    .unwrap(),
+                idle: Arc::new(crate::content::idle::AlwaysIdle),
+                ocr: Arc::new(crate::content::ocr::NoOcr),
+                launcher: Arc::new(NoopLauncher),
+                system: None,
+                gate: GateConfig::default(),
+                plugins: None,
+            },
+            sink,
+            PauseState::new(),
+        )
+        .unwrap();
+        wait_until("indexed", || !lookout.status().indexing);
+        let names = |items: Vec<Item>| items.into_iter().map(|i| i.title).collect::<Vec<_>>();
+        assert_eq!(names(lookout.cli_search("zebra", None, 20)), ["zebra.txt"]);
+        assert_eq!(names(lookout.recent_files(6)), ["zebra.txt"]);
+        let recent = lookout.recent_files(6);
+        assert!(lookout.target(&recent[0].id).is_some(), "can be opened");
     }
 
     #[test]
