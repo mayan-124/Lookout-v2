@@ -2,6 +2,7 @@
 //! the `kind:` filter. Time phrases and action verbs arrive with later phases.
 
 use crate::item::Kind;
+use crate::operators::{self, Operators};
 
 /// A time window `[from, to)` in unix seconds, from a phrase like "last week".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,10 @@ pub struct Understood {
     pub kind: Option<String>,
     /// For example "modified last week".
     pub date: Option<String>,
+    /// Typed operators ("ext:pdf"), exactly as in the box.
+    pub operators: Vec<String>,
+    /// Something looked like an operator but was not understood.
+    pub invalid_operator: bool,
 }
 
 impl Understood {
@@ -128,6 +133,8 @@ pub struct ParsedQuery {
     /// Lowercase file extensions from a kind word ("pdf", "photos"); empty when
     /// there is none. Only files with one of these extensions match.
     pub exts: &'static [&'static str],
+    /// Typed `ext:`, `size:`, `in:` and `name:` filters.
+    pub ops: Operators,
     /// The labels for `exts` and `time`.
     pub understood: Understood,
     /// The input ended with whitespace after at least one word (quick keys
@@ -136,9 +143,9 @@ pub struct ParsedQuery {
 }
 
 impl ParsedQuery {
-    /// Nothing to search for: no words and no time window.
+    /// Nothing to search for: no words, time window or operator.
     pub fn is_empty(&self) -> bool {
-        self.tokens.is_empty() && self.time.is_none()
+        self.tokens.is_empty() && self.time.is_none() && self.ops.is_empty()
     }
 }
 
@@ -188,8 +195,9 @@ pub fn parse_opts<Tz: chrono::TimeZone>(
 ) -> ParsedQuery {
     let mut kind = None;
     let mut words = Vec::new();
-    for word in input.split_whitespace() {
-        let lower = word.to_lowercase();
+    // Operators come out first; what is left is read as before.
+    let typed = operators::parse(input);
+    for lower in typed.words {
         match lower.strip_prefix("kind:").and_then(Kind::from_filter) {
             Some(k) => kind = Some(k),
             None => words.push(lower),
@@ -200,7 +208,11 @@ pub fn parse_opts<Tz: chrono::TimeZone>(
         words.drain(..skip);
         kind = Some(Kind::Screenshot);
     }
-    let mut understood = Understood::default();
+    let mut understood = Understood {
+        operators: typed.typed,
+        invalid_operator: typed.invalid,
+        ..Understood::default()
+    };
     let mut exts: &'static [&'static str] = &[];
     let mut time = None;
     if !skip.date {
@@ -228,6 +240,7 @@ pub fn parse_opts<Tz: chrono::TimeZone>(
         kind,
         time,
         exts,
+        ops: typed.ops,
         understood,
         trailing_space: !input.trim().is_empty() && input.ends_with(char::is_whitespace),
     }
@@ -400,18 +413,52 @@ mod tests {
             "calc 2+2",
             "docs",
             "slides deck",
+            "report ext pdf",
+            "size of file",
+            "check in downloads",
+            "my name: john",
+            "https://github.com/a",
+            r"C:\Users\u",
+            "meeting 10:30",
+            "say \"hi there\"",
         ] {
             let q = parse_at(input, &at());
             let words: Vec<String> = input.split_whitespace().map(str::to_lowercase).collect();
             assert_eq!(q.tokens, words, "{input}");
             assert!(q.time.is_none() && q.kind.is_none(), "{input}");
             assert!(q.exts.is_empty() && q.understood.is_empty(), "{input}");
+            assert!(q.ops.is_empty(), "{input}");
+            assert!(q.understood.operators.is_empty(), "{input}");
+            assert!(!q.understood.invalid_operator, "{input}");
+            assert_eq!(q.text, words.join(" "), "{input}");
         }
         let q = parse_at("kind:folder photos", &at());
         assert_eq!(
             (q.kind, q.tokens),
             (Some(Kind::Folder), vec!["photos".to_owned()])
         );
+    }
+
+    #[test]
+    fn operators_combine_with_words_kind_and_date_filters() {
+        let q = parse_at("kind:file budget EXT:pdf size:>1mb last week", &at());
+        assert_eq!(q.tokens, ["budget"]);
+        assert_eq!(q.kind, Some(Kind::File));
+        assert!(q.time.is_some());
+        assert_eq!(q.ops.exts, ["pdf"]);
+        assert_eq!(q.understood.operators, ["EXT:pdf", "size:>1mb"]);
+        // A kind word still filters next to a date, along with an operator.
+        let q = parse_at("pdf yesterday in:Downloads", &at());
+        assert_eq!(q.understood.kind.as_deref(), Some("PDF"));
+        assert_eq!(q.ops.folders, ["downloads"]);
+        // Operators alone are a search; a bad one is a word with a hint.
+        assert!(!parse_at("ext:pdf", &at()).is_empty());
+        let q = parse_at("size:huge", &at());
+        assert_eq!(q.tokens, ["size:huge"]);
+        assert!(q.understood.invalid_operator && q.ops.is_empty());
+        // "Exact words" leaves typed operators in place.
+        let q = parse_opts("pdf today ext:txt", &at(), Skip::ALL);
+        assert_eq!((q.tokens.len(), q.ops.exts.len()), (2, 1));
     }
 
     #[test]

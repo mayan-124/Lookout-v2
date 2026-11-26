@@ -120,6 +120,7 @@ pub fn files(
             weights: RankingWeights::default(),
             time: Some((now.saturating_sub(WINDOW_SECS), u32::MAX)),
             exts: &[],
+            filter: None,
         };
         idx.search(&params, &|| false)
             .iter()

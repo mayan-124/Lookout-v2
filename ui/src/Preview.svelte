@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { pv } from "./previewui.svelte";
+  import { nextRequest, pv } from "./previewui.svelte";
 
   export interface Source {
     node?: number;
@@ -13,13 +13,20 @@
     is_dir: boolean;
     size: number;
     modified: number;
-    kind: "text" | "image" | "folder" | "other";
-    state: "ok" | "hidden" | "online_only" | "too_large" | "missing" | "denied" | "locked" | "error";
+    kind: "text" | "image" | "folder" | "archive" | "other";
+    state: "ok" | "hidden" | "skipped" | "online_only" | "too_large" | "missing" | "denied" | "locked" | "error";
     message: string;
     text: string | null;
     truncated: boolean;
     image: string | null;
     items: number | null;
+    entries: { name: string; size: number }[] | null;
+    thumbnail: boolean;
+  }
+  // A picture from the Windows shell: a thumbnail, else the file type's icon.
+  interface Shot {
+    image: string;
+    icon: boolean;
   }
 
   let { source, embedded = false }: { source: Source | null; embedded?: boolean } = $props();
@@ -64,6 +71,28 @@
     return () => clearTimeout(t);
   });
 
+  let shot = $state<{ path: string; shot: Shot } | null>(null);
+  // Asked for once the file's preview is known; a larger one for the overlay.
+  // Moving on cancels the request, and a failure leaves the plain preview.
+  $effect(() => {
+    const d = data;
+    const src: Source | null = key ? JSON.parse(key) : null;
+    const size = pv.overlay ? 1024 : 512;
+    if (!d?.thumbnail || !src || loading) return;
+    const request = nextRequest();
+    let live = true;
+    invoke<Shot | null>("preview_thumbnail", { node: src.node ?? null, hit: src.hit ?? null, path: src.path ?? null, size, request })
+      .then((r) => {
+        if (live && r) shot = { path: d.path, shot: r };
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+      invoke("cancel_thumbnail", { request }).catch(() => {});
+    };
+  });
+  const picture = $derived(data?.thumbnail && shot?.path === data.path ? shot.shot : null);
+
   function human(n: number): string {
     const u = ["B", "KB", "MB", "GB", "TB"];
     let i = 0;
@@ -74,7 +103,8 @@
     }
     return i === 0 ? `${n} B` : `${v.toFixed(v >= 100 ? 0 : 1)} ${u[i]}`;
   }
-  const icon = (d: PV) => (d.kind === "folder" ? "📁" : d.kind === "image" ? "🖼" : d.kind === "text" ? "📄" : "▫");
+  const icon = (d: PV) =>
+    d.kind === "folder" ? "📁" : d.kind === "image" ? "🖼" : d.kind === "text" ? "📄" : d.kind === "archive" ? "🗜" : "▫";
 
   function onKey(e: KeyboardEvent) {
     // Two panels can be mounted (the expanded chart has its own): one Space, one toggle.
@@ -110,8 +140,21 @@
     {:else if data.kind === "text" && data.text !== null}
       <pre class:large>{data.text}</pre>
       {#if data.truncated}<p class="note">Truncated: only the first 64 KB is shown.</p>{/if}
+    {:else if data.kind === "archive" && data.entries}
+      {#if picture && !picture.icon}<img class:large src={picture.image} alt={data.name} />{/if}
+      <ul class="zip" class:large aria-label="Files in this zip">
+        {#each data.entries as e, n (n)}
+          <li><span class="en">{e.name}</span><span>{e.name.endsWith("/") ? "" : human(e.size)}</span></li>
+        {/each}
+      </ul>
+      {#if (data.items ?? 0) > data.entries.length}
+        <p class="note">The first {data.entries.length} of {data.items?.toLocaleString()} entries.</p>
+      {/if}
     {:else if data.kind === "other"}
-      <p class="note">No preview for this type of file.</p>
+      {#if picture}
+        <img class:large class:fileicon={picture.icon} src={picture.image} alt={picture.icon ? "" : data.name} />
+      {/if}
+      {#if !picture || picture.icon}<p class="note">No preview for this type of file.</p>{/if}
     {/if}
   {:else if loading}
     <p class="note">Loading…</p>
@@ -190,6 +233,36 @@
   }
   img.large {
     max-height: 72vh;
+  }
+  img.fileicon {
+    width: 64px;
+    height: 64px;
+  }
+  .zip {
+    margin: 0;
+    padding: 6px 8px;
+    list-style: none;
+    max-height: 200px;
+    overflow: auto;
+    flex: none;
+    font-family: var(--font-code);
+    font-size: 12px;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .zip.large {
+    max-height: 66vh;
+    font-size: 14px;
+  }
+  .zip li {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .en {
+    overflow-wrap: anywhere;
+    min-width: 0;
   }
   pre {
     margin: 0;

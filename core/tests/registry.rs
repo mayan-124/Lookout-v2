@@ -61,6 +61,10 @@ fn every_example_is_understood() {
             "url" => assert!(quick::parse_web_url(typed).is_some()),
             "netpath" => assert!(quick::parse_unc(example).is_some()),
             "bydate" | "photos" => assert!(q.time.is_some() && !q.exts.is_empty(), "{typed}"),
+            "op_ext" | "op_size" | "op_in" | "op_name" => {
+                assert_eq!(q.understood.operators, [typed]);
+                assert!(!q.ops.is_empty() && q.tokens.is_empty(), "{typed}");
+            }
             "recent" => assert!(q.time.is_some()),
             "timer" => assert!(matches!(timers::parse(typed), timers::Parsed::Timer { .. })),
             "timers" => assert!(timers::is_list_request(typed)),

@@ -23,6 +23,7 @@ use lookout_core::placement::{self, Rect, Screen};
 use lookout_core::settings::{monitor_key, Appearance, Settings, DEFAULT_HOTKEY};
 use lookout_core::share::Refusal;
 use lookout_core::storage::{DataPaths, Storage};
+use lookout_core::thumbnail::{Shot, Thumbnails};
 use lookout_core::uimode::{Mode, Show, Ui, UiState};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -569,6 +570,9 @@ fn trim_memory_later(app: AppHandle, hidden: Instant) {
             if let Some(lookout) = app.try_state::<Services>().and_then(|s| s.current()) {
                 lookout.trim_memory();
             }
+            if let Some(thumbnails) = app.try_state::<Arc<Thumbnails>>() {
+                thumbnails.clear();
+            }
         }
     });
 }
@@ -1102,18 +1106,17 @@ async fn disk_prepare_file(
         .map_err(|e| e.to_string())
 }
 
-/// Read-only preview of one file for the disk pages. Exactly one of `node`
-/// (a scan row), `hit` (a large-file row) or `path` (a clean-up / duplicate row)
-/// names the file. Capped and masked in `lookout_core::preview`; nothing is kept.
-#[tauri::command]
-async fn preview_file(
+/// The file a preview request names. Exactly one of `node` (a scan row), `hit`
+/// (a large-file row) or `path` (a search result, clean-up or duplicate row) is
+/// given. A scanned folder also brings its (items, bytes).
+fn preview_target(
     node: Option<u32>,
     hit: Option<u32>,
     path: Option<String>,
-    services: State<'_, Services>,
-) -> Result<lookout_core::preview::Preview, String> {
-    let (path, folder) = if let Some(id) = node {
-        let tree = services_of(&services)?
+    services: &State<'_, Services>,
+) -> Result<(std::path::PathBuf, Option<(u64, u64)>), String> {
+    Ok(if let Some(id) = node {
+        let tree = services_of(services)?
             .disk()
             .tree()
             .ok_or_else(|| "there is no finished scan".to_owned())?;
@@ -1121,7 +1124,7 @@ async fn preview_file(
         let totals = tree.totals_of(id).map(|(i, s)| (u64::from(i), s));
         (p, totals)
     } else if let Some(idx) = hit {
-        let tree = services_of(&services)?
+        let tree = services_of(services)?
             .disk()
             .tree()
             .ok_or_else(|| "there is no finished scan".to_owned())?;
@@ -1133,10 +1136,71 @@ async fn preview_file(
         (std::path::PathBuf::from(p), None)
     } else {
         return Err("nothing to preview".into());
-    };
-    tauri::async_runtime::spawn_blocking(move || lookout_core::preview::build(&path, folder))
-        .await
-        .map_err(|e| e.to_string())
+    })
+}
+
+/// The skip rules of the running search, or the built-in ones without it.
+fn preview_rules(services: &State<'_, Services>) -> Arc<lookout_core::share::Rules> {
+    services
+        .current()
+        .map_or_else(Arc::default, |l| l.file_rules())
+}
+
+/// Read-only preview of one file. Capped and masked in `lookout_core::preview`;
+/// nothing is kept.
+#[tauri::command]
+async fn preview_file(
+    node: Option<u32>,
+    hit: Option<u32>,
+    path: Option<String>,
+    services: State<'_, Services>,
+) -> Result<lookout_core::preview::Preview, String> {
+    let (path, folder) = preview_target(node, hit, path, &services)?;
+    let rules = preview_rules(&services);
+    tauri::async_runtime::spawn_blocking(move || {
+        lookout_core::preview::build(&path, folder, &rules)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// The shell's thumbnail (or icon) of a file that may be previewed; `None` when
+/// there is none in time. See `lookout_core::thumbnail` for the limits.
+#[tauri::command]
+async fn preview_thumbnail(
+    node: Option<u32>,
+    hit: Option<u32>,
+    path: Option<String>,
+    size: u32,
+    request: u64,
+    services: State<'_, Services>,
+    thumbnails: State<'_, Arc<Thumbnails>>,
+) -> Result<Option<Shot>, String> {
+    let (path, _) = preview_target(node, hit, path, &services)?;
+    let rules = preview_rules(&services);
+    let thumbnails = thumbnails.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        lookout_core::preview::may_thumbnail(&path, &rules)
+            .then(|| thumbnails.get(&path, size, request))
+            .flatten()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// The selection moved on.
+#[tauri::command]
+fn cancel_thumbnail(request: u64, thumbnails: State<Arc<Thumbnails>>) {
+    thumbnails.cancel(request);
+}
+
+/// Values offered while `ext:` or `in:` is typed; kept in memory by the search.
+#[tauri::command]
+fn operator_values(services: State<Services>) -> lookout_core::lookout::OperatorValues {
+    services
+        .current()
+        .map(|l| l.operator_values())
+        .unwrap_or_default()
 }
 
 /// Makes the bar window wide enough for the disk view (or as large as the screen
@@ -2304,6 +2368,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     // Command-line access: the marker always; the pipe and its thread only if the user turned it on.
     app.manage(CliAccess::default());
+    app.manage(Arc::new(Thumbnails::default()));
     *lock(&handle.state::<CliAccess>().marker) =
         lookout_cli::winpipe::mark_running(lookout_cli::winpipe::RUNNING_MARKER_NAME);
     if lock(&handle.state::<Services>().settings).cli_access {
@@ -2399,6 +2464,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             hide_bar,
             preview_file,
+            preview_thumbnail,
+            cancel_thumbnail,
+            operator_values,
             frontend_ready,
             bar_painted,
             query,

@@ -68,6 +68,53 @@
     "try": "\\\\"
   },
   {
+    "id": "op_ext",
+    "name": "Search by extension",
+    "category": "Search",
+    "mode": "standard",
+    "synonyms": ["extension", "file extension", "by extension", "file format", "search operators", "operators", "extention"],
+    "example": "ext:pdf",
+    "description": "Only one extension, or several: ext:pdf,docx",
+    "run": "fill",
+    "stem": "ext:pdf"
+  },
+  {
+    "id": "op_size",
+    "name": "Search by size",
+    "category": "Search",
+    "mode": "standard",
+    "synonyms": ["file size", "by size", "large files", "big files", "bigger than", "smaller than"],
+    "example": "size:>10mb",
+    "description": "By size: size:<1gb or size:10mb..50mb",
+    "run": "fill",
+    "stem": "size:>10mb",
+    "tip": false
+  },
+  {
+    "id": "op_in",
+    "name": "Search in a folder",
+    "category": "Search",
+    "mode": "standard",
+    "synonyms": ["in folder", "search folder", "inside folder", "within folder", "folder filter", "search in"],
+    "example": "in:Downloads",
+    "description": "Only below a folder: quote names with spaces",
+    "run": "fill",
+    "stem": "in:Downloads",
+    "tip": false
+  },
+  {
+    "id": "op_name",
+    "name": "Search by file name",
+    "category": "Search",
+    "mode": "standard",
+    "synonyms": ["file name", "filename", "by name", "name only", "name filter", "exact name"],
+    "example": "name:report",
+    "description": "The word must be in the file name",
+    "run": "fill",
+    "stem": "name:report",
+    "tip": false
+  },
+  {
     "id": "bydate",
     "name": "Files by date",
     "category": "Time filters",

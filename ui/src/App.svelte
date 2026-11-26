@@ -19,6 +19,7 @@
   import { ACTIONS, ICONS, actionById, homeActions } from "./registry";
   import { didYouMean, ghostFor, opensHistory, placeSuggestions, readLine, suggest, worthRemembering } from "./discover";
   import { recentRows } from "./home";
+  import { NO_VALUES, OPERATOR_HINT, completions, operatorGhost, removeOperator, type OperatorValues } from "./operators";
   import { dismissDiskNotice, loadUi, setHideTips, setShow, ui } from "./uistate.svelte";
   import { footerStatus, indexLine, type IndexCounts } from "./indexstatus";
   import { EMPTY_DECK, deal, fixedTips, startRotation, turn } from "./tips";
@@ -39,7 +40,7 @@
     generation: number;
     items: Item[];
     done: boolean;
-    filters?: { kind: string | null; date: string | null };
+    filters?: { kind: string | null; date: string | null; operators: string[]; invalid_operator: boolean };
   }
   type Risk = "safe" | "confirm" | "dangerous";
   interface Prepared {
@@ -223,6 +224,25 @@
     run(query);
     input?.focus();
   }
+  // Typed operators ("ext:pdf") the backend understood, one chip each, and
+  // whether something only looked like one.
+  let typedOps: string[] = $state([]);
+  let badOperator = $state(false);
+  // Values for `ext:` and `in:`, asked for once per open, when first needed.
+  let opValues: OperatorValues = $state(NO_VALUES);
+  let opAsked = false;
+  function loadOperatorValues(text: string) {
+    if (opAsked || ui.mode === "simple" || !/(^|\s)(ext|in):/i.test(text)) return;
+    opAsked = true;
+    invoke<OperatorValues>("operator_values")
+      .then((v) => (opValues = v))
+      .catch(() => (opAsked = false));
+  }
+  function dropOperator(typed: string) {
+    query = removeOperator(query, typed);
+    run(query);
+    input?.focus();
+  }
   let selected = $state(0);
   let status: Status | null = $state(null);
   let notice = $state("");
@@ -356,6 +376,7 @@
     const terms = query
       .trim()
       .split(/\s+/)
+      .map((t) => (/^name:/i.test(t) ? t.slice(5).replaceAll('"', "") : t))
       .filter((t) => t.length > 0 && !t.includes(":"))
       .slice(0, 6)
       .map(escapeRe);
@@ -505,10 +526,14 @@
   function trackCaret() {
     if (input) caretAtEnd = input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
   }
+  const offering = $derived(
+    caretAtEnd && !quiet && !composing && ghostOff !== query && !panel && !disk && !card && earlier === null,
+  );
+  // Chips, suggestions and the hint: not in Simple, nor in a clip or shot search.
+  const opsShown = $derived(ui.mode !== "simple" && !panel && !disk && !card && typedSection(query) === 0);
+  const offers = $derived(offering && opsShown ? completions(query, opValues) : []);
   const ghost = $derived(
-    caretAtEnd && !quiet && !composing && ghostOff !== query && !panel && !disk && !card && earlier === null
-      ? ghostFor(query, ACTIONS, ui.mode, ui.show)
-      : "",
+    !offering ? "" : offers.length > 0 ? operatorGhost(query, offers) : ghostFor(query, ACTIONS, ui.mode, ui.show),
   );
 
   async function openHistory() {
@@ -640,6 +665,8 @@
     if (text.trim() === "") {
       all = [];
       filters = null;
+      typedOps = [];
+      badOperator = false;
       skip = [];
       done = true;
       selected = 0;
@@ -650,12 +677,15 @@
     if (isHelpQuery(text)) {
       all = [];
       filters = null;
+      typedOps = [];
+      badOperator = false;
       done = true;
       selected = 0;
       helpSelected = 0;
       return;
     }
     done = false;
+    loadOperatorValues(text);
     invoke("query", { generation, text, skip }).catch(() => {});
   }
 
@@ -675,6 +705,8 @@
     ];
     done = u.done;
     filters = u.filters && (u.filters.kind || u.filters.date) ? u.filters : null;
+    typedOps = u.filters?.operators ?? [];
+    badOperator = !!u.filters?.invalid_operator;
     // Suggestions wait for something to sit among, unless the word is a command.
     const found = quiet ? [] : suggest(query, ACTIONS, ui.mode, ui.show);
     const intent = found.some((s) => s.exact);
@@ -810,6 +842,7 @@
       refusal = null;
       visible = true;
       opens += 1;
+      opAsked = false;
       tipsHovered = false;
       // A confirm card is never brought back: its preview must be seen fresh.
       if (card?.phase === "confirm") invoke("cancel_action", { ticket: card.prepared.ticket });
@@ -820,6 +853,8 @@
         query = "";
         all = [];
         filters = null;
+        typedOps = [];
+        badOperator = false;
         understoodLine = "";
         skip = [];
         quiet = false;
@@ -910,6 +945,13 @@
       }
       // Any other key goes back to typing; Tab and a button's Enter reach the list.
       if (!["Shift", "Tab"].includes(e.key) && !(e.key === "Enter" && e.target instanceof HTMLButtonElement)) earlier = null;
+    }
+    // An operator value may need quotes, which the faint text cannot add.
+    if (offers.length > 0 && plain && e.target === input && (e.key === "Tab" || e.key === "Escape")) {
+      e.preventDefault();
+      if (e.key === "Tab") setInput(offers[0].text);
+      else ghostOff = query;
+      return;
     }
     if (ghost && plain && e.target === input) {
       if (e.key === "Tab") {
@@ -1457,7 +1499,7 @@
         aria-label="Search"
       />
       </div>
-      <span class="sr" aria-live="polite">{ghost ? `Suggestion: ${query}${ghost}. Press Tab to accept.` : ""}</span>
+      <span class="sr" aria-live="polite">{ghost ? `Suggestion: ${query}${ghost}. Press Tab to accept.` : offers.length > 0 ? `Suggestion: ${offers[0].label}. Press Tab to accept.` : ""}</span>
       {#if query.trim() !== "" && !panel && !disk && !card && !showHelp}
         <span class="count" aria-live="polite">{items.length} {items.length === 1 ? "result" : "results"}</span>
       {/if}
@@ -1689,9 +1731,28 @@
       {:else}
         <div class="res" class:one={items.length === 0} in:fly={{ x: 16, duration: dur(120), delay: dur(50) }}>
           <div class="card glass listcard">
-            {#if filters}
+            {#if offers.length > 0}
+              <div class="filters" role="group" aria-label="Suggestions">
+                {#each offers as o, n (o.text)}
+                  <button type="button" class="fchip" class:first={n === 0} onclick={() => setInput(o.text)}>{o.label}</button>
+                {/each}
+                <span class="tabkey"><kbd>Tab</kbd></span>
+              </div>
+            {/if}
+            {#if filters || (opsShown && typedOps.length > 0)}
               <div class="filters" aria-label="Understood from your words">
-                {#if filters.kind}
+                {#if opsShown}
+                  {#each typedOps as t, n (n)}
+                    <button type="button" class="fchip" title="Remove this filter" onclick={() => dropOperator(t)}>
+                      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"
+                        ><path d="M2 3h12l-4.5 5.5V13l-3-1.5V8.5z" /></svg
+                      >{t}<svg class="x" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"
+                        ><path d="M4 4l8 8M12 4l-8 8" /></svg
+                      >
+                    </button>
+                  {/each}
+                {/if}
+                {#if filters?.kind}
                   <button type="button" class="fchip" title="Remove this filter" onclick={() => removeFilter("kind")}>
                     <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"
                       ><path d="M2 3h12l-4.5 5.5V13l-3-1.5V8.5z" /></svg
@@ -1700,7 +1761,7 @@
                     >
                   </button>
                 {/if}
-                {#if filters.date}
+                {#if filters?.date}
                   <button type="button" class="fchip" title="Remove this filter" onclick={() => removeFilter("date")}>
                     <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"
                       ><rect x="2" y="3.5" width="12" height="10.5" rx="2" /><path d="M2 7h12M5.5 2v3M10.5 2v3" /></svg
@@ -1711,6 +1772,7 @@
                 {/if}
               </div>
             {/if}
+            {#if opsShown && badOperator && offers.length === 0}<p class="readline" role="status">{OPERATOR_HINT}</p>{/if}
             {#if meant}<p class="readline" role="status">{meant}</p>{/if}
             {#if understoodLine}<p class="readline" role="status">{understoodLine}</p>{/if}
             {#if corrected}<p class="note">Showing results for <b>{corrected}</b></p>{/if}
@@ -2624,6 +2686,15 @@
   }
   .fchip .x {
     opacity: 0.6;
+  }
+  .fchip.first {
+    color: var(--text);
+    border-color: var(--hover-border);
+  }
+  .tabkey {
+    align-self: center;
+    font-size: var(--fs-xs);
+    color: var(--muted);
   }
   .fchip:focus-visible {
     outline: 2px solid var(--accent);

@@ -200,7 +200,8 @@ impl Source for AppsSource {
     }
 
     fn query(&self, q: &ParsedQuery, ctx: &QueryContext, emit: &mut dyn FnMut(Vec<Item>)) {
-        if q.is_empty() || !matches!(q.kind, None | Some(Kind::App)) {
+        // Operators ask for files; apps have no extension, size or folder.
+        if q.is_empty() || !q.ops.is_empty() || !matches!(q.kind, None | Some(Kind::App)) {
             return;
         }
         let folded: Vec<String> = q.tokens.iter().map(|t| ranking::fold_lower(t)).collect();
@@ -290,13 +291,17 @@ impl Source for FilesSource {
         if q.is_empty() {
             return;
         }
+        // `name:` words rank like typed words; the filter keeps them in the name.
         let tokens: Vec<Vec<u8>> = q
             .tokens
             .iter()
-            .map(|t| ranking::fold_lower(t).into_bytes())
+            .map(|t| ranking::fold_lower(t))
+            .chain(q.ops.names.iter().cloned())
+            .map(String::into_bytes)
             .collect();
         let items = {
             let idx = read(&self.index);
+            let filter = (!q.ops.is_empty()).then(|| idx.filter(&q.ops));
             let params = SearchParams {
                 tokens: &tokens,
                 kind: q.kind.as_ref(),
@@ -310,6 +315,7 @@ impl Source for FilesSource {
                     )
                 }),
                 exts: q.exts,
+                filter: filter.as_ref(),
             };
             let (hits, corrected) = idx.search_noted(&params, &|| ctx.is_cancelled());
             if ctx.is_cancelled() {

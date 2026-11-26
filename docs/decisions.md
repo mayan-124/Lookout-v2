@@ -205,3 +205,19 @@ Protocol, layout and the honest list of what is and is not enforced are in `docs
 - **Dependencies.** No new crate: `zip` 9.8.1 (already used by the office helper) moves into core; `windows-sys` gets the `Win32_Networking_WinHttp` feature. The plugin executables link `lookout-core`, so this code is in their binaries but is never called.
 - **Offline vs unreachable.** Told apart only by WinHTTP's error code (name not resolved or "disconnected" is shown as offline); a captive portal or a blocked DNS can look like either.
 - **Not done:** auto-updates, other models, a first-run wizard.
+
+## Shell thumbnails in the file preview
+
+- **Third-party code.** Pictures of Office, PDF, video, audio, archive and other files come from `IShellItemImageFactory`. Whatever thumbnail and icon handlers are installed for a type run for them; this is other vendors' code, and it may run inside Lookout's process. A handler that crashes there can take Lookout down: nothing here prevents that.
+- **Never asked:** sensitive-file names, anything the indexer skips (excluded names and folders, `AppData` unless a folder in it was added, Lookout's own data), symbolic links, online-only placeholders, files over 200 MB, and `.lnk` / `.url` / `.pif` shortcuts. The same rules hide the text, image and zip previews, on the disk pages too.
+- **Limits:** one new STA thread per request, waited for 2 s. A running handler cannot be stopped; on timeout or a new selection its answer is dropped, and at 3 workers still running no more are started (previews fall back until one returns). The icon is fetched first, so it is what remains when the thumbnail is slow or missing. No error dialog or message.
+- **Memory only:** up to 8 thumbnails and 12 MB, dropped 30 s after the bar is hidden. Lookout writes none to disk; Windows keeps its own thumbnail cache. Sent to the window as 32-bit BMP (no new crate or Windows feature), at most 512 px in the panel and 1024 px in the large preview.
+- **Zip:** the first 50 names and sizes from the archive's directory, with the existing `zip` crate; nothing is unpacked, names are masked like other text.
+
+## Search operators
+
+- `ext:`, `size:`, `in:`, `name:` are parsed in `core/src/operators.rs` before the other words. Anything that does not read stays a word; a query without operators takes the same path as before.
+- **Sizes** are in the name index now (4 bytes a file: whole KiB plus a "bytes remain" bit, so kb/mb/gb comparisons are exact; units are 1024-based). Snapshot format `NIX2`; an older `NIX1` snapshot loads with sizes unknown until the startup crawl. A changed file's size is refreshed from its watcher event.
+- **`in:`** matches a folder name by its beginning (`in:down`), parts of a path with whole names before the last (`in:work/rep`), or a full path; only inside the indexed folders.
+- Apps are left out while an operator is typed. Content and meaning matches are filtered by path afterwards (a size check reads that file's metadata).
+- The extensions offered for `ext:` are counted when a crawl ends, never while typing.

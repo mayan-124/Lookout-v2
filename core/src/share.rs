@@ -65,7 +65,7 @@ impl Rules {
 
     /// The indexer's skip rules. Below an indexed folder they apply from that
     /// folder down; anywhere else, from the drive.
-    fn hides(&self, path: &Path) -> bool {
+    pub(crate) fn hides(&self, path: &Path) -> bool {
         if self.excludes.is_excluded_folder(path) {
             return true;
         }

@@ -194,6 +194,7 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<bool, String> {
                     weights,
                     time: None,
                     exts: &[],
+                    filter: None,
                 },
                 &|| false,
             );

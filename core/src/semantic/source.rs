@@ -6,7 +6,7 @@
 //! Whatever goes wrong (helper off, model missing, a crash) means no results,
 //! silently; the reason is shown in the Plugins panel.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -35,6 +35,8 @@ pub struct SemanticSource {
     /// Hits below this similarity are dropped by the source as well (the
     /// helper applies the user's configured minimum first).
     min_similarity: Box<dyn Fn() -> f32 + Send + Sync>,
+    /// The indexed folders, for the `in:` operator.
+    roots: Vec<PathBuf>,
 }
 
 impl SemanticSource {
@@ -51,7 +53,13 @@ impl SemanticSource {
             weights,
             triggers: triggers.into_iter().map(|t| t.to_lowercase()).collect(),
             min_similarity,
+            roots: Vec::new(),
         }
+    }
+
+    pub fn with_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.roots = roots;
+        self
     }
 
     fn is_trigger_query(&self, q: &ParsedQuery) -> bool {
@@ -105,6 +113,9 @@ impl Source for SemanticSource {
                 .and_then(|e| e.to_str())
                 .is_some_and(|e| IMAGE_EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)));
             if images_only && !is_image {
+                continue;
+            }
+            if !q.ops.is_empty() && !q.ops.accepts_path(path, &self.roots) {
                 continue;
             }
             // Only files the content index still has: deleted, excluded or

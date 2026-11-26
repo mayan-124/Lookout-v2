@@ -274,6 +274,7 @@ mod tests {
             weights: RankingWeights::default(),
             time: None,
             exts: &[],
+            filter: None,
         };
         let mut names: Vec<String> = index
             .search(&p, &|| false)

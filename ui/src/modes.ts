@@ -54,6 +54,8 @@ export interface Action {
   mode: Mode;
   /** Folded under "Advanced" in Simple and Standard. */
   advanced?: boolean;
+  /** False keeps it out of the Home tips. */
+  tip?: boolean;
   /** Plain words and common typos that suggest it. */
   synonyms: string[];
   /** Words that are the command itself: its suggestion goes first. */
@@ -116,7 +118,7 @@ export function helpEntries(rows: Action[], mode: Mode, show: Show, open: boolea
 
 /** The rows Home may show as a tip. Advanced ones only in Full. */
 export const tipsFor = (rows: Action[], mode: Mode, show: Show) =>
-  shown(rows, mode, show).filter((r) => mode === "full" || !r.advanced);
+  shown(rows, mode, show).filter((r) => r.tip !== false && (mode === "full" || !r.advanced));
 
 export type View = "home" | "history" | "results" | "help" | "setup" | "settings" | "disk" | "confirm" | "done";
 

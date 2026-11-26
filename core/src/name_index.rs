@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use memchr::memmem;
 
 use crate::item::{Kind, ScoreFeatures};
+use crate::operators::{self, size_code, Operators, SIZE_UNKNOWN};
 use crate::ranking::{self, RankingWeights};
 
 const NO_ORIG: u32 = u32::MAX;
@@ -36,13 +37,15 @@ pub enum IndexError {
     UnknownDir(u32),
 }
 
-/// 20 bytes per name. For folder entries `dir` is the folder's own id.
+/// 24 bytes per name. For folder entries `dir` is the folder's own id.
 #[derive(Debug, Clone, Copy)]
 struct Entry {
     lower_off: u32,
     orig_off: u32,
     dir: u32,
     modified: u32,
+    /// [`size_code`] of a file; [`SIZE_UNKNOWN`] for folders.
+    size: u32,
     orig_len: u16,
     flags: u8,
     frec: u8,
@@ -71,6 +74,18 @@ pub struct SearchParams<'a> {
     pub time: Option<(u32, u32)>,
     /// When not empty, only files with one of these (lowercase) extensions match.
     pub exts: &'a [&'a str],
+    /// The typed operators, prepared by [`NameIndex::filter`].
+    pub filter: Option<&'a NameFilter>,
+}
+
+/// [`Operators`] ready to test index entries: `in:` is resolved to folder ids.
+#[derive(Debug)]
+pub struct NameFilter {
+    exts: Vec<String>,
+    names: Vec<String>,
+    size: Option<(u32, u32)>,
+    /// Per folder id: whether files directly in it lie inside every `in:`.
+    dirs: Option<Vec<bool>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -264,6 +279,7 @@ impl NameIndex {
         name: &str,
         flags: u8,
         modified: u32,
+        size: u32,
     ) -> Result<(), IndexError> {
         if name.is_empty() || name.len() > usize::from(u16::MAX) || name.contains('\0') {
             return Err(IndexError::InvalidName);
@@ -292,6 +308,7 @@ impl NameIndex {
             orig_off,
             dir,
             modified,
+            size,
             orig_len,
             flags,
             frec: 0,
@@ -338,7 +355,7 @@ impl NameIndex {
             .file_name()
             .map_or_else(|| full.clone(), |n| n.to_string_lossy().into_owned());
         let id = self.push_dir_record(NO_PARENT, &full, &display)?;
-        self.push_entry(id, &display, FLAG_DIR, modified)?;
+        self.push_entry(id, &display, FLAG_DIR, modified, SIZE_UNKNOWN)?;
         self.dir_lookup.insert(path_key(path), id);
         Ok(id)
     }
@@ -349,17 +366,39 @@ impl NameIndex {
             .dir_path(parent)
             .ok_or(IndexError::UnknownDir(parent))?;
         let id = self.push_dir_record(parent, name, name)?;
-        self.push_entry(id, name, FLAG_DIR, modified)?;
+        self.push_entry(id, name, FLAG_DIR, modified, SIZE_UNKNOWN)?;
         self.dir_lookup
             .insert(path_key(&parent_path.join(name)), id);
         Ok(id)
     }
 
+    /// Adds a file of unknown size; no `size:` search finds it.
     pub fn add_file(&mut self, dir: u32, name: &str, modified: u32) -> Result<(), IndexError> {
+        self.add_coded_file(dir, name, modified, SIZE_UNKNOWN)
+    }
+
+    /// Adds a file of `bytes` bytes.
+    pub fn add_sized_file(
+        &mut self,
+        dir: u32,
+        name: &str,
+        modified: u32,
+        bytes: u64,
+    ) -> Result<(), IndexError> {
+        self.add_coded_file(dir, name, modified, size_code(bytes))
+    }
+
+    fn add_coded_file(
+        &mut self,
+        dir: u32,
+        name: &str,
+        modified: u32,
+        size: u32,
+    ) -> Result<(), IndexError> {
         if self.dirs.get(dir as usize).is_none_or(|d| d.dead) {
             return Err(IndexError::UnknownDir(dir));
         }
-        self.push_entry(dir, name, 0, modified)
+        self.push_entry(dir, name, 0, modified, size)
     }
 
     // ---------------------------------------------------------------- lookups
@@ -480,6 +519,156 @@ impl NameIndex {
         !self
             .find_files_exact(dir, &name.to_string_lossy())
             .is_empty()
+    }
+
+    /// Records the new size of an indexed file; false if it is not indexed.
+    pub fn set_file_size(&mut self, path: &Path, bytes: u64) -> bool {
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+            return false;
+        };
+        let Some(dir) = self.dir_id_for_path(parent) else {
+            return false;
+        };
+        let found = self.find_files_exact(dir, &name.to_string_lossy());
+        for &i in &found {
+            self.entries[i].size = size_code(bytes);
+        }
+        !found.is_empty()
+    }
+
+    /// The most common file extensions, most files first.
+    pub fn top_extensions(&self, limit: usize) -> Vec<String> {
+        let mut counts: HashMap<&[u8], usize> = HashMap::new();
+        for (i, e) in self.entries.iter().enumerate() {
+            if e.flags & (FLAG_DIR | FLAG_DEAD) != 0 {
+                continue;
+            }
+            let name = self.lower_name(i);
+            let Some(dot) = name.iter().rposition(|&b| b == b'.') else {
+                continue;
+            };
+            let ext = &name[dot + 1..];
+            // A leading dot is a hidden file's name, not an extension.
+            if dot > 0 && (1..=8).contains(&ext.len()) && ext.iter().all(u8::is_ascii_alphanumeric)
+            {
+                *counts.entry(ext).or_default() += 1;
+            }
+        }
+        let mut found: Vec<(&[u8], usize)> = counts.into_iter().collect();
+        found.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        found
+            .into_iter()
+            .take(limit)
+            .map(|(e, _)| String::from_utf8_lossy(e).into_owned())
+            .collect()
+    }
+
+    // -------------------------------------------------------------- operators
+
+    /// Prepares typed operators for one search of this index.
+    pub fn filter(&self, ops: &Operators) -> NameFilter {
+        let dirs = (!ops.folders.is_empty()).then(|| {
+            let mut all = vec![true; self.dirs.len()];
+            for fragment in &ops.folders {
+                for (inside, found) in all.iter_mut().zip(self.dirs_below(fragment)) {
+                    *inside &= found;
+                }
+            }
+            all
+        });
+        NameFilter {
+            exts: ops.exts.clone(),
+            names: ops.names.clone(),
+            size: ops.size,
+            dirs,
+        }
+    }
+
+    /// The folders named by `fragment`, and every folder below them.
+    fn dirs_below(&self, fragment: &str) -> Vec<bool> {
+        let mut found = vec![false; self.dirs.len()];
+        let segments: Vec<&str> = fragment.split('\\').collect();
+        let absolute = operators::is_absolute(fragment);
+        // A parent always has a smaller id than its folders.
+        for id in 0..self.dirs.len() {
+            let parent = self.dirs[id].parent;
+            found[id] = (parent != NO_PARENT && found[parent as usize])
+                || if absolute {
+                    self.dir_path(id as u32).is_some_and(|p| {
+                        ranking::fold_lower(&p.to_string_lossy()).starts_with(fragment)
+                    })
+                } else {
+                    self.ends_with_folders(id, &segments)
+                };
+        }
+        found
+    }
+
+    /// Whether folder `id` and its parents are named by `segments`: the last
+    /// one by its beginning, those before it in full.
+    fn ends_with_folders(&self, id: usize, segments: &[&str]) -> bool {
+        let mut cur = id;
+        for (n, segment) in segments.iter().rev().enumerate() {
+            let Some(d) = self.dirs.get(cur) else {
+                return false;
+            };
+            let start = d.lower_off as usize;
+            let name = &self.dir_lower[start..start + usize::from(d.lower_len)];
+            let ok = if n == 0 {
+                name.starts_with(segment.as_bytes())
+            } else {
+                name == segment.as_bytes()
+            };
+            if !ok {
+                return false;
+            }
+            // NO_PARENT is past the end, so a longer fragment stops there.
+            cur = d.parent as usize;
+        }
+        true
+    }
+
+    fn passes(&self, i: usize, e: &Entry, f: &NameFilter) -> bool {
+        let is_dir = e.flags & FLAG_DIR != 0;
+        if let Some((lo, hi)) = f.size {
+            if is_dir || e.size < lo || e.size > hi {
+                return false;
+            }
+        }
+        if !f.exts.is_empty() {
+            let name = self.lower_name(i);
+            let has = |x: &String| {
+                name.strip_suffix(x.as_bytes())
+                    .is_some_and(|r| r.ends_with(b"."))
+            };
+            if is_dir || !f.exts.iter().any(has) {
+                return false;
+            }
+        }
+        if !f.names.is_empty() {
+            let name = self.lower_name(i);
+            if !f
+                .names
+                .iter()
+                .all(|w| memmem::find(name, w.as_bytes()).is_some())
+            {
+                return false;
+            }
+        }
+        match &f.dirs {
+            // A folder is inside what its parent is inside.
+            Some(dirs) => {
+                let dir = if is_dir {
+                    self.dirs
+                        .get(e.dir as usize)
+                        .map_or(NO_PARENT, |d| d.parent)
+                } else {
+                    e.dir
+                };
+                dirs.get(dir as usize).copied().unwrap_or(false)
+            }
+            None => true,
+        }
     }
 
     // --------------------------------------------------------------- removals
@@ -636,7 +825,7 @@ impl NameIndex {
 
     // ----------------------------------------------------------------- search
 
-    /// Whether a live entry passes the kind and time filters.
+    /// Whether a live entry passes the kind, time and operator filters.
     fn admitted(&self, i: usize, e: &Entry, p: &SearchParams<'_>) -> bool {
         if e.flags & FLAG_DEAD != 0 {
             return false;
@@ -656,7 +845,7 @@ impl NameIndex {
                 return false;
             }
         }
-        true
+        p.filter.is_none_or(|f| self.passes(i, e, f))
     }
 
     fn features(e: &Entry, p: &SearchParams<'_>, m: f32) -> (ScoreFeatures, f32) {
@@ -822,13 +1011,14 @@ impl NameIndex {
         heap.into_iter().map(|Reverse(c)| c).collect()
     }
 
-    /// A query with only a time window: the most recent entries inside it.
+    /// A query without words (a time window, operators): the most recent entries
+    /// that pass.
     fn search_by_time(
         &self,
         p: &SearchParams<'_>,
         cancelled: &(dyn Fn() -> bool + Sync),
     ) -> Vec<Hit> {
-        if p.time.is_none() || p.limit == 0 {
+        if (p.time.is_none() && p.filter.is_none()) || p.limit == 0 {
             return Vec::new();
         }
         let mut heap = BinaryHeap::with_capacity(p.limit + 1);
@@ -1151,7 +1341,10 @@ fn initials_match(name: &[u8], token: &[u8]) -> bool {
 
 // ------------------------------------------------------------- persistence
 
-const SNAPSHOT_MAGIC: &[u8; 4] = b"NIX1";
+const SNAPSHOT_MAGIC: &[u8; 4] = b"NIX2";
+/// Written before file sizes were kept; still read, with sizes unknown until the
+/// startup crawl replaces the index.
+const SNAPSHOT_NO_SIZES: &[u8; 4] = b"NIX1";
 /// Sanity limit when reading a snapshot (the index itself is capped far lower).
 const SNAPSHOT_MAX: u32 = 100_000_000;
 
@@ -1234,6 +1427,7 @@ impl NameIndex {
             }
             put_u32(w, ordinal[e.dir as usize])?;
             put_u32(w, e.modified)?;
+            put_u32(w, e.size)?;
             put_str(w, &self.entry_name(i))?;
         }
         Ok(())
@@ -1244,7 +1438,8 @@ impl NameIndex {
         let bad = |m: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, m.to_owned());
         let mut magic = [0u8; 4];
         r.read_exact(&mut magic)?;
-        if &magic != SNAPSHOT_MAGIC {
+        let sized = &magic == SNAPSHOT_MAGIC;
+        if !sized && &magic != SNAPSHOT_NO_SIZES {
             return Err(bad("not a name index snapshot"));
         }
         let mut idx = NameIndex::new();
@@ -1275,9 +1470,10 @@ impl NameIndex {
         for _ in 0..files {
             let dir = get_u32(r)?;
             let modified = get_u32(r)?;
+            let size = if sized { get_u32(r)? } else { SIZE_UNKNOWN };
             let name = get_str(r)?;
             let d = *ids.get(dir as usize).ok_or_else(|| bad("file folder"))?;
-            idx.add_file(d, &name, modified)
+            idx.add_coded_file(d, &name, modified, size)
                 .map_err(|e| bad(&e.to_string()))?;
         }
         idx.shrink_to_fit();
@@ -1303,6 +1499,7 @@ mod tests {
             weights: RankingWeights::default(),
             time: None,
             exts: &[],
+            filter: None,
         };
         assert_eq!(idx.search(&p, &|| false).len(), 1);
         assert!(idx.remove_path(Path::new("C:\\Data\\\u{130}stanbul.txt")));
@@ -1336,6 +1533,7 @@ mod tests {
             weights: RankingWeights::default(),
             time: None,
             exts: &[],
+            filter: None,
         };
         let hits = back.search(&p, &|| false);
         let info = back.entry_info(hits[0].entry).unwrap();
@@ -1359,6 +1557,7 @@ mod tests {
             weights: RankingWeights::default(),
             time: None,
             exts: &[],
+            filter: None,
         }
     }
 
@@ -1371,6 +1570,113 @@ mod tests {
             .filter_map(|h| idx.entry_info(h.entry))
             .map(|i| i.name)
             .collect()
+    }
+
+    /// What a typed query finds, operators included, in name order.
+    fn typed(idx: &NameIndex, query: &str) -> Vec<String> {
+        let q = crate::query::parse(query);
+        let tokens: Vec<Vec<u8>> = q
+            .tokens
+            .iter()
+            .chain(&q.ops.names)
+            .map(|t| t.as_bytes().to_vec())
+            .collect();
+        let filter = idx.filter(&q.ops);
+        let mut p = params(&tokens, 50);
+        p.filter = Some(&filter);
+        let mut found = names(idx, &idx.search(&p, &|| false));
+        found.sort_unstable();
+        found
+    }
+
+    fn sized() -> NameIndex {
+        const MB: u64 = 1024 * 1024;
+        let mut idx = NameIndex::new();
+        let root = idx
+            .add_root(Path::new(r"C:\Users\u\Downloads"), NOW)
+            .unwrap();
+        let work = idx.add_dir(root, "My Work", NOW).unwrap();
+        let old = idx.add_dir(work, "Old", NOW).unwrap();
+        for (dir, name, bytes) in [
+            (root, "report.pdf", 200 * MB),
+            (root, "report.docx", MB),
+            (work, "budget.pdf", 20 * MB),
+            (old, "annual report.pdf", 500),
+            (root, ".env", 1),
+            (root, "a.tar.gz", MB),
+        ] {
+            idx.add_sized_file(dir, name, NOW, bytes).unwrap();
+        }
+        idx.add_file(root, "unknown.pdf", NOW).unwrap();
+        idx
+    }
+
+    #[test]
+    fn operators_filter_by_extension_size_folder_and_name() {
+        let idx = sized();
+        for (query, expected) in [
+            (
+                "ext:pdf",
+                &[
+                    "annual report.pdf",
+                    "budget.pdf",
+                    "report.pdf",
+                    "unknown.pdf",
+                ][..],
+            ),
+            ("report ext:docx", &["report.docx"]),
+            ("ext:tar.gz", &["a.tar.gz"]),
+            ("size:>100mb", &["report.pdf"]),
+            ("size:10mb..50mb", &["budget.pdf"]),
+            ("size:<1kb ext:pdf", &["annual report.pdf"]),
+            (
+                r#"in:"my work""#,
+                &["Old", "annual report.pdf", "budget.pdf"],
+            ),
+            (r#"in:"downloads/my work" budget"#, &["budget.pdf"]),
+            ("in:old ext:pdf", &["annual report.pdf"]),
+            (
+                r"in:c:\users\u\downloads\my ext:pdf",
+                &["annual report.pdf", "budget.pdf"],
+            ),
+            ("in:users ext:pdf", &[]),
+            ("name:annual", &["annual report.pdf"]),
+            // The word must be in the file name, not just the folder's.
+            ("name:work", &["My Work"]),
+            ("report name:budget", &[]),
+        ] {
+            assert_eq!(typed(&idx, query), expected, "{query}");
+        }
+    }
+
+    #[test]
+    fn sizes_are_updated_kept_in_snapshots_and_common_extensions_counted() {
+        let mut idx = sized();
+        assert_eq!(idx.top_extensions(2), ["pdf", "docx"]);
+        let path = Path::new(r"C:\Users\u\Downloads\report.docx");
+        assert!(idx.set_file_size(path, 300 * 1024 * 1024));
+        assert!(!idx.set_file_size(&path.with_extension("gone"), 1));
+        let mut bytes = Vec::new();
+        idx.export(&mut bytes).unwrap();
+        let back = NameIndex::import(&mut bytes.as_slice()).unwrap();
+        assert_eq!(typed(&back, "size:>100mb"), ["report.docx", "report.pdf"]);
+    }
+
+    #[test]
+    fn a_snapshot_without_sizes_still_loads() {
+        let mut bytes = b"NIX1".to_vec();
+        // One root folder "r" holding the file "a.pdf".
+        for v in [1u32, u32::MAX, 5, 1] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.push(b'r');
+        for v in [1u32, 0, 6, 5] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(b"a.pdf");
+        let idx = NameIndex::import(&mut bytes.as_slice()).unwrap();
+        assert_eq!(typed(&idx, "ext:pdf"), ["a.pdf"]);
+        assert!(typed(&idx, "size:>=0kb").is_empty(), "size unknown");
     }
 
     #[test]

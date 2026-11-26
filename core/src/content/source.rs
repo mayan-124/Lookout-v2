@@ -1,6 +1,6 @@
 //! The Content source: full-text and screenshot-text hits as ordinary items.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::extract::{self, FileClass};
@@ -29,6 +29,8 @@ pub struct ContentSource {
     store: Arc<ContentStore>,
     weights: RankingWeights,
     clock: fn() -> u32,
+    /// The indexed folders, for the `in:` operator.
+    roots: Vec<PathBuf>,
 }
 
 impl ContentSource {
@@ -37,7 +39,13 @@ impl ContentSource {
             store,
             weights,
             clock: unix_now,
+            roots: Vec::new(),
         }
+    }
+
+    pub fn with_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.roots = roots;
+        self
     }
 
     pub fn with_clock(mut self, clock: fn() -> u32) -> Self {
@@ -102,11 +110,22 @@ impl Source for ContentSource {
             text: &q.text,
             images_only: q.kind == Some(Kind::Screenshot),
             range: q.time.map(|t| (t.from, t.to)),
-            limit: CONTENT_LIMIT,
+            // Operators drop some hits afterwards, so more are asked for.
+            limit: if q.ops.is_empty() {
+                CONTENT_LIMIT
+            } else {
+                CONTENT_LIMIT * 5
+            },
         };
-        let Ok(hits) = self.store.search(&query) else {
+        let Ok(mut hits) = self.store.search(&query) else {
             return;
         };
+        if !q.ops.is_empty() {
+            hits.retain(|h| {
+                !ctx.is_cancelled() && q.ops.accepts_path(Path::new(&h.path), &self.roots)
+            });
+            hits.truncate(CONTENT_LIMIT);
+        }
         if ctx.is_cancelled() {
             return;
         }

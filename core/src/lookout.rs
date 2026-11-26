@@ -32,8 +32,8 @@ use crate::engine::{Engine, EngineConfig, Sink, Update};
 use crate::exclude::Excludes;
 use crate::frecency::{FrecencyError, FrecencyStore};
 use crate::index_service::{
-    apply_frecency, new_shared_index, unix_now, write, IndexConfig, IndexService, ReindexHook,
-    ServiceError, SharedIndex,
+    apply_frecency, new_shared_index, read, unix_now, write, IndexConfig, IndexService,
+    ReindexHook, ServiceError, SharedIndex,
 };
 use crate::item::{Item, Kind};
 use crate::names_store::{self, Persister};
@@ -229,8 +229,27 @@ pub struct Lookout {
     home_roots: Vec<PathBuf>,
     excludes: Excludes,
     share_rules: Arc<Rules>,
+    /// The common extensions in the name index, counted when a crawl ends.
+    extensions: Arc<Mutex<Vec<String>>>,
     /// The files of the latest Home "Recent" list, which can be opened too.
     home_targets: Mutex<HashMap<String, Target>>,
+}
+
+/// Extensions offered while `ext:` is typed.
+const SUGGESTED_EXTENSIONS: usize = 8;
+
+/// What the search box offers while an operator is typed.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct OperatorValues {
+    /// Most common first.
+    pub extensions: Vec<String>,
+    /// The indexed folders' names.
+    pub folders: Vec<String>,
+}
+
+fn count_extensions(index: &SharedIndex, into: &Mutex<Vec<String>>) {
+    let found = read(index).top_extensions(SUGGESTED_EXTENSIONS);
+    *into.lock().unwrap_or_else(PoisonError::into_inner) = found;
 }
 
 /// The roots earlier versions indexed: they added `%LOCALAPPDATA%` and
@@ -291,8 +310,11 @@ impl Lookout {
         }
         // After the first crawl and after every rescan, lift files the user has opened before.
         let (hook_index, hook_store) = (index.clone(), frecency.clone());
+        let extensions: Arc<Mutex<Vec<String>>> = Arc::default();
+        let hook_extensions = extensions.clone();
         let on_reindexed: ReindexHook = Arc::new(move || {
             apply_frecency(&hook_index, &hook_store, i64::from(unix_now()));
+            count_extensions(&hook_index, &hook_extensions);
         });
         // The encrypted snapshot of the name index, if it was made for these folders.
         let snapshot_path = match (&storage.paths, &storage.key, opts.synthetic_files) {
@@ -323,6 +345,7 @@ impl Lookout {
                         });
                         *write(&index) = idx;
                         apply_frecency(&index, &frecency, i64::from(unix_now()));
+                        count_extensions(&index, &extensions);
                         true
                     }
                     None => {
@@ -529,7 +552,8 @@ impl Lookout {
             }
         }
         if let Some(c) = &content {
-            sources.push(Arc::new(ContentSource::new(c.store.clone(), weights)));
+            let source = ContentSource::new(c.store.clone(), weights);
+            sources.push(Arc::new(source.with_roots(content_roots.clone())));
         }
         let semantic = match (&plugin_host, &content, &storage.paths) {
             (Some(host), Some(c), Some(paths))
@@ -547,13 +571,9 @@ impl Lookout {
                         .config_number(PLUGIN_ID, "min_similarity")
                         .unwrap_or(0.6) as f32
                 });
-                sources.push(Arc::new(SemanticSource::new(
-                    client.clone(),
-                    c.store.clone(),
-                    weights,
-                    triggers,
-                    min,
-                )));
+                let source =
+                    SemanticSource::new(client.clone(), c.store.clone(), weights, triggers, min);
+                sources.push(Arc::new(source.with_roots(content_roots.clone())));
                 let indexer = SemanticIndexer::start(SemanticConfig {
                     client: client.clone(),
                     roots: content_roots.clone(),
@@ -678,6 +698,7 @@ impl Lookout {
             home_roots,
             excludes,
             share_rules,
+            extensions,
             home_targets: Mutex::default(),
         })
     }
@@ -1086,6 +1107,32 @@ impl Lookout {
                 .uri
                 .as_deref()
                 .is_some_and(|u| self.excludes.is_excluded_folder(std::path::Path::new(u)))
+    }
+
+    /// Values to offer for `ext:` and `in:`, from what is already in memory.
+    pub fn operator_values(&self) -> OperatorValues {
+        OperatorValues {
+            extensions: self
+                .extensions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
+            folders: self
+                .home_roots
+                .iter()
+                .map(|r| {
+                    r.file_name()
+                        .unwrap_or(r.as_os_str())
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect(),
+        }
+    }
+
+    /// What the indexer skips: a file preview follows the same rules.
+    pub fn file_rules(&self) -> Arc<Rules> {
+        self.share_rules.clone()
     }
 
     /// The Home "Recent" files: recently changed, nothing skipped, hidden or

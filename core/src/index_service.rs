@@ -399,21 +399,25 @@ fn crawl_tree(ctx: &Ctx, dir_id: u32, dir_path: PathBuf, throttle: &mut Throttle
             {
                 continue;
             }
-            let modified = ent
-                .metadata()
-                .ok()
+            let meta = ent.metadata().ok();
+            let modified = meta
+                .as_ref()
                 .and_then(|m| m.modified().ok())
                 .map_or(0, secs);
             if ft.is_dir() {
                 dirs.push((name, modified));
             } else if ft.is_file() {
-                files.push((name, modified));
+                files.push((name, modified, meta.map(|m| m.len())));
             }
         }
         {
             let mut idx = write(&ctx.index);
-            for (name, modified) in files {
-                if let Err(IndexError::Full) = idx.add_file(id, &name, modified) {
+            for (name, modified, bytes) in files {
+                let added = match bytes {
+                    Some(b) => idx.add_sized_file(id, &name, modified, b),
+                    None => idx.add_file(id, &name, modified),
+                };
+                if let Err(IndexError::Full) = added {
                     return;
                 }
             }
@@ -547,8 +551,9 @@ fn apply_changes(ctx: &Ctx, paths: impl Iterator<Item = PathBuf>) {
                     }
                 } else if meta.is_file() {
                     let mut idx = write(&ctx.index);
-                    if !idx.contains_file(&path) {
-                        let _ = idx.add_file(parent_id, &name, modified);
+                    // A file already listed may have grown since (a download).
+                    if !idx.set_file_size(&path, meta.len()) {
+                        let _ = idx.add_sized_file(parent_id, &name, modified, meta.len());
                     }
                 }
             }
@@ -589,6 +594,7 @@ mod tests {
             weights: RankingWeights::default(),
             time: None,
             exts: &[],
+            filter: None,
         };
         idx.search(&p, &|| false)
             .iter()

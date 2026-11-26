@@ -194,7 +194,7 @@ test("every registry action appears in help", () => {
   // Each category stays together, so it is headed once.
   const groups = ACTIONS.map((a) => a.category).filter((c, i, all) => c !== all[i - 1]);
   assert.equal(new Set(groups).size, groups.length);
-  assert.ok(tipsFor(ACTIONS, "full", SHOW.full).length === ACTIONS.length);
+  assert.equal(tipsFor(ACTIONS, "full", SHOW.full).length, ACTIONS.filter((a) => a.tip !== false).length);
 });
 
 test("help, tips and the quick actions read the one registry", () => {
