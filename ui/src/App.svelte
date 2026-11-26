@@ -2343,14 +2343,9 @@
   .search::placeholder {
     color: var(--muted);
   }
+  /* Always focused when the bar opens: the caret is the focus indicator. */
   .search:focus-visible {
     outline: none;
-  }
-  /* A quiet ring, clear of the text. Not while Settings holds the box read-only. */
-  .search:not([readonly]):focus-visible {
-    outline: 1px solid var(--accent-line);
-    outline-offset: 6px;
-    border-radius: var(--r-sm);
   }
 
   .problem {
