@@ -74,7 +74,7 @@ impl Appearance {
                 .is_some_and(|h| h.len() == 6 && h.chars().all(|c| c.is_ascii_hexdigit()))
         };
         if !self.accent.as_deref().is_none_or(hex) {
-            return Err("Accent colour: use the form #RRGGBB.".to_owned());
+            return Err("Accent color: use the form #RRGGBB.".to_owned());
         }
         Ok(())
     }
@@ -452,7 +452,7 @@ impl Settings {
     /// Saves the disk charts' colour mode; on any error nothing changes.
     pub fn set_chart_colors(&mut self, mode: &str, path: &Path) -> Result<(), String> {
         if !CHART_COLORS.contains(&mode) {
-            return Err("Unknown chart colour mode.".to_owned());
+            return Err("Unknown chart color mode.".to_owned());
         }
         let mut next = self.clone();
         next.chart_colors = mode.to_owned();

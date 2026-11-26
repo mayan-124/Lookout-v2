@@ -10,6 +10,7 @@
   import { captureCombo } from "./hotkey";
   import { look, setGlass, setReduceMotion } from "./look.svelte";
   import { getVersion } from "@tauri-apps/api/app";
+  import { plain as errorText } from "./errors";
   import { check, type Update } from "@tauri-apps/plugin-updater";
 
   interface PrivacyState {
@@ -59,7 +60,7 @@
       await upd.downloadAndInstall();
       updMsg = "Installing. Lookout will restart.";
     } catch {
-      updMsg = "Could not download or verify the update. Nothing changed.";
+      updMsg = "Could not download or check the update, so nothing changed. Try again later.";
       updBusy = false;
     }
   }
@@ -78,7 +79,6 @@
   let qkError = $state("");
   let qkEditing: string | null = $state(null);
   let qkEditAlias = $state("");
-  const qkText = (e: unknown) => (typeof e === "string" ? e : String(e));
   async function loadKeys() {
     try {
       qkeys = await invoke<QuickKey[]>("quickkey_list");
@@ -94,7 +94,7 @@
       qkTarget = "";
       await loadKeys();
     } catch (e) {
-      qkError = qkText(e);
+      qkError = errorText(e);
     }
   }
   async function saveEdit(old: string) {
@@ -104,7 +104,7 @@
       qkEditing = null;
       await loadKeys();
     } catch (e) {
-      qkError = qkText(e);
+      qkError = errorText(e);
     }
   }
   async function deleteKey(alias: string) {
@@ -112,7 +112,7 @@
     try {
       await invoke("quickkey_delete", { alias });
     } catch (e) {
-      qkError = qkText(e);
+      qkError = errorText(e);
     }
     await loadKeys();
   }
@@ -206,14 +206,18 @@
     );
   });
 
-  // Close, Esc and Ctrl+, all come here: ask first only when there are unsaved edits.
+  // Close, Esc and Ctrl+, all come here: an open question is cancelled first,
+  // then unsaved edits are asked about.
   export function requestClose() {
-    if (discarding) discarding = false;
+    // Only a question on the open page counts.
+    if (section === "delete" && confirmingDelete) confirmingDelete = false;
+    else if (section === "general" && confirmingReset) confirmingReset = false;
+    else if (section === "privacy" && (askClear || askClearNotes)) askClear = askClearNotes = false;
+    else if (section === "quickkeys" && qkEditing !== null) qkEditing = null;
+    else if (discarding) discarding = false;
     else if (dirty) discarding = true;
     else onclose();
   }
-
-  const errorText = (e: unknown) => (typeof e === "string" ? e : String(e));
 
   function load(s: PrivacyState) {
     info = s;
@@ -228,8 +232,8 @@
   onMount(async () => {
     try {
       load(await invoke<PrivacyState>("privacy_state"));
-    } catch (e) {
-      message = errorText(e);
+    } catch {
+      message = "Could not load your settings. Close Settings and open it again.";
     }
     first?.focus();
     // Opened for one thing: go straight to it.
@@ -280,9 +284,16 @@
     busy = false;
   }
 
-  async function setPaused(paused: boolean) {
-    await invoke("set_paused", { paused });
-    if (info) info.paused = paused;
+  let pauseMessage = $state("");
+  async function setPaused(el: HTMLInputElement) {
+    pauseMessage = "";
+    try {
+      await invoke("set_paused", { paused: el.checked });
+      if (info) info.paused = el.checked;
+    } catch (e) {
+      el.checked = !el.checked;
+      pauseMessage = errorText(e);
+    }
   }
 
   let cliMessage = $state("");
@@ -517,7 +528,7 @@
         <div class="scard">
           <h3 class="stitle">Shortcuts</h3>
           <div class="field">
-            {@render field("Open Lookout", "Click the box, then press new keys.")}
+            {@render field("Open Lookout", "Select the box, then press the new keys.")}
             <input
               class="code"
               type="text"
@@ -529,7 +540,7 @@
           </div>
           {#if openMessage}<p class="note" role="status">{openMessage}</p>{/if}
           <div class="field">
-            {@render field("Read text from the screen", "Click the box, then press new keys.")}
+            {@render field("Read text from the screen", "Select the box, then press the new keys.")}
             <input
               class="code"
               type="text"
@@ -642,8 +653,9 @@
           "Pause all background work",
           "Stops preparing files, reading file text and reading text in pictures until you turn it back on.",
           info?.paused ?? false,
-          (el) => setPaused(el.checked),
+          setPaused,
         )}
+        {#if pauseMessage}<p class="hint" role="alert">{pauseMessage}</p>{/if}
       {:else if section === "privacy"}
         <h2 id="priv-title">Privacy</h2>
         <h3 class="label-caps">What is stored</h3>
@@ -692,7 +704,7 @@
             <button class="btn small danger" onclick={clearNotes}>Delete all notes</button>
           </div>
         {:else}
-          <p><button class="btn small" onclick={() => ((askClearNotes = true), (notesMessage = ""))}>Clear all notes</button></p>
+          <p><button class="btn small" onclick={() => ((askClearNotes = true), (notesMessage = ""))}>Delete all notes…</button></p>
         {/if}
         {#if notesMessage}<p class="hint" role="status">{notesMessage}</p>{/if}
         <h3 class="label-caps">Other programs</h3>
@@ -753,7 +765,14 @@
                 maxlength="8"
                 bind:value={qkEditAlias}
                 aria-label="New quick key"
-                onkeydown={(e) => e.key === "Enter" && saveEdit(k.alias)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") saveEdit(k.alias);
+                  else if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    qkEditing = null;
+                  }
+                }}
               />
               <button class="btn small primary" onclick={() => saveEdit(k.alias)}>Save</button>
               <button class="btn small" onclick={() => (qkEditing = null)}>Cancel</button>
@@ -797,7 +816,8 @@
         {#if invalid && section !== "speed"}Some numbers in Speed are not valid.{:else}{message}{/if}
       </span>
       <button class="btn" onclick={requestClose}>Close <kbd>Esc</kbd></button>
-      <button class="btn primary" disabled={busy || invalid} onclick={saveAll}>Save</button>
+      <!-- Saving before the settings arrived would save empty ones. -->
+      <button class="btn primary" disabled={busy || invalid || !info} onclick={saveAll}>Save</button>
     {/if}
   </div>
 </section>

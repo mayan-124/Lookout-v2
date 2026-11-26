@@ -10,6 +10,7 @@
   import type { ColourMode } from "./chartcolors";
   import { human } from "./chartdraw";
   import { listPath } from "./chartsync";
+  import { plain, plain as errorText } from "./errors";
 
   interface Location {
     label: string;
@@ -157,6 +158,11 @@
   });
 
   const setExp = (v: boolean) => (exp = v);
+  // The page scrolls on a short screen; a card or the expanded chart covers its top.
+  let pageEl: HTMLElement | undefined = $state();
+  $effect(() => {
+    if ((card || exp) && pageEl) pageEl.scrollTop = 0;
+  });
   // Drag the divider between the tree and the chart.
   function dragSplit(e: PointerEvent) {
     e.preventDefault();
@@ -175,7 +181,6 @@
 
   const scanning = $derived(progress?.state === "scanning");
   const finished = $derived(progress?.state === "done" && view !== null);
-  const errorText = (e: unknown) => (typeof e === "string" ? e : String(e));
 
   const when = (s: number) => (s ? new Date(s * 1000).toLocaleDateString() : "");
 
@@ -205,20 +210,27 @@
     for (const id of ids) {
       try {
         await load(id);
-      } catch {
+      } catch (e) {
         expanded.delete(id);
+        if (id === focus) notice = errorText(e);
       }
     }
     expanded = new Set(expanded);
   }
 
   async function show(node: number) {
+    cancelPick();
+    let next: View;
+    try {
+      next = await invoke<View>("disk_view", { node, sort, descending });
+    } catch (e) {
+      notice = errorText(e); // the folder on screen stays
+      return;
+    }
     focus = node;
     expanded = new Set();
-    kids = new Map();
-    selected = -1;
-    cancelPick();
-    view = await load(node);
+    kids = new Map([[node, next.rows]]);
+    view = next;
     selected = view.rows.length ? 0 : -1;
     loadChart();
   }
@@ -376,16 +388,16 @@
   async function scan(path: string, fastMode = false) {
     if (!path) return;
     notice = "";
-    view = null;
-    chart = null;
-    removed = new Set();
     try {
       if (fastMode) await invoke("disk_start_fast", { path });
       else await invoke("disk_start", { path, lowImpact });
     } catch (e) {
-      notice = errorText(e);
+      notice = errorText(e); // an earlier result stays on screen
       return;
     }
+    view = null;
+    chart = null;
+    removed = new Set();
     chosen = path;
     startTimer();
     poll();
@@ -401,7 +413,7 @@
   }
 
   async function cancel() {
-    await invoke("disk_cancel");
+    await invoke("disk_cancel").catch((e) => (notice = errorText(e)));
     startTimer();
   }
 
@@ -428,8 +440,12 @@
   }
 
   async function forgetSaved() {
-    await invoke("disk_delete_saved");
-    saved = null;
+    try {
+      await invoke("disk_delete_saved");
+      saved = null;
+    } catch (e) {
+      notice = errorText(e);
+    }
   }
 
   async function setSort(col: string) {
@@ -445,7 +461,12 @@
     if (row.kind !== "folder" || !row.has_children) return;
     if (expanded.has(row.id)) expanded.delete(row.id);
     else {
-      if (!kids.has(row.id)) await load(row.id);
+      try {
+        if (!kids.has(row.id)) await load(row.id);
+      } catch (e) {
+        notice = errorText(e);
+        return;
+      }
       expanded.add(row.id);
     }
     expanded = new Set(expanded);
@@ -509,13 +530,13 @@
 
   async function confirm(e: Event) {
     if (!e.isTrusted || !card || !card.presented || card.busy) return;
-    const { ticket } = card.prepared;
+    const { ticket, action_id } = card.prepared;
     const { node, hit } = card;
     card.busy = true;
     try {
       const d = await invoke<Done>("confirm_action", { ticket });
       notice = d.message;
-      if (card.prepared.action_id === "recycle") {
+      if (action_id === "recycle") {
         if (node >= 0) {
           removed.add(node);
           removed = new Set(removed);
@@ -564,8 +585,9 @@
       }
       return;
     }
-    const tag = (e.target as HTMLElement | null)?.tagName;
-    if (tag === "SELECT" || tag === "INPUT") return;
+    const target = e.target as HTMLElement | null;
+    const tag = target?.tagName;
+    // The treemap's name filter uses Esc itself; it stops the event.
     if (e.key === "Escape") {
       e.preventDefault();
       if (pv.overlay) pv.overlay = false;
@@ -575,7 +597,10 @@
       else onclose();
       return;
     }
-    if (!finished) return;
+    if (tag === "SELECT" || tag === "INPUT") return;
+    // The other two pages have no list keys; a focused button keeps Enter.
+    if (!finished || page !== "disk") return;
+    if (e.key === "Enter" && tag === "BUTTON") return;
     if (e.ctrlKey && e.key.toLowerCase() === "e") {
       e.preventDefault();
       act("reveal");
@@ -629,6 +654,15 @@
       e.preventDefault();
       up();
     }
+  }
+
+  // The divider moves with the arrow keys too.
+  function splitKey(e: KeyboardEvent) {
+    const step = e.key === "ArrowLeft" ? 20 : e.key === "ArrowRight" ? -20 : 0;
+    if (!step) return;
+    e.preventDefault();
+    e.stopPropagation();
+    chartW = Math.min(window.innerWidth - 360, Math.max(240, chartW + step));
   }
 
   function openMenuAt(e: MouseEvent) {
@@ -729,7 +763,7 @@
   </button>
 {/snippet}
 
-<section class="disk" aria-label="Disk usage">
+<section class="disk" class:covered={!!card || exp} aria-label="Disk usage" bind:this={pageEl}>
   <header>
     <h2>Disk usage</h2>
     <span class="hint">Scans only when you press Scan. Closing this view frees the data.</span>
@@ -790,9 +824,9 @@
       <span class="cur">{progress.current}</span>
     </p>
   {:else if progress?.state === "cancelled"}
-    <p class="status">Scan cancelled. Nothing was kept.</p>
+    <p class="status">Scan cancelled and nothing was kept. Press Scan to start again.</p>
   {:else if progress?.state === "failed"}
-    <p class="status warn">{progress.message || "That location could not be scanned."}</p>
+    <p class="status warn" role="alert">{progress.message ? plain(progress.message) : "That location could not be scanned. Choose another one."}</p>
   {/if}
   {#if notice}<p class="status" role="status">{notice}</p>{/if}
 
@@ -864,10 +898,11 @@
             <span class="c-mod">{when(f.modified)}</span>
           </li>
         {/each}
-        {#if shownFiles.length === 0}<li class="none">No files match.</li>{/if}
+        {#if shownFiles.length === 0}<li class="none">{tab === "old" ? "No files match. Choose a smaller size or a shorter time." : "No large files here. Scan another place."}</li>{/if}
       </ul>
       </div>
-      <div class="grip" role="separator" aria-orientation="vertical" onpointerdown={dragSplit}></div>
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+      <div class="grip" role="separator" tabindex="0" aria-orientation="vertical" aria-label="Resize with the Left and Right keys" aria-valuenow={chartW} onpointerdown={dragSplit} onkeydown={splitKey}></div>
       <aside class="chartpane"><Preview source={previewSource} /></aside>
       </div>
       <p class="keys"><kbd>Space</kbd> preview · <kbd>↑↓</kbd> move · <kbd>Enter</kbd> open · <kbd>Ctrl+E</kbd> show in folder · <kbd>Ctrl+C</kbd> copy path · <kbd>Del</kbd> Recycle Bin · right-click for a menu</p>
@@ -917,10 +952,11 @@
           <span class="c-mod">{when(f.row.modified)}</span>
         </li>
       {/each}
-      {#if flat.length === 0}<li class="none">This folder is empty.</li>{/if}
+      {#if flat.length === 0}<li class="none">This folder is empty. Press Backspace to go up.</li>{/if}
     </ul>
     </div>
-    <div class="grip" role="separator" aria-orientation="vertical" onpointerdown={dragSplit}></div>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+      <div class="grip" role="separator" tabindex="0" aria-orientation="vertical" aria-label="Resize with the Left and Right keys" aria-valuenow={chartW} onpointerdown={dragSplit} onkeydown={splitKey}></div>
     <aside class="chartpane" aria-label="Chart">
       <div class="pbar" data-tauri-drag-region>
         <div class="toggle" role="group" aria-label="Chart type">
@@ -1010,10 +1046,13 @@
     flex-direction: column;
     gap: 8px;
     padding: 12px 16px;
-    overflow: hidden;
+    overflow: auto;
     flex: 1;
     min-height: 0;
     font-size: 14px;
+  }
+  .disk.covered {
+    overflow: hidden;
   }
   header {
     display: flex;
@@ -1083,7 +1122,7 @@
     display: grid;
     grid-template-rows: minmax(0, 1fr);
     gap: 14px;
-    flex: 1;
+    flex: 1 0 180px; /* the list never shrinks to nothing */
     min-height: 0;
   }
   .left {
@@ -1098,7 +1137,8 @@
     background: var(--border);
     opacity: 0.5;
   }
-  .grip:hover {
+  .grip:hover,
+  .grip:focus-visible {
     background: var(--accent);
     opacity: 1;
   }

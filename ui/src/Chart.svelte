@@ -130,11 +130,11 @@
     !data
       ? loading
         ? "Loading chart…"
-        : "No chart for this folder."
+        : "No chart for this folder. Choose another folder."
       : scene && scene.shapes.length === 0
         ? data.root.items === 0
-          ? "This folder is empty."
-          : "Nothing here takes up space on this disk."
+          ? "This folder is empty. Press Backspace to go up."
+          : "Nothing here takes up space on this disk. Press Backspace to go up."
         : "",
   );
   const summary = $derived(
@@ -520,8 +520,8 @@
 <div class="chart" class:big>
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="tools" role="toolbar" tabindex="-1" aria-label="Chart options" onkeydown={keepEnter}>
-    <div class="seg" role="group" aria-label="Colour by">
-      <span class="by">Colour</span>
+    <div class="seg" role="group" aria-label="Color by">
+      <span class="by">Color</span>
       {#each COLOUR_MODES as m}
         <button class:on={colours === m.id} aria-pressed={colours === m.id} onclick={() => oncolours(m.id)}>{m.label}</button>
       {/each}
@@ -588,7 +588,7 @@
   </div>
   <span class="sr" aria-live="polite">{spoken}</span>
   {#if keys.length}
-    <ul class="legend" aria-label="Colour legend">
+    <ul class="legend" aria-label="Color legend">
       {#each keys as k}<li><i style:background={k.colour}></i>{k.label}{k.size ? ` ${human(k.size)}` : ""}</li>{/each}
     </ul>
   {/if}

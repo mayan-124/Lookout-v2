@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onDestroy, onMount } from "svelte";
+  import { plain as errorText } from "./errors";
 
   interface PluginInfo {
     id: string;
@@ -101,7 +102,7 @@
   }
 
   async function cancelSetup() {
-    await invoke("semantic_setup_cancel");
+    await invoke("semantic_setup_cancel").catch((e) => (message = errorText(e)));
   }
 
   async function removeSemanticFiles() {
@@ -126,8 +127,6 @@
   let message = $state("");
   let drafts: Record<string, Record<string, number | string>> = $state({});
 
-  const errorText = (e: unknown) => (typeof e === "string" ? e : String(e));
-
   function load(list: PluginInfo[]) {
     plugins = list;
     for (const p of list) drafts[p.id] = { ...p.config };
@@ -136,9 +135,8 @@
   onMount(async () => {
     try {
       load(await invoke<PluginInfo[]>("plugins_list"));
-    } catch (e) {
-      message = errorText(e);
-      failed = true;
+    } catch {
+      failed = true; // said below, with what to do
     }
     loading = false;
     await loadSemantic();
@@ -273,17 +271,17 @@
     {#if p.id === SEMANTIC_ID && semantic}
       <p class="note" role="status">
         {#if semantic.state === "off"}Search by meaning is off.
-        {:else if semantic.state === "unavailable"}Not working: {semantic.reason ?? "unknown reason"}
+        {:else if semantic.state === "unavailable"}Search by meaning is not working. {semantic.reason ? errorText(semantic.reason) : "Turn it off and on again."}
         {:else if semantic.state === "waiting"}Waiting until you are idle.
         {:else if semantic.state === "indexing"}Looking at {semantic.done} of {semantic.total} files.
         {:else}Ready.{/if}
         {#if setupStatus === null}
-          Could not check the download. Try again in a moment.
+          Could not check the download. Open Add-ons again in a moment.
         {:else if setupStatus.phase === "downloading"}
           Downloading {setupStatus.current ?? ""}: {mb(setupStatus.done_bytes)} of {mb(setupStatus.total_bytes)} MB.
         {:else if setupStatus.phase === "ready"}Files downloaded.
         {:else if setupStatus.phase === "failed"}
-          Download failed{setupStatus.message ? `: ${setupStatus.message}` : "."} You can try again.
+          {setupStatus.message ? errorText(setupStatus.message) : "The download failed. Try again."}
         {/if}
       </p>
       {#if setupStatus?.phase === "downloading"}
@@ -330,7 +328,7 @@
       </div>
       <p class="note">Downloads only when you click. Your files and searches never leave this PC.</p>
     {/if}
-    {#if p.last_error}<p class="warning">Last problem: {p.last_error}</p>{/if}
+    {#if p.last_error}<p class="warning">Last problem: {errorText(p.last_error)} Turn the add-on off and on to try again.</p>{/if}
   </div>
 {:else}
   {#if loading}
@@ -338,7 +336,7 @@
   {:else if failed}
     <p class="warning" role="alert">Could not load add-ons. Restart Lookout.</p>
   {:else}
-    <p class="note">No add-ons found.</p>
+    <p class="note">No add-ons found. Reinstall Lookout to get them back.</p>
   {/if}
 {/each}
 <p class="note">Type <kbd>clip</kbd> to see clipboard history, <kbd>clip clear</kbd> to delete it.</p>

@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { resetLook } from "./look.svelte";
 import type { Feature, Mode, UiState } from "./modes";
+import { plain } from "./errors";
 
 export const ui = $state<UiState>({
   mode: "standard",
@@ -19,7 +20,7 @@ async function apply(command: string, args?: Record<string, unknown>): Promise<s
     Object.assign(ui, await invoke<UiState>(command, args));
     return "";
   } catch (e) {
-    return String(e);
+    return plain(e);
   }
 }
 

@@ -526,7 +526,7 @@ impl PluginHost {
             if proc.is_alive() {
                 return Ok(());
             }
-            Self::fail(rt, "the plugin stopped unexpectedly".into());
+            Self::fail(rt, "the add-on stopped unexpectedly".into());
         }
         if rt.retry_at.is_some_and(|t| Instant::now() < t) {
             return Err(HostError::Backoff);
@@ -666,7 +666,7 @@ impl PluginHost {
                         rt.sent_paused = paused;
                     }
                 }
-                Some(false) => Self::fail(&mut rt, "the plugin stopped unexpectedly".into()),
+                Some(false) => Self::fail(&mut rt, "the add-on stopped unexpectedly".into()),
                 None => {
                     if p.manifest.background {
                         let _ = self.ensure(p, &mut rt);

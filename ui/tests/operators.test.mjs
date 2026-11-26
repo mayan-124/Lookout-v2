@@ -65,7 +65,7 @@ test("a size search says when sizes are still being collected", () => {
 
 test("the preview hint says where Space works", () => {
   const panel = readFileSync(new URL("../src/Preview.svelte", import.meta.url), "utf8");
-  assert.match(panel, /Click here, then <kbd>Space<\/kbd> for a larger preview/);
+  assert.match(panel, /Click or Tab here, then <kbd>Space<\/kbd> for a larger preview/);
 });
 
 test("the window shows chips and suggestions outside Simple only", () => {

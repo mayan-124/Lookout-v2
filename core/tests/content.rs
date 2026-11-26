@@ -1313,7 +1313,7 @@ mod cap {
         assert!(h.full && h.size_bytes >= h.max_bytes && h.max_bytes == 1 << 20);
         assert!(h
             .reason
-            .contains("Content index full: raise the limit or delete the index"));
+            .contains("Everything already read stays searchable"));
         // Names are unaffected, including a file created after the index filled.
         fs::write(root.join("latecomer_aardvark.txt"), "quokkaword").unwrap();
         eventually("name found while full", || {

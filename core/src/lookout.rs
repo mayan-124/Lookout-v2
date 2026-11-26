@@ -806,7 +806,8 @@ impl Lookout {
         let name_state = if st.paused {
             (
                 "paused",
-                "Indexing is paused. Names already indexed still work.".to_owned(),
+                "Paused. Files already found can still be searched. Resume from the tray icon."
+                    .to_owned(),
             )
         } else if st.indexing {
             (
@@ -844,13 +845,13 @@ impl Lookout {
             (None, _) => (
                 "off",
                 match &self.content_error {
-                    Some(e) => format!("The full-text index could not be opened: {e}"),
+                    Some(_) => "Searching inside files could not start. Restart Lookout.".to_owned(),
                     None => "No folders are chosen to read.".to_owned(),
                 },
             ),
             (Some(_), Some(s)) if s.full() => (
                 "full",
-                "Content index full: raise the limit or delete the index. Everything already indexed stays searchable; nothing new is added. File names are not affected."
+                "Nothing new is added. Everything already read stays searchable, and file names are not affected."
                     .to_owned(),
             ),
             (Some(c), Some(s)) => {
@@ -944,7 +945,10 @@ impl Lookout {
                         } else if p.running {
                             ("running", "Running.".to_owned())
                         } else if p.last_error.is_some() {
-                            ("failed", "Stopped with an error.".to_owned())
+                            (
+                                "failed",
+                                "It stopped. Turn it off and on in Add-ons.".to_owned(),
+                            )
                         } else {
                             ("ready", "Starts when it is first needed.".to_owned())
                         };

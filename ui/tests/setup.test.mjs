@@ -51,18 +51,18 @@ const counts = (over = {}) => ({
 
 test("status while running shows only real counters", () => {
   // Listing names: the total is unknown, so only the running count.
-  assert.deepEqual(indexLine(counts({ indexing: true })), { state: "running", text: "Indexing 1,200 files" });
+  assert.deepEqual(indexLine(counts({ indexing: true })), { state: "running", text: "Preparing 1,200 files" });
   const reading = counts({ read_done: 100, read_total: 250, ocr_done: 20, ocr_total: 50 });
-  assert.equal(indexLine(reading).text, "Indexing 120 of 300 files · pauses when you use the PC");
+  assert.equal(indexLine(reading).text, "Preparing 120 of 300 files · pauses when you use the PC");
   // "Index now" or no idle wait: it does not claim to pause.
-  assert.equal(indexLine({ ...reading, pauses_on_activity: false }).text, "Indexing 120 of 300 files");
+  assert.equal(indexLine({ ...reading, pauses_on_activity: false }).text, "Preparing 120 of 300 files");
   assert.doesNotMatch(indexLine(reading).text, /%/);
 });
 
 test("status says when indexing is paused", () => {
   assert.deepEqual(indexLine(counts({ paused: true, indexing: true })), {
     state: "paused",
-    text: "Indexing paused · 1,200 files ready",
+    text: "Paused · 1,200 files ready",
   });
   const waiting = counts({ waiting_for_idle: true, read_done: 3, read_total: 10 });
   assert.deepEqual(indexLine(waiting), { state: "waiting", text: "Paused while you use the PC · 3 of 10 files read" });

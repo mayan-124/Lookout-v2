@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import { plain } from "./errors";
 
   interface Feature {
     state: string;
@@ -30,8 +31,10 @@
     loading = false;
   }
 
+  let actionError = $state("");
   async function indexNow(on: boolean) {
-    await invoke("index_now", { on });
+    actionError = "";
+    await invoke("index_now", { on }).catch((e) => (actionError = plain(e)));
     await load();
   }
 
@@ -70,7 +73,7 @@
   const quiet = (s: string) => s === "up to date" || s === "available";
 </script>
 
-{#snippet line(name: string, state: string, extra: string, reason: string, error: string | null)}
+{#snippet line(name: string, state: string, extra: string, reason: string, error: string | null, problem = "A file could not be read.")}
   <div class="item">
     <span class="dot" class:ok={quiet(state)} class:bad={state === "unavailable" || state === "full"}></span>
     <span class="name">{name}</span>
@@ -79,10 +82,10 @@
   {#if reason && !quiet(state)}<p class="note">{reason}</p>{/if}
   {#if error}
     <p class="note" role="status">
-      1 file could not be read
+      {problem}
       <button class="btn text" aria-expanded={!!open[name]} onclick={() => (open[name] = !open[name])}>Details</button>
     </p>
-    {#if open[name]}<p class="note code">{error}</p>{/if}
+    {#if open[name]}<p class="note code">{plain(error)}</p>{/if}
   {/if}
 {/snippet}
 
@@ -112,19 +115,19 @@
       {:else}
         <button class="btn small" onclick={() => indexNow(true)}>Check files now</button>
       {/if}
-      <span class="hint">Reads everything now, without waiting.</span>
+      <span class="hint">{actionError || "Reads everything now, without waiting."}</span>
     </div>
   {/if}
   {@render line("Text in pictures", health.screenshots.state, "", health.screenshots.reason, health.screenshots.last_error)}
   {#each health.plugins as p (p.name)}
-    {@render line(p.name, p.state, "", p.reason, p.last_error)}
+    {@render line(p.name, p.state, "", p.reason, p.last_error, "This add-on had a problem.")}
   {/each}
 {:else if loading}
   <p class="note" role="status">Checking status…</p>
 {:else if failed}
-  <p class="warning" role="alert">Could not read status. Restart Lookout.</p>
+  <p class="warning" role="alert">Could not read the status. Restart Lookout.</p>
 {:else}
-  <p class="note">Search is not running.</p>
+  <p class="note">Search is not running. Restart Lookout.</p>
 {/if}
 
 <style>

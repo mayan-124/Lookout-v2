@@ -3,6 +3,7 @@
 // glass and motion are data attributes on <html> that tokens.css reads.
 import { invoke } from "@tauri-apps/api/core";
 import { applyTheme, DEFAULT_THEME, initialAppearance, normalizeHex, type Appearance } from "./theme";
+import { plain } from "./errors";
 
 const KEY = "lookout.look";
 const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -64,7 +65,7 @@ async function saveAppearance() {
     await invoke("set_appearance", { appearance });
     look.saveError = "";
   } catch (e) {
-    look.saveError = String(e);
+    look.saveError = plain(e);
   }
 }
 

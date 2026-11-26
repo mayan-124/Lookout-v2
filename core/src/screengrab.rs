@@ -108,16 +108,19 @@ fn ocr_text(result: Result<String, OcrError>) -> Result<String, Outcome> {
         Ok(t) if word_count(&t) == 0 => Err(Outcome::NoText),
         Ok(t) => Ok(t.trim().to_owned()),
         Err(OcrError::Unavailable) => Err(Outcome::Failed(
-            "no Windows OCR language is installed".to_owned(),
+            "Windows has no text-reading language. Add one in Windows Settings > Time & language"
+                .to_owned(),
         )),
-        Err(e) => Err(Outcome::Failed(e.to_string())),
+        Err(_) => Err(Outcome::Failed(
+            "the text could not be read. Try a smaller area".to_owned(),
+        )),
     }
 }
 
 /// What to tell the user when the grab hotkey cannot be registered.
-pub fn grab_hotkey_message(wanted: &str, error: &str) -> String {
+pub fn grab_hotkey_message(wanted: &str) -> String {
     format!(
-        "Lookout could not register the \"grab text from screen\" hotkey '{wanted}' ({error}).          Another app may be using it. Pick another one in settings (grab_hotkey) and restart          Lookout. Everything else keeps working."
+        "{wanted} is in use, so it cannot read text from the screen. Pick another in Settings > General."
     )
 }
 
@@ -589,7 +592,7 @@ pub(crate) mod tests {
         let no_language = ocr_text(Err(OcrError::Unavailable)).unwrap_err();
         assert_eq!(
             no_language.notice().as_deref(),
-            Some("Could not grab text: no Windows OCR language is installed")
+            Some("Could not grab text: Windows has no text-reading language. Add one in Windows Settings > Time & language")
         );
         assert_eq!(
             ocr_text(Ok(" \n ".to_owned()))
@@ -610,8 +613,8 @@ pub(crate) mod tests {
 
     #[test]
     fn the_hotkey_failure_message_names_the_key_and_the_fix() {
-        let m = grab_hotkey_message("Ctrl+Alt+T", "already registered");
-        assert!(m.contains("Ctrl+Alt+T") && m.contains("grab_hotkey") && m.contains("restart"));
+        let m = grab_hotkey_message("Ctrl+Alt+T");
+        assert!(m.contains("Ctrl+Alt+T") && m.contains("Settings > General"));
     }
 
     /// Fake monitors: (name, scale %, virtual-screen origin). The selection is

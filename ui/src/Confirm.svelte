@@ -12,6 +12,7 @@
   // The ordinary confirmation card (prepare -> present -> confirm) for a list the backend built.
   import { invoke } from "@tauri-apps/api/core";
   import { onMount, tick } from "svelte";
+  import { plain } from "./errors";
 
   let {
     prepared,
@@ -33,7 +34,7 @@
       await tick();
       cancelButton?.focus(); // a stray Enter cannot confirm a deletion
     } catch (e) {
-      oncancel(String(e));
+      oncancel(plain(e));
     }
   });
 
@@ -49,7 +50,7 @@
       const d = await invoke<{ message: string }>("confirm_action", { ticket: prepared.ticket });
       ondone(d.message);
     } catch (err) {
-      const m = String(err);
+      const m = plain(err);
       if (m.includes("too quickly")) {
         busy = false;
         error = m;

@@ -56,7 +56,8 @@
 
 <style>
   .help {
-    max-height: 440px;
+    /* 228px: the 212px around every panel, and this one's padding */
+    max-height: min(440px, calc(var(--room, 100vh) - 228px));
     overflow-y: auto;
     padding: 4px 12px 10px;
   }

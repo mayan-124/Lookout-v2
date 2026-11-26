@@ -3,6 +3,7 @@
   import { onDestroy } from "svelte";
   import Confirm, { type Prepared } from "./Confirm.svelte";
   import PreviewPanel from "./Preview.svelte";
+  import { plain as errorText } from "./errors";
 
   interface TaskView {
     state: "idle" | "running" | "done" | "cancelled" | "failed";
@@ -37,7 +38,6 @@
   let timer: ReturnType<typeof setInterval> | undefined;
 
   const running = $derived(progress?.state === "running");
-  const errorText = (e: unknown) => (typeof e === "string" ? e : String(e));
 
   function human(n: number): string {
     const u = ["B", "KB", "MB", "GB", "TB"];
@@ -61,8 +61,8 @@
       progress = await invoke<TaskView | null>("cleanup_progress");
       if (progress && progress.state !== "running") {
         stop();
-        if (progress.state === "failed") notice = progress.error;
-        await load();
+        if (progress.state === "failed") notice = errorText(progress.error);
+        await load().catch((e) => (notice = errorText(e)));
       }
     } catch {
       /* the next tick tries again */
@@ -88,7 +88,7 @@
     timer = setInterval(poll, 300);
     await poll();
   }
-  const cancel = () => invoke("cleanup_cancel");
+  const cancel = () => invoke("cleanup_cancel").catch((e) => (notice = errorText(e)));
 
   async function showPreview(id: string) {
     if (preview?.id === id) {
@@ -134,12 +134,12 @@
       {progress.phase} · {progress.files.toLocaleString()} files looked at · {human(progress.bytes)}
     </p>
   {/if}
-  {#if progress?.state === "cancelled"}<p class="status">Cancelled: the list may be incomplete.</p>{/if}
+  {#if progress?.state === "cancelled"}<p class="status">Cancelled, so the list may be incomplete. Press Scan again to finish it.</p>{/if}
   {#if notice}<p class="warning" role="status">{notice}</p>{/if}
   {#if reclaimed > 0}<p class="status">Cleared so far this session: <strong>{human(reclaimed)}</strong></p>{/if}
 
   {#if progress && !running && items.length === 0 && progress.state !== "failed"}
-    <p class="status">Nothing worth cleaning was found.</p>
+    <p class="status">Nothing worth cleaning was found, so there is nothing to do.</p>
   {/if}
 
   <ul class="list">

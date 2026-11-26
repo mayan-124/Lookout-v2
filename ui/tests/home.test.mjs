@@ -83,9 +83,9 @@ test("the footer speaks of the index only while something happens", () => {
   assert.equal(footerStatus(null), "");
   assert.equal(footerStatus(counts), "");
   assert.equal(footerStatus({ ...counts, roots: 0, files: 0 }), "");
-  assert.equal(footerStatus({ ...counts, indexing: true }), "Indexing 12 files");
-  assert.equal(footerStatus({ ...counts, read_done: 2, read_total: 9 }), "Indexing 2 of 9 files");
-  assert.equal(footerStatus({ ...counts, paused: true }), "Indexing paused");
+  assert.equal(footerStatus({ ...counts, indexing: true }), "Preparing 12 files");
+  assert.equal(footerStatus({ ...counts, read_done: 2, read_total: 9 }), "Preparing 2 of 9 files");
+  assert.equal(footerStatus({ ...counts, paused: true }), "Background work paused");
   assert.equal(footerStatus({ ...counts, waiting_for_idle: true }), "Paused while you use the PC");
   // An error takes the line instead.
   assert.match(markup, /\{#if notice\}<span class="warn" role="alert">\{notice\}<\/span>\{:else\}\{footText\}\{\/if\}/);

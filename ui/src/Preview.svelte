@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { nextRequest, pv } from "./previewui.svelte";
+  import { plain } from "./errors";
 
   export interface Source {
     node?: number;
@@ -62,7 +63,7 @@
       } catch (e) {
         if (mine === seq) {
           data = null;
-          err = typeof e === "string" ? e : String(e);
+          err = plain(e);
         }
       } finally {
         if (mine === seq) loading = false;
@@ -103,8 +104,33 @@
     }
     return i === 0 ? `${n} B` : `${v.toFixed(v >= 100 ? 0 : 1)} ${u[i]}`;
   }
-  const icon = (d: PV) =>
-    d.kind === "folder" ? "📁" : d.kind === "image" ? "🖼" : d.kind === "text" ? "📄" : d.kind === "archive" ? "🗜" : "▫";
+  // The same line icons as the result rows.
+  const FILE_ICON = "M4 2h5l3 3v9H4zM9 2v3h3";
+  const ICON: Record<string, string> = {
+    folder: "M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6l1.4 1.5h5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z",
+    image: "M2 3h12v10H2zM2.5 12l3.6-3.4 2.6 2.4 2-1.8 3.3 2.8",
+  };
+  // What the backend says about a file it does not show, as a sentence with a next step.
+  const NEXT: Record<string, string> = {
+    too_large: "Open it to see it.",
+    missing: "Search again.",
+    locked: "Close that program and select the file again.",
+    denied: "Open its folder to check access.",
+    error: "Try opening it instead.",
+  };
+  const said = (d: PV) => [plain(d.message), NEXT[d.state]].filter(Boolean).join(" ");
+
+  // The large preview takes the focus and gives it back when it closes.
+  function takeFocus(button: HTMLButtonElement) {
+    const before = document.activeElement as HTMLElement | null;
+    button.focus();
+    return {
+      destroy() {
+        // Not when the focus has already moved on, as when the bar is reopened.
+        if (document.activeElement === button || document.activeElement === document.body) before?.focus();
+      },
+    };
+  }
 
   function onKey(e: KeyboardEvent) {
     // Two panels can be mounted (the expanded chart has its own): one Space, one toggle.
@@ -124,7 +150,7 @@
     <p class="note">{err}</p>
   {:else if data}
     <div class="info">
-      <span class="ic" aria-hidden="true">{icon(data)}</span>
+      <svg class="ic" viewBox="0 0 16 16" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d={ICON[data.kind] ?? FILE_ICON} /></svg>
       <div class="meta">
         <strong class="nm">{data.name}</strong>
         <span>{data.kind === "folder" && data.items !== null ? `${data.items.toLocaleString()} items · ` : ""}{human(data.size)}{data.modified ? ` · modified ${new Date(data.modified * 1000).toLocaleString()}` : ""}</span>
@@ -132,14 +158,14 @@
       </div>
     </div>
     {#if data.state !== "ok"}
-      <p class="note" role="status">{data.message}</p>
+      <p class="note" role="status">{said(data)}</p>
     {:else if data.kind === "image" && data.image}
-      {#if badImage}<p class="note">This image can't be displayed.</p>{:else}
+      {#if badImage}<p class="note">This image cannot be shown here. Open it to see it.</p>{:else}
         <img class:large src={data.image} alt={data.name} onerror={() => (badImage = true)} />
       {/if}
     {:else if data.kind === "text" && data.text !== null}
       <pre class:large>{data.text}</pre>
-      {#if data.truncated}<p class="note">Truncated: only the first 64 KB is shown.</p>{/if}
+      {#if data.truncated}<p class="note">Only the first 64 KB is shown. Open the file to see the rest.</p>{/if}
     {:else if data.kind === "archive" && data.entries}
       {#if picture && !picture.icon}<img class:large src={picture.image} alt={data.name} />{/if}
       <ul class="zip" class:large aria-label="Files in this zip">
@@ -154,7 +180,7 @@
       {#if picture}
         <img class:large class:fileicon={picture.icon} src={picture.image} alt={picture.icon ? "" : data.name} />
       {/if}
-      {#if !picture || picture.icon}<p class="note">No preview for this type of file.</p>{/if}
+      {#if !picture || picture.icon}<p class="note">No preview for this type of file. Open it to see it.</p>{/if}
     {/if}
   {:else if loading}
     <p class="note">Loading…</p>
@@ -162,14 +188,15 @@
 {/snippet}
 
 {#if source}
-  <aside class="panel" class:embedded aria-label="File preview" aria-busy={loading}>
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <aside class="panel" class:embedded tabindex="0" aria-label="File preview" aria-busy={loading}>
     {@render body(false)}
-    {#if data}<p class="hintline">Click here, then <kbd>Space</kbd> for a larger preview</p>{/if}
+    {#if data}<p class="hintline">Click or Tab here, then <kbd>Space</kbd> for a larger preview</p>{/if}
   </aside>
   {#if pv.overlay}
     <div class="scrim" role="presentation" onclick={() => (pv.overlay = false)}>
       <div class="big" role="dialog" aria-label="Large preview" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
-        <button class="x" onclick={() => (pv.overlay = false)}>Close <kbd>Esc</kbd></button>
+        <button class="x" use:takeFocus onclick={() => (pv.overlay = false)}>Close <kbd>Esc</kbd></button>
         {@render body(true)}
       </div>
     </div>
@@ -199,8 +226,12 @@
     align-items: flex-start;
   }
   .ic {
-    font-size: 26px;
-    line-height: 1;
+    flex: none;
+    color: var(--text-soft);
+  }
+  .panel:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
   .meta {
     display: flex;

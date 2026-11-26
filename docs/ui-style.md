@@ -16,7 +16,8 @@ section labels 12px uppercase with letter spacing.
 - Chart hues `--c0..--c7`, `--c-grey`: distinct, softened for the graphite base.
 
 **Contrast** text pairs are at least 4.5:1 on plain panels, except danger red toward the lightest gradient corner.
-Secondary and danger text also fall below on raised surfaces there.
+Secondary text is lightened per theme so it also passes on cards. Danger red, and Synthwave's accent used as text,
+fall below on raised surfaces toward that corner.
 
 **Components** (global classes in app.css)
 - `.btn` secondary (transparent, strong border); `.btn.primary` accent; `.btn.danger` danger text; `.btn.small`; `.btn.text`.

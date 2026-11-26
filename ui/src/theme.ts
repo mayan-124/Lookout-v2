@@ -146,6 +146,10 @@ export function themeVars(t: Theme, choice: string | null) {
   const on = onAccent(accent);
   const panels = Object.values(panelColors(t));
   const visible = (hue: string) => lightenUntil(hue, (c) => panels.every((p) => contrast(c, p) >= 3));
+  // Secondary text reads at 4.5:1 on the panels and on Settings' cards (two 4% layers).
+  const card = (p: string) => mix(mix(p, TEXT_COLORS.title, 0.04), TEXT_COLORS.title, 0.04);
+  const surfaces = [...panels, ...panels.map(card)];
+  const muted = lightenUntil(TEXT_COLORS.muted, (c) => surfaces.every((p) => contrast(c, p) >= 4.5));
   const vars: Record<string, string> = {
     "--base": t.base,
     "--tint1": t.tint1,
@@ -157,7 +161,7 @@ export function themeVars(t: Theme, choice: string | null) {
       : mix(t.base, accent, 0.35),
     "--text": TEXT_COLORS.title,
     "--text-soft": TEXT_COLORS.soft,
-    "--muted": TEXT_COLORS.muted,
+    "--muted": muted,
     "--shade": SHADE,
     "--danger": SEMANTIC.danger,
     "--success": SEMANTIC.success,

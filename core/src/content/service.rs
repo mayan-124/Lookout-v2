@@ -506,7 +506,7 @@ impl Worker {
             if let Err(e) = r {
                 eprintln!("lookout: content index commit failed: {e}");
                 self.stats
-                    .record_error(format!("the full-text index could not be saved: {e}"));
+                    .record_error(format!("could not save the file text: {e}"));
             }
             self.uncommitted = 0;
             self.refresh_size();
@@ -881,7 +881,7 @@ impl Worker {
             Err(e) => {
                 eprintln!("lookout: could not index {}: {e}", c.path.display());
                 self.stats
-                    .record_error(format!("could not index {}: {e}", c.path.display()));
+                    .record_error(format!("could not read {}: {e}", c.path.display()));
             }
         }
         let batch = if self.boosting() {

@@ -3,6 +3,7 @@
   import { onDestroy } from "svelte";
   import Confirm, { type Prepared } from "./Confirm.svelte";
   import Preview from "./Preview.svelte";
+  import { plain as errorText } from "./errors";
 
   interface Location {
     label: string;
@@ -47,7 +48,6 @@
   let timer: ReturnType<typeof setInterval> | undefined;
 
   const running = $derived(progress?.state === "running");
-  const errorText = (e: unknown) => (typeof e === "string" ? e : String(e));
   const wasted = $derived(data.groups.filter((g) => picked.has(g.id)).reduce((a, g) => a + g.wasted, 0));
 
   function human(n: number): string {
@@ -83,8 +83,8 @@
       progress = await invoke<TaskView | null>("dupes_progress");
       if (progress && progress.state !== "running") {
         stop();
-        if (progress.state === "failed") notice = progress.error;
-        await load();
+        if (progress.state === "failed") notice = errorText(progress.error);
+        await load().catch((e) => (notice = errorText(e)));
       }
     } catch {
       /* the next tick tries again */
@@ -110,7 +110,7 @@
     timer = setInterval(poll, 300);
     await poll();
   }
-  const cancel = () => invoke("dupes_cancel");
+  const cancel = () => invoke("dupes_cancel").catch((e) => (notice = errorText(e)));
 
   function toggle(id: number) {
     picked.has(id) ? picked.delete(id) : picked.add(id);
@@ -177,13 +177,13 @@
       {progress.phase} · {progress.files.toLocaleString()} files · {human(progress.bytes)} read
     </p>
   {/if}
-  {#if progress?.state === "cancelled"}<p class="status">Cancelled: no results.</p>{/if}
+  {#if progress?.state === "cancelled"}<p class="status">Cancelled, so there are no results. Press Scan again to look for duplicates.</p>{/if}
   {#if notice}<p class="warning" role="status">{notice}</p>{/if}
   {#if data.reclaimed > 0}<p class="status">Cleared so far this session: <strong>{human(data.reclaimed)}</strong></p>{/if}
 
   {#if progress && progress.state === "done"}
     {#if data.groups.length === 0}
-      <p class="status">No duplicates found.</p>
+      <p class="status">No duplicates found. Try another folder or a smaller file size.</p>
     {:else}
       <div class="bar">
         <span>{data.total_groups.toLocaleString()} groups · {human(data.groups.reduce((a, g) => a + g.wasted, 0))} wasted

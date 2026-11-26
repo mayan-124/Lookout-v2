@@ -69,6 +69,9 @@
   .mode:hover {
     background: var(--btn-bg-hover);
   }
+  .mode:hover .hint {
+    color: var(--text-soft);
+  }
   .mode[aria-checked="true"] {
     border-color: var(--accent);
     box-shadow: 0 0 0 1px var(--accent);

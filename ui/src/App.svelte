@@ -23,6 +23,8 @@
   import { dismissDiskNotice, loadUi, setHideTips, setShow, ui } from "./uistate.svelte";
   import { footerStatus, indexLine, type IndexCounts } from "./indexstatus";
   import { EMPTY_DECK, deal, fixedTips, startRotation, turn } from "./tips";
+  import { plain as errorText } from "./errors";
+  import { pv } from "./previewui.svelte";
 
   type Kind = string | { custom: string };
   interface Item {
@@ -573,7 +575,6 @@
     if (i.kind === "port") return "kill_port";
     return null;
   };
-  const errorText = (e: unknown) => (typeof e === "string" ? e : String(e));
 
   let openHotkey = $state("");
   async function loadHotkey() {
@@ -698,8 +699,28 @@
     }
     done = false;
     loadOperatorValues(text);
-    invoke("query", { generation, text, skip }).catch(() => {});
+    const asked = generation;
+    invoke<boolean>("query", { generation, text, skip })
+      .then((started) => !started && searchFailed(asked))
+      .catch(() => searchFailed(asked));
   }
+
+  function searchFailed(asked: number) {
+    if (asked !== generation) return;
+    all = [];
+    done = true;
+    selected = 0;
+    notice = errorText("search is not running");
+  }
+
+  // "Searching…" only when an empty list has been waiting for a moment.
+  let slow = $state(false);
+  $effect(() => {
+    slow = false;
+    if (done || query.trim() === "") return;
+    const t = setTimeout(() => (slow = true), 400);
+    return () => clearTimeout(t);
+  });
 
   function onUpdate(u: Update) {
     if (u.generation !== generation) return;
@@ -860,9 +881,11 @@
       press = null;
       refusal = null;
       visible = true;
+      fitScreen();
       opens += 1;
       opAsked = false;
       tipsHovered = false;
+      pv.overlay = false;
       // A confirm card is never brought back: its preview must be seen fresh.
       if (card?.phase === "confirm") invoke("cancel_action", { ticket: card.prepared.ticket });
       card = null;
@@ -941,6 +964,12 @@
     }
     if (noteMenu) {
       noteMenuKey(e);
+      return;
+    }
+    // Esc closes the large preview before anything else. Disk does its own.
+    if (pv.overlay && !disk && e.key === "Escape") {
+      e.preventDefault();
+      pv.overlay = false;
       return;
     }
     const plain = !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
@@ -1407,6 +1436,45 @@
     if (query.trim() !== "") return "results";
     return earlier === null ? "home" : "history";
   });
+  // An empty Clipboard or Capture search says whether the add-on is off.
+  const ADDONS: Record<number, [string, string]> = {
+    2: ["com.lookout.clipboard", "Clipboard history needs the Clipboard add-on. Turn it on in Settings > Advanced > Add-ons."],
+    3: ["dev.lookout.screenshot", "Capture needs the Screenshot add-on. Turn it on in Settings > Advanced > Add-ons."],
+  };
+  const emptySection = $derived(view === "results" && done && all.length === 0 ? typedSection(query) : 0);
+  let addonOff = $state("");
+  $effect(() => {
+    const wanted = ADDONS[emptySection];
+    addonOff = "";
+    if (!wanted) return;
+    let live = true;
+    invoke<{ id: string; enabled: boolean }[]>("plugins_list")
+      .then((list) => {
+        if (live && !list.some((p) => p.id === wanted[0] && p.enabled)) addonOff = wanted[1];
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  });
+  /** What an empty result list says: what happened and what to do next. */
+  const emptyText = $derived.by(() => {
+    const typed = query.trim();
+    if (all.length > 0) return `Nothing under ${LANES[lane].name}. Press Tab to see other results.`;
+    if (addonOff) return addonOff;
+    const section = typedSection(query);
+    const rest = typed.replace(/^\S+\s*/, "");
+    if (section === 2 && !rest) return "Nothing copied yet. Copy some text and it appears here.";
+    if (noFolders) return `No results for “${typed}”.`;
+    if (status?.indexing) return `No results for “${typed}” yet. Files are still being prepared, so try again shortly.`;
+    return `No results for “${typed}”. Check the spelling or try fewer words.`;
+  });
+  // The tallest the screen allows: fixed-height panels shrink to fit at high Windows scaling.
+  function fitScreen() {
+    document.documentElement.style.setProperty("--room", `${window.screen.availHeight - 32}px`);
+  }
+  onMount(fitScreen);
+
   const hints = $derived(
     footerHints(view, {
       mode: ui.mode,
@@ -1425,6 +1493,7 @@
 
 <svelte:window
   onkeydown={onKeydown}
+  onresize={fitScreen}
   onpointerdown={(e) => {
     if (noteMenu && !(e.target as Element).closest(".menu")) noteMenu = null;
   }}
@@ -1571,6 +1640,7 @@
         type="text"
         placeholder={panel ? "Settings" : "Search files and apps, or type help"}
         readonly={panel}
+        tabindex={panel ? -1 : 0}
         autocomplete="off"
         spellcheck="false"
         role="combobox"
@@ -1742,7 +1812,7 @@
             {/if}
           </section>
 
-          <section class="card glass side" aria-label={tips.length > 0 ? "Tips and index" : "Index"}>
+          <section class="card glass side" aria-label={tips.length > 0 ? "Tips and files" : "Files"}>
             {#if tips.length > 0}
               <div class="tiphead">
                 <h3 class="label-caps">Tips</h3>
@@ -1963,13 +2033,15 @@
                 <ul id="results" class="results" role="listbox">{@render exactRow()}</ul>
               {/if}
               {#if done}
-                <p class="empty">No results for “{query.trim()}”</p>
-                {#if noFolders}
+                <p class="empty" role="status">{emptyText}</p>
+                {#if noFolders && all.length === 0}
                   <div class="nofolders">
                     <span>Lookout has no folders to search yet.</span>
                     <button class="btn primary" onclick={chooseFolders}>Choose folders to search <kbd>Enter</kbd></button>
                   </div>
                 {/if}
+              {:else if slow}
+                <p class="empty" role="status">Searching…</p>
               {/if}
             {/if}
           </div>
@@ -2138,10 +2210,14 @@
     color: var(--muted);
     border: 1px solid var(--hairline);
   }
-  .pin:hover,
+  .pin:hover {
+    color: var(--text);
+    border-color: var(--hover-border);
+  }
   .pin:focus-visible {
     color: var(--text);
     outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .pin.on {
     color: var(--accent);
@@ -2246,7 +2322,8 @@
   }
 
   .page {
-    height: 500px;
+    /* 212px: search row, dock, footer and the gaps around them */
+    height: min(500px, calc(var(--room, 100vh) - 212px));
     background: var(--glass-bg);
     border-radius: var(--r-tile);
     display: flex;
@@ -2366,6 +2443,11 @@
   }
   .rrow.picked {
     background: var(--accent-soft);
+  }
+  /* secondary text is too faint on the highlight */
+  .rrow:hover .sub,
+  .rrow:hover .when {
+    color: var(--text-soft);
   }
   .qgrid {
     display: grid;
@@ -2493,7 +2575,7 @@
     grid-template-columns: minmax(0, 1fr) 300px;
     gap: 16px;
     min-height: 120px;
-    max-height: 440px;
+    max-height: min(440px, calc(var(--room, 100vh) - 256px));
   }
   .res.one {
     min-height: 0;
@@ -2506,7 +2588,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    max-height: 440px;
+    max-height: min(440px, calc(var(--room, 100vh) - 256px));
     overflow: hidden;
   }
   .prevcard {
@@ -2563,7 +2645,7 @@
     min-height: 0;
   }
   .results.card {
-    max-height: 440px;
+    max-height: min(440px, calc(var(--room, 100vh) - 256px));
     padding: 8px 10px;
   }
   .entry {
@@ -2610,7 +2692,8 @@
     border-color: var(--accent);
   }
   /* secondary text is too faint on the highlight */
-  .row.selected .meta {
+  .row.selected .meta,
+  .row.selected .sub {
     color: var(--text-soft);
   }
 
@@ -2771,6 +2854,10 @@
   .menu button:hover,
   .menu button:focus-visible {
     background: var(--accent-soft);
+  }
+  .menu button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
   .timerprev .big {
     font-family: var(--font-code);

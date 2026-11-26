@@ -7,6 +7,7 @@
   import ModePicker from "./ModePicker.svelte";
   import { captureCombo } from "./hotkey";
   import { STEPS, TRY_EXAMPLES } from "./setupflow";
+  import { plain as errorText } from "./errors";
 
   interface FolderChoice {
     path: string;
@@ -49,7 +50,6 @@
   let primary: HTMLButtonElement | undefined = $state();
 
   const anyFolder = $derived(folders.some((f) => f.checked));
-  const errorText = (e: unknown) => (typeof e === "string" ? e : String(e));
 
   onMount(async () => {
     try {
@@ -216,7 +216,7 @@
       <label class="field">
         <span class="fl">
           <span class="ft">Open Lookout</span>
-          <span class="hint">Click the box, then press new keys.</span>
+          <span class="hint">Select the box, then press the new keys.</span>
         </span>
         <input class="code combo" type="text" readonly value={hotkey} onkeydown={hotkeyKeydown} aria-label="Open Lookout hotkey" />
       </label>
@@ -262,7 +262,7 @@
       <button bind:this={primary} type="button" class="btn primary" onclick={() => go(2)}>Start setup</button>
     {:else if step === 2}
       <button type="button" class="btn" onclick={() => go(3)}>Skip this step</button>
-      <button bind:this={primary} type="button" class="btn primary" disabled={busy || !anyFolder} onclick={startIndexing}>Start indexing</button>
+      <button bind:this={primary} type="button" class="btn primary" disabled={busy || !anyFolder} onclick={startIndexing}>Use these folders</button>
     {:else if step < STEPS.length}
       <button bind:this={primary} type="button" class="btn primary" disabled={busy || !loaded} onclick={next}>Next</button>
     {:else}
@@ -275,7 +275,7 @@
   .setup {
     display: flex;
     flex-direction: column;
-    max-height: 480px;
+    max-height: min(480px, calc(var(--room, 100vh) - 212px));
     font-size: 14px;
   }
   .progress {
@@ -395,6 +395,9 @@
   }
   .try:hover {
     background: var(--btn-bg-hover);
+  }
+  .try:hover .hint {
+    color: var(--text-soft);
   }
   .try:focus-visible {
     outline: 2px solid var(--accent);

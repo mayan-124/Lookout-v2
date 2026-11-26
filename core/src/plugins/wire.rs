@@ -20,11 +20,11 @@ pub const MAX_LINE: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WireError {
-    #[error("could not start the plugin: {0}")]
+    #[error("could not start the add-on: {0}")]
     Spawn(String),
-    #[error("the plugin did not answer in time and was stopped")]
+    #[error("the add-on did not answer in time and was stopped")]
     Timeout,
-    #[error("the plugin stopped running")]
+    #[error("the add-on stopped running")]
     Died,
     #[error("the add-on sent data that is not valid JSON-RPC and was stopped")]
     Garbage,

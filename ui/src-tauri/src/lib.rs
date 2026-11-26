@@ -475,8 +475,10 @@ fn drag_out(_app: &AppHandle, _path: &std::path::Path) -> Result<(), String> {
 }
 
 /// Tab in a path query: the next folder name, or `None`.
+/// Async, like every command that may touch a network share: a slow share
+/// must not freeze the window.
 #[tauri::command]
-fn complete_path(text: String) -> Option<String> {
+async fn complete_path(text: String) -> Option<String> {
     lookout_core::pathquery::complete(&text)
 }
 
@@ -795,10 +797,10 @@ fn quickkey_set(id: String, alias: String, services: State<Services>) -> Result<
 }
 
 #[tauri::command]
-fn quickkey_add(
+async fn quickkey_add(
     alias: String,
     target: String,
-    services: State<Services>,
+    services: State<'_, Services>,
 ) -> Result<String, String> {
     services_of(&services)?
         .quick_keys()
@@ -913,7 +915,7 @@ fn set_remember_searches(
 // the view drops the scan (see lookout_core::diskusage).
 
 #[tauri::command]
-fn disk_locations() -> Vec<lookout_core::diskusage::Location> {
+async fn disk_locations() -> Vec<lookout_core::diskusage::Location> {
     lookout_core::diskusage::locations()
 }
 
@@ -931,7 +933,7 @@ async fn disk_start(
 
 /// Whether Fast scan can read this place (an NTFS drive), and why not if it can't.
 #[tauri::command]
-fn disk_fast_info(path: String) -> lookout_core::diskusage::FastInfo {
+async fn disk_fast_info(path: String) -> lookout_core::diskusage::FastInfo {
     lookout_core::diskusage::fast_info(std::path::Path::new(&path))
 }
 
@@ -1684,10 +1686,10 @@ async fn pick_folder(app: AppHandle, shared: State<'_, Shared>) -> Result<Option
 /// The setup's folder checklist: Documents, Desktop, Downloads and Pictures
 /// (those that exist), then any other folder already chosen.
 #[tauri::command]
-fn setup_folders(
+async fn setup_folders(
     app: AppHandle,
-    services: State<Services>,
-) -> Vec<lookout_core::setup::FolderChoice> {
+    services: State<'_, Services>,
+) -> Result<Vec<lookout_core::setup::FolderChoice>, String> {
     let paths = app.path();
     let suggested: Vec<std::path::PathBuf> = [
         paths.document_dir(),
@@ -1699,7 +1701,7 @@ fn setup_folders(
     .filter_map(Result::ok)
     .collect();
     let chosen = lock(&services.settings).index_roots.clone();
-    lookout_core::setup::folder_choices(&suggested, &chosen)
+    Ok(lookout_core::setup::folder_choices(&suggested, &chosen))
 }
 
 /// The setup's "Start indexing": saves the folders and content options and
@@ -1882,7 +1884,7 @@ fn set_grab_hotkey(
     shared: State<'_, Shared>,
 ) -> Result<PrivacyState, String> {
     let shortcut = Shortcut::from_str(wanted.trim())
-        .map_err(|e| format!("'{wanted}' is not a valid key combination: {e}"))?;
+        .map_err(|_| format!("{wanted} cannot be used. Pick another combination."))?;
     if shortcut.mods.is_empty() {
         return Err("Include Ctrl, Alt, Shift or Win in the combination.".to_owned());
     }
@@ -1891,11 +1893,8 @@ fn set_grab_hotkey(
     if old == Some(shortcut) {
         return Ok(privacy_of(&services, &shared));
     }
-    if let Err(e) = gs.register(shortcut) {
-        return Err(lookout_core::screengrab::grab_hotkey_message(
-            &wanted,
-            &e.to_string(),
-        ));
+    if gs.register(shortcut).is_err() {
+        return Err(lookout_core::screengrab::grab_hotkey_message(&wanted));
     }
     if let Some(old) = old {
         let _ = gs.unregister(old);
@@ -1921,7 +1920,7 @@ fn set_open_hotkey(
 ) -> Result<PrivacyState, String> {
     let wanted = wanted.trim().to_owned();
     let shortcut = Shortcut::from_str(&wanted)
-        .map_err(|e| format!("'{wanted}' is not a valid key combination: {e}"))?;
+        .map_err(|_| format!("{wanted} cannot be used. Pick another combination."))?;
     if shortcut.mods.is_empty() {
         return Err("Include Ctrl, Alt, Shift or Win in the combination.".to_owned());
     }
@@ -2020,9 +2019,7 @@ fn start_lookout(app: &AppHandle, services: &Services) -> Option<Lookout> {
         eprintln!("lookout: {what}: {e}");
         app.dialog()
             .message(format!(
-                "{what}:
-
-{e}"
+                "{what}. Restart Lookout; if this keeps happening, reinstall it."
             ))
             .title("Lookout: search unavailable")
             .kind(MessageDialogKind::Error)
@@ -2041,13 +2038,13 @@ fn start_lookout(app: &AppHandle, services: &Services) -> Option<Lookout> {
         );
         app.dialog()
             .message(
-                "Lookout could not unlock its index (the key does not belong to this Windows \
-                 account, or the files are damaged).\n\nThe old index was set aside as \
-                 *.unreadable files in Lookout's data folder and a new, empty index was started. \
-                 The set-aside files are deleted the next time Lookout starts normally, or when \
-                 you use \"Delete my index\".",
+                "Lookout could not unlock its search data (it belongs to another Windows \
+                 account, or the files are damaged).\n\nThe old files were set aside in \
+                 Lookout's data folder as *.unreadable and Lookout started fresh. They are \
+                 deleted the next time Lookout starts normally, or when you use \
+                 \"Delete my search data\" in Settings.",
             )
-            .title("Lookout: index could not be unlocked")
+            .title("Lookout: search data could not be unlocked")
             .kind(MessageDialogKind::Warning)
             .show(|_| {});
     }
@@ -2118,11 +2115,8 @@ fn register_grab_hotkey(app: &AppHandle, wanted: &str) {
         Err(e) => {
             eprintln!("lookout: cannot register grab hotkey '{wanted}': {e}");
             app.dialog()
-                .message(lookout_core::screengrab::grab_hotkey_message(
-                    wanted,
-                    &e.to_string(),
-                ))
-                .title("Lookout: grab hotkey unavailable")
+                .message(lookout_core::screengrab::grab_hotkey_message(wanted))
+                .title("Lookout: hotkey unavailable")
                 .kind(MessageDialogKind::Warning)
                 .show(|_| {});
         }
@@ -2338,8 +2332,14 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Tray: Pause / Quit.
-    let pause_item =
-        CheckMenuItem::with_id(app, "pause", "Pause indexing", true, false, None::<&str>)?;
+    let pause_item = CheckMenuItem::with_id(
+        app,
+        "pause",
+        "Pause background work",
+        true,
+        false,
+        None::<&str>,
+    )?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit Lookout", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&pause_item, &quit_item])?;
     let pause_for_menu = pause_item.clone();
