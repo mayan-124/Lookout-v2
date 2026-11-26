@@ -1320,7 +1320,7 @@ pub fn scan(
                         q.in_flight -= 1;
                     }
                     wake.notify_all();
-                    throttle.after_work(started.elapsed());
+                    throttle.after_work_unless(started.elapsed(), &progress.cancel);
                 }
             });
         }

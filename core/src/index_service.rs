@@ -144,12 +144,25 @@ impl Throttle {
     /// average busy fraction approaches `duty` without sub-millisecond sleeps
     /// (which Windows rounds up to its ~15 ms timer tick).
     pub(crate) fn after_work(&mut self, spent: Duration) {
+        self.after_work_unless(spent, &AtomicBool::new(false));
+    }
+
+    /// Like [`Self::after_work`], but the sleep ends soon after `stop` is set:
+    /// a long piece of work would otherwise hold up a cancel many times as long.
+    pub(crate) fn after_work_unless(&mut self, spent: Duration, stop: &AtomicBool) {
         if self.duty >= 1.0 {
             return;
         }
         self.busy += spent;
         if self.busy >= THROTTLE_SLICE {
-            std::thread::sleep(self.busy.mul_f32(1.0 / self.duty - 1.0));
+            let end = Instant::now() + self.busy.mul_f32(1.0 / self.duty - 1.0);
+            while !stop.load(Ordering::Relaxed) {
+                let left = end.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                std::thread::sleep(left.min(Duration::from_millis(50)));
+            }
             self.busy = Duration::ZERO;
         }
     }
