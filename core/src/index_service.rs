@@ -21,6 +21,7 @@ use notify::{EventKind, RecursiveMode, Watcher};
 
 use crate::exclude::Excludes;
 use crate::frecency::FrecencyStore;
+use crate::guard;
 use crate::name_index::{IndexError, NameIndex};
 use crate::pause::PauseState;
 use crate::ranking;
@@ -78,6 +79,8 @@ pub struct IndexConfig {
     /// Fraction of time the crawl may be busy, `0.01..=1.0`. 1.0 disables throttling.
     pub duty: f32,
     pub watch: bool,
+    /// False: nothing is read or watched; a loaded snapshot is served as it is.
+    pub crawl: bool,
     /// How often to rebuild the index from disk and swap it in, to repair any
     /// change the watcher missed. `None` disables the scheduled rescan.
     pub rescan_interval: Option<Duration>,
@@ -102,6 +105,7 @@ impl IndexConfig {
             excludes,
             duty: 0.1,
             watch: true,
+            crawl: true,
             rescan_interval: None,
             on_reindexed: None,
             on_changed: None,
@@ -225,7 +229,7 @@ impl IndexService {
         let roots: Vec<PathBuf> = config
             .roots
             .into_iter()
-            .filter(|r| r.is_dir() && !config.excludes.is_excluded_folder(r))
+            .filter(|r| config.crawl && r.is_dir() && !config.excludes.is_excluded_folder(r))
             .collect();
         let stop = Arc::new(AtomicBool::new(false));
         let crawling = Arc::new(AtomicBool::new(!roots.is_empty()));
@@ -278,28 +282,42 @@ impl IndexService {
             threads.push(
                 std::thread::Builder::new()
                     .name("lookout-watch".into())
-                    .spawn(move || event_loop(&c, &rx, interval))?,
+                    .spawn(move || {
+                        for _ in 0..guard::RESTARTS {
+                            let ran = guard::contain("watching for changes failed", || {
+                                event_loop(&c, &rx, interval);
+                            });
+                            if ran.is_some() {
+                                break;
+                            }
+                            c.crawling.store(false, Ordering::Release);
+                        }
+                    })?,
             );
         }
 
         let c = ctx;
         let (preloaded, background) = (config.preloaded, config.background);
+        let idle = !config.crawl;
         threads.push(
             std::thread::Builder::new()
                 .name("lookout-crawl".into())
                 .spawn(move || {
-                    if preloaded {
-                        // Serves the snapshot until the fresh crawl replaces it.
-                        rescan(&c, background);
-                    } else {
-                        crawl_roots(&c);
-                        write(&c.index).shrink_to_fit();
-                        // A crawl cut short by a stop is incomplete: it must not mark
-                        // the index changed (a snapshot of it would replace a good one).
-                        if !c.stop.load(Ordering::Acquire) {
-                            c.notify_reindexed();
+                    guard::contain("reading the folders failed", || {
+                        if idle {
+                        } else if preloaded {
+                            // Serves the snapshot until the fresh crawl replaces it.
+                            rescan(&c, background);
+                        } else {
+                            crawl_roots(&c);
+                            write(&c.index).shrink_to_fit();
+                            // A crawl cut short by a stop is incomplete: it must not mark
+                            // the index changed (a snapshot of it would replace a good one).
+                            if !c.stop.load(Ordering::Acquire) {
+                                c.notify_reindexed();
+                            }
                         }
-                    }
+                    });
                     c.crawling.store(false, Ordering::Release);
                 })?,
         );
@@ -319,6 +337,11 @@ impl IndexService {
     /// Asks the event loop to rebuild the index from disk and swap it in.
     pub fn request_rescan(&self) {
         let _ = self.signals.send(Signal::Rescan);
+    }
+
+    /// Whether a rescan request can be served (some folder was there at start).
+    pub fn can_rescan(&self) -> bool {
+        self.threads.len() > 1
     }
 
     /// How many rescans have completed.

@@ -148,7 +148,14 @@ impl SemanticIndexer {
         };
         let thread = std::thread::Builder::new()
             .name("lookout-semantic".into())
-            .spawn(move || worker.run())?;
+            .spawn(move || {
+                for _ in 0..crate::guard::RESTARTS {
+                    let ran = crate::guard::contain("semantic indexing failed", || worker.run());
+                    if ran.is_some() {
+                        break;
+                    }
+                }
+            })?;
         Ok(Self {
             stop,
             thread: Some(thread),

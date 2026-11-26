@@ -124,6 +124,11 @@ pub struct ContentStats {
     pub ocr_skipped: AtomicU64,
     /// "Index now": ignore idle and the duty cap until the queue is empty.
     pub boost: AtomicBool,
+    /// A rebuild was asked for: the worker drops what it is doing, empties the
+    /// index and reads every file again.
+    pub rebuild: AtomicBool,
+    /// Rebuilds that have read everything again.
+    pub rebuilt: AtomicU64,
     /// The most recent error text, if any.
     pub last_error: Mutex<Option<String>>,
     /// Time spent per stage, in nanoseconds (for the speed benchmark).
@@ -277,7 +282,18 @@ impl ContentService {
         };
         let thread = std::thread::Builder::new()
             .name("lookout-content".into())
-            .spawn(move || worker.run())?;
+            .spawn(move || {
+                for _ in 0..crate::guard::RESTARTS {
+                    if crate::guard::contain("reading file contents failed", || worker.run())
+                        .is_some()
+                    {
+                        break;
+                    }
+                    worker.known = None;
+                    worker.stats.busy.store(false, Ordering::Release);
+                    worker.clear_progress();
+                }
+            })?;
         Ok(Self {
             stop,
             tx,
@@ -315,6 +331,13 @@ impl ContentService {
     /// duty cap, until nothing is left (or [`stop_index_now`](Self::stop_index_now)).
     pub fn index_now(&self) {
         self.stats.boost.store(true, Ordering::Release);
+        let _ = self.tx.send(Job::Rescan);
+    }
+
+    /// Empties the content index and reads every file again, without waiting
+    /// for the user to be away.
+    pub fn rebuild(&self) {
+        self.stats.rebuild.store(true, Ordering::Release);
         let _ = self.tx.send(Job::Rescan);
     }
 
@@ -368,7 +391,12 @@ impl Worker {
             .store(self.pending.len() as u64, Ordering::Relaxed);
     }
 
+    fn rebuild_wanted(&self) -> bool {
+        self.stats.rebuild.load(Ordering::Acquire)
+    }
+
     fn run(&mut self) {
+        let mut rebuilding = false;
         while !self.stopped() {
             match self.rx.recv_timeout(POLL) {
                 Ok(job) => self.take(job),
@@ -376,6 +404,16 @@ impl Worker {
                 Err(RecvTimeoutError::Disconnected) => break,
             }
             self.drain();
+            if self.stats.rebuild.swap(false, Ordering::AcqRel) {
+                if self.cfg.store.clear().is_err() {
+                    crate::log::error("the content index could not be emptied");
+                }
+                self.uncommitted = 0;
+                self.stats.docs.store(0, Ordering::Relaxed);
+                self.stats.boost.store(true, Ordering::Release);
+                self.rescan = true;
+                rebuilding = true;
+            }
             if !self.rescan && self.pending.is_empty() {
                 continue;
             }
@@ -402,6 +440,10 @@ impl Worker {
             self.stats.pending.store(0, Ordering::Relaxed);
             self.commit();
             self.drain();
+            if rebuilding && !self.rescan && !self.rebuild_wanted() && !self.stopped() {
+                rebuilding = false;
+                self.stats.rebuilt.fetch_add(1, Ordering::AcqRel);
+            }
             if !self.rescan {
                 // The queue is empty: "Index now" is over.
                 self.stats.boost.store(false, Ordering::Release);
@@ -474,7 +516,7 @@ impl Worker {
     fn gate(&mut self) -> bool {
         let mut flushed = false;
         loop {
-            if self.stopped() {
+            if self.stopped() || self.rebuild_wanted() {
                 return false;
             }
             let paused = self.cfg.pause.is_paused();
@@ -504,7 +546,7 @@ impl Worker {
             let r = self.cfg.store.commit();
             StageTimes::add(&self.stats.stages.commit, t);
             if let Err(e) = r {
-                eprintln!("lookout: content index commit failed: {e}");
+                crate::log::error("the content index could not be saved");
                 self.stats
                     .record_error(format!("could not save the file text: {e}"));
             }
@@ -670,7 +712,7 @@ impl Worker {
                 }
                 if !self.stats.full() {
                     let started = Instant::now();
-                    let out = self.ext.extract(c);
+                    let out = self.ext.extract_contained(c);
                     self.finish(c, out, false);
                     if !self.boosting() {
                         let t = Instant::now();
@@ -741,7 +783,11 @@ impl Worker {
                     if i >= items.len() {
                         break;
                     }
-                    let out = if full { None } else { ext.extract(&items[i]) };
+                    let out = if full {
+                        None
+                    } else {
+                        ext.extract_contained(&items[i])
+                    };
                     if tx.send((i, out)).is_err() {
                         break;
                     }
@@ -879,7 +925,7 @@ impl Worker {
                 self.uncommitted += 1;
             }
             Err(e) => {
-                eprintln!("lookout: could not index {}: {e}", c.path.display());
+                crate::log::warn("a file could not be added to the content index");
                 self.stats
                     .record_error(format!("could not read {}: {e}", c.path.display()));
             }
@@ -941,6 +987,11 @@ struct OcrCache {
 }
 
 impl Extractor {
+    /// [`extract`](Self::extract); a file that makes it panic is skipped.
+    fn extract_contained(&self, c: &Cand) -> Outcome {
+        crate::guard::contain("a file could not be read", || self.extract(c)).flatten()
+    }
+
     fn extract(&self, c: &Cand) -> Outcome {
         let path = &c.path;
         match c.class {
@@ -1044,8 +1095,8 @@ impl Extractor {
     /// day (helper unreachable). A skipped file is recorded as empty, with the
     /// reason in the log, so it is not retried on every scan.
     fn extract_office(&self, path: &Path, len: u64, mtime: u64) -> Outcome {
-        let skip = |why: &str| {
-            eprintln!("lookout: skipped {}: {why}", path.display());
+        let skip = |_why: &str| {
+            crate::log::warn("a document was skipped");
             Some((DocKind::Text, String::new()))
         };
         if len > office::MAX_OFFICE_BYTES {

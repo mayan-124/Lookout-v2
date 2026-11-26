@@ -293,6 +293,33 @@
     if (own && !t.closest(DRAG_TEXT)) return;
     getCurrentWindow().startDragging().catch(() => {});
   }
+  // One line each: a contained fault or a repaired index, and safe mode.
+  let problems = $state<string[]>([]);
+  let safeMode = $state(false);
+  async function loadNotices() {
+    try {
+      const n = await invoke<{ safe_mode: boolean; lines: string[] }>("notices");
+      safeMode = n.safe_mode;
+      problems = [...new Set([...problems, ...n.lines])];
+    } catch {
+      // Asked again when the bar is next shown.
+    }
+  }
+  async function leaveSafeMode() {
+    try {
+      await invoke("leave_safe_mode");
+    } catch (e) {
+      problems = [...problems, errorText(e)];
+    }
+    await loadNotices();
+  }
+  onMount(() => {
+    loadNotices();
+    const unlisten = listen("notices-changed", loadNotices);
+    return () => {
+      unlisten.then((f) => f());
+    };
+  });
   let colEl: HTMLDivElement | undefined = $state();
   let fitH = $state(0);
   $effect(() => {
@@ -882,6 +909,7 @@
       refusal = null;
       visible = true;
       fitScreen();
+      loadNotices();
       opens += 1;
       opAsked = false;
       tipsHovered = false;
@@ -1690,6 +1718,18 @@
       <kbd aria-hidden="true" data-tauri-drag-region>Esc</kbd>
     </div>
 
+    {#if safeMode}
+      <div class="problem glass" role="status">
+        <span>Lookout started in safe mode after repeated crashes: no add-ons, no background indexing.</span>
+        <button type="button" class="btn small primary" onclick={leaveSafeMode}>Turn everything back on</button>
+      </div>
+    {/if}
+    {#each problems as p (p)}
+      <div class="problem glass" role="alert">
+        <span>{p}</span>
+        <button type="button" class="btn small" onclick={() => (problems = problems.filter((x) => x !== p))}>Dismiss</button>
+      </div>
+    {/each}
     {#if !panel && !disk && !card && !showHelp && !showSetup}
       <div class="chips" role="tablist" aria-label="Filter results">
         {#each LANES as l, n}
@@ -2313,6 +2353,15 @@
     border-radius: var(--r-sm);
   }
 
+  .problem {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 8px 6px 16px;
+    border-radius: var(--r-pill);
+  }
   .chips {
     flex: none;
     display: flex;

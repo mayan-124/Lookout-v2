@@ -4,9 +4,10 @@
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
+use lookout_core::actions::disk::{TextClipboard, WindowsClipboardWriter};
 use lookout_core::actions::open::Launcher;
 use lookout_core::actions::{Done, GateConfig, Prepared};
 use lookout_core::apps::default_start_menu_dirs;
@@ -14,10 +15,13 @@ use lookout_core::autostart::{RunEntry, AUTOSTART_FLAG};
 use lookout_core::cli::{parse_dev_flags, parse_measure_args, MeasureArgs};
 use lookout_core::content::idle::SystemIdle;
 use lookout_core::content::ocr::WindowsOcr;
+use lookout_core::diagnostics::{self, Facts};
 use lookout_core::engine::Sink;
+use lookout_core::guard::{self, contain};
 use lookout_core::item::Item;
 use lookout_core::latency::{self, Sample};
-use lookout_core::lookout::{Lookout, StartOptions, Status};
+use lookout_core::log;
+use lookout_core::lookout::{Lookout, RebuildProgress, StartOptions, Status};
 use lookout_core::pause::PauseState;
 use lookout_core::placement::{self, Rect, Screen};
 use lookout_core::settings::{monitor_key, Appearance, Settings, DEFAULT_HOTKEY};
@@ -28,7 +32,8 @@ use lookout_core::uimode::{Mode, Show, Ui, UiState};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{
-    AppHandle, Emitter, Manager, Monitor, PhysicalPosition, State, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, Manager, Monitor, PhysicalPosition, RunEvent, State, WebviewWindow,
+    WindowEvent,
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -88,6 +93,133 @@ struct Shared {
     ignore_moves_until: Mutex<Option<Instant>>,
     /// A result is being dragged out: the bar must stay until the drop.
     dragging: AtomicBool,
+    /// Started after repeated crashes: no plugins and no background indexing.
+    safe_mode: AtomicBool,
+    /// Counts this start as a crash until it has proved healthy.
+    starts: Mutex<Option<Arc<guard::Starts>>>,
+    /// A contained fault the user has not been told about.
+    fault: AtomicBool,
+}
+
+/// A start still running after this long counts as a good one.
+const HEALTHY_AFTER: Duration = Duration::from_secs(30);
+
+/// For the panic hook, which has no handle of its own.
+static APP: OnceLock<AppHandle> = OnceLock::new();
+
+const FAULT_LINE: &str = "Something went wrong in one part of Lookout. Lookout is still running.";
+
+/// Runs after every logged panic: the bar then says so.
+fn after_panic() {
+    let Some(app) = APP.get() else { return };
+    let Some(shared) = app.try_state::<Shared>() else {
+        return;
+    };
+    shared.fault.store(true, Ordering::Release);
+    let app = app.clone();
+    // The panicking thread may hold a lock the event would need.
+    let _ = std::thread::Builder::new().spawn(move || tell_window(&app));
+}
+
+/// Asks the page to fetch the notices.
+fn tell_window(app: &AppHandle) {
+    if app.emit_to(BAR, "notices-changed", ()).is_err() {
+        log::warn("could not reach the window");
+    }
+}
+
+#[derive(serde::Serialize)]
+struct Notices {
+    safe_mode: bool,
+    /// Sentences not shown before.
+    lines: Vec<&'static str>,
+}
+
+#[tauri::command]
+fn notices(services: State<Services>, shared: State<Shared>) -> Notices {
+    let mut lines = Vec::new();
+    if shared.fault.swap(false, Ordering::AcqRel) {
+        lines.push(FAULT_LINE);
+    }
+    lines.extend(services.current().and_then(|l| l.take_notice()));
+    Notices {
+        safe_mode: shared.safe_mode.load(Ordering::Acquire),
+        lines,
+    }
+}
+
+#[tauri::command]
+async fn leave_safe_mode(app: AppHandle) -> Result<(), String> {
+    let shared = app.state::<Shared>();
+    if shared.safe_mode.swap(false, Ordering::AcqRel) {
+        if let Some(s) = lock(&shared.starts).as_ref() {
+            s.healthy();
+        }
+        restart_lookout(&app);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn copy_diagnostics(app: AppHandle) -> Result<(), String> {
+    let services = app.state::<Services>();
+    let (mode, theme) = {
+        let s = lock(&services.settings);
+        (
+            format!("{:?}", s.ui.mode.unwrap_or_default()).to_lowercase(),
+            s.appearance
+                .as_ref()
+                .map_or_else(|| "default".to_owned(), |a| a.theme.clone()),
+        )
+    };
+    let facts = Facts {
+        app_version: app.package_info().version.to_string(),
+        scales: app
+            .available_monitors()
+            .map(|m| m.iter().map(Monitor::scale_factor).collect())
+            .unwrap_or_default(),
+        mode,
+        theme,
+        safe_mode: app.state::<Shared>().safe_mode.load(Ordering::Acquire),
+    };
+    let counts = services.current().map(|l| l.counts());
+    let errors = log::last_errors(
+        &log::folder(services.paths.root()),
+        diagnostics::ERROR_LINES,
+    );
+    let text = diagnostics::render(&facts, counts.as_ref(), &errors);
+    WindowsClipboardWriter.set_text(&text).map_err(|_| {
+        log::error("could not copy the diagnostics");
+        "Could not use the clipboard. Try again.".to_owned()
+    })
+}
+
+#[tauri::command]
+fn open_log_folder(services: State<Services>) -> Result<(), String> {
+    let dir = log::folder(services.paths.root());
+    std::fs::create_dir_all(&dir)
+        .and_then(|()| open::that_detached(&dir))
+        .map_err(|e| {
+            log::error_io("could not open the log folder", &e);
+            "Could not open the log folder.".to_owned()
+        })
+}
+
+#[tauri::command]
+async fn rebuild_index(services: State<'_, Services>) -> Result<(), String> {
+    Ok(services_of(&services)?.rebuild_index()?)
+}
+
+#[tauri::command]
+fn rebuild_status(services: State<Services>) -> Option<RebuildProgress> {
+    services.current().and_then(|l| l.rebuild_progress())
+}
+
+/// A panic inside a command ends that command, not the app.
+fn contained<R: tauri::Runtime>(
+    handler: impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    move |invoke| contain("a command failed", || handler(invoke)).unwrap_or(true)
 }
 
 /// Longest an action may hold the blur suspension; the action itself keeps running.
@@ -305,8 +437,8 @@ fn position_bar(app: &AppHandle, window: &WebviewWindow, monitor: Option<Monitor
         *lock(&shared.ignore_moves_until) = Some(Instant::now() + Duration::from_millis(400));
     }
     for _ in 0..if rescaled { 2 } else { 1 } {
-        if let Err(e) = window.set_position(PhysicalPosition::new(x, y)) {
-            eprintln!("lookout: could not position bar: {e}");
+        if window.set_position(PhysicalPosition::new(x, y)).is_err() {
+            log::warn("could not position the bar");
         }
     }
 }
@@ -336,8 +468,8 @@ fn persist_window_state(app: &AppHandle, pos: Option<(i32, i32)>) {
     if let (Some(key), Some(pos)) = (key, pos) {
         s.window_positions.insert(key, pos);
     }
-    if let Err(e) = s.save(&services.paths.settings()) {
-        eprintln!("lookout: could not save window state: {e}");
+    if s.save(&services.paths.settings()).is_err() {
+        log::warn("could not save the window position");
     }
 }
 
@@ -569,8 +701,8 @@ fn hide_bar_window(app: &AppHandle) {
     trim_memory_later(app.clone(), hidden);
     if let Ok(window) = bar_window(app) {
         set_webview_visible(&window, false);
-        if let Err(e) = window.hide() {
-            eprintln!("lookout: could not hide bar: {e}");
+        if window.hide().is_err() {
+            log::error("could not hide the bar");
         }
     }
 }
@@ -604,8 +736,8 @@ fn toggle_bar(app: &AppHandle) {
         .unwrap_or(false);
     if visible {
         hide_bar_window(app);
-    } else if let Err(e) = show_bar(app) {
-        eprintln!("lookout: could not show bar: {e}");
+    } else if show_bar(app).is_err() {
+        log::error("could not show the bar");
     }
 }
 
@@ -633,10 +765,9 @@ fn frontend_ready(app: AppHandle, shared: State<Shared>) {
             .is_some_and(|s| lock(&s.settings).needs_first_run());
         // A start at sign-in stays hidden; the setup then waits for the hotkey.
         let at_sign_in = std::env::args().any(|a| a == AUTOSTART_FLAG);
-        if first_run && !at_sign_in && lock(&shared.samples_tx).is_none() {
-            if let Err(e) = show_bar(&app) {
-                eprintln!("lookout: could not show the setup: {e}");
-            }
+        if first_run && !at_sign_in && lock(&shared.samples_tx).is_none() && show_bar(&app).is_err()
+        {
+            log::error("could not show the setup");
         }
     }
 }
@@ -1999,8 +2130,8 @@ async fn delete_index(
         let mut s = lock(&services.settings);
         s.index_roots.clear();
         s.first_run_done = false;
-        if let Err(e) = s.save(&services.paths.settings()) {
-            eprintln!("lookout: could not save settings: {e}");
+        if s.save(&services.paths.settings()).is_err() {
+            log::error("could not save the settings");
         }
     }
     restart_lookout(&app);
@@ -2017,6 +2148,7 @@ fn restart_lookout(app: &AppHandle) {
     }
     let next = start_lookout(app, &services).map(Arc::new);
     services.replace(next);
+    tell_window(app);
 }
 
 /// Plugins live in `plugins/<name>/plugin.json` next to `lookout.exe`.
@@ -2030,8 +2162,8 @@ fn plugin_config(paths: &DataPaths) -> lookout_core::plugins::HostConfig {
 }
 
 fn start_lookout(app: &AppHandle, services: &Services) -> Option<Lookout> {
-    let report = |what: &str, e: &dyn std::fmt::Display| {
-        eprintln!("lookout: {what}: {e}");
+    let report = |what: &'static str| {
+        log::error(what);
         app.dialog()
             .message(format!(
                 "{what}. Restart Lookout; if this keeps happening, reinstall it."
@@ -2042,15 +2174,13 @@ fn start_lookout(app: &AppHandle, services: &Services) -> Option<Lookout> {
     };
     let (storage, reset) = match Storage::open(services.paths.clone()) {
         Ok(s) => s,
-        Err(e) => {
-            report("Lookout could not open its encrypted storage", &e);
+        Err(_) => {
+            report("Lookout could not open its encrypted storage");
             return None;
         }
     };
     if reset {
-        eprintln!(
-            "lookout: the stored key or database could not be read; set aside as *.unreadable"
-        );
+        log::error("the search data could not be unlocked and was set aside");
         app.dialog()
             .message(
                 "Lookout could not unlock its search data (it belongs to another Windows \
@@ -2065,12 +2195,14 @@ fn start_lookout(app: &AppHandle, services: &Services) -> Option<Lookout> {
     }
     let sink_handle = app.clone();
     let sink: Sink = Arc::new(move |update| {
-        if let Err(e) = sink_handle.emit_to(BAR, "query-results", &update) {
-            eprintln!("lookout: could not deliver results: {e}");
+        if sink_handle.emit_to(BAR, "query-results", &update).is_err() {
+            log::warn("could not deliver results");
         }
     });
+    let mut settings = lock(&services.settings).clone();
+    settings.safe_mode = app.state::<Shared>().safe_mode.load(Ordering::Acquire);
     let options = StartOptions {
-        settings: lock(&services.settings).clone(),
+        settings,
         roots_override: services.flags.index_roots.clone(),
         synthetic_files: services.flags.synthetic_index,
         synthetic_uses_folders: services.flags.synthetic_with_folders,
@@ -2085,10 +2217,13 @@ fn start_lookout(app: &AppHandle, services: &Services) -> Option<Lookout> {
         plugins: Some(plugin_config(&services.paths)),
     };
     let pause = app.state::<Shared>().pause.clone();
-    match Lookout::start(options, sink, pause) {
-        Ok(l) => Some(l),
-        Err(e) => {
-            report("Lookout could not start search", &e);
+    let started = contain("search could not start", || {
+        Lookout::start(options, sink, pause)
+    });
+    match started {
+        Some(Ok(l)) => Some(l),
+        _ => {
+            report("Lookout could not start search");
             None
         }
     }
@@ -2102,14 +2237,14 @@ fn register_pause_hotkey(app: &AppHandle, wanted: &str) {
     }
     let shortcut = match Shortcut::from_str(wanted) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("lookout: bad pause_hotkey '{wanted}': {e}");
+        Err(_) => {
+            log::warn("the pause hotkey is not a valid key combination");
             return;
         }
     };
     match app.global_shortcut().register(shortcut) {
         Ok(()) => *lock(&app.state::<Shared>().pause_shortcut) = Some(shortcut),
-        Err(e) => eprintln!("lookout: cannot register pause hotkey '{wanted}': {e}"),
+        Err(_) => log::warn("the pause hotkey could not be registered"),
     }
 }
 
@@ -2120,15 +2255,15 @@ fn register_grab_hotkey(app: &AppHandle, wanted: &str) {
     }
     let shortcut = match Shortcut::from_str(wanted) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("lookout: bad grab_hotkey '{wanted}': {e}");
+        Err(_) => {
+            log::warn("the grab hotkey is not a valid key combination");
             return;
         }
     };
     match app.global_shortcut().register(shortcut) {
         Ok(()) => *lock(&app.state::<Shared>().grab_shortcut) = Some(shortcut),
-        Err(e) => {
-            eprintln!("lookout: cannot register grab hotkey '{wanted}': {e}");
+        Err(_) => {
+            log::warn("the grab hotkey could not be registered");
             app.dialog()
                 .message(lookout_core::screengrab::grab_hotkey_message(wanted))
                 .title("Lookout: hotkey unavailable")
@@ -2148,9 +2283,11 @@ fn start_grab(app: &AppHandle) {
         }
         let (app, pause) = (app.clone(), shared.pause.clone());
         std::thread::spawn(move || {
-            let outcome = lookout_core::screengrab::run(&pause);
-            if let lookout_core::screengrab::Outcome::Failed(why) = &outcome {
-                eprintln!("lookout: grab failed: {why}");
+            let outcome = contain("reading text from the screen failed", || {
+                lookout_core::screengrab::run(&pause)
+            });
+            if let Some(lookout_core::screengrab::Outcome::Failed(_)) = outcome {
+                log::error("reading text from the screen failed");
             }
             app.state::<Shared>()
                 .grabbing
@@ -2173,7 +2310,7 @@ fn register_hotkey(app: &AppHandle, wanted: &str) -> (String, bool) {
             keep(wanted);
             return (format!("Lookout - press {wanted}"), true);
         }
-        Err(e) => eprintln!("lookout: cannot register hotkey '{wanted}': {e}"),
+        Err(_) => log::warn("the hotkey could not be registered"),
     }
     if wanted != DEFAULT_HOTKEY {
         match gs.register(DEFAULT_HOTKEY) {
@@ -2184,7 +2321,7 @@ fn register_hotkey(app: &AppHandle, wanted: &str) -> (String, bool) {
                     true,
                 );
             }
-            Err(e) => eprintln!("lookout: cannot register fallback hotkey: {e}"),
+            Err(_) => log::warn("the fallback hotkey could not be registered"),
         }
     }
     (
@@ -2204,21 +2341,21 @@ fn run_measurement(app: AppHandle, args: MeasureArgs, rx: Receiver<Sample>) {
 
     let mut samples = Vec::with_capacity(args.cycles);
     for _ in 0..args.cycles {
-        if let Err(e) = show_bar(&app) {
-            eprintln!("lookout: measurement show failed: {e}");
+        if show_bar(&app).is_err() {
+            log::error("measurement show failed");
             break;
         }
         match rx.recv_timeout(Duration::from_secs(3)) {
             Ok(s) => samples.push(s),
-            Err(_) => eprintln!("lookout: no paint report within 3 s"),
+            Err(_) => log::warn("no paint report within 3 s"),
         }
         std::thread::sleep(Duration::from_millis(150));
         hide_bar_window(&app);
         std::thread::sleep(Duration::from_millis(150));
     }
     let complete = samples.len() == args.cycles;
-    if let Err(e) = std::fs::write(&args.out, latency::to_csv(&samples)) {
-        eprintln!("lookout: could not write {}: {e}", args.out.display());
+    if std::fs::write(&args.out, latency::to_csv(&samples)).is_err() {
+        log::error("could not write the measurements");
         app.exit(2);
         return;
     }
@@ -2227,6 +2364,7 @@ fn run_measurement(app: AppHandle, args: MeasureArgs, rx: Receiver<Sample>) {
 
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle().clone();
+    let _ = APP.set(handle.clone());
 
     let flags = parse_dev_flags(std::env::args());
     // `--data-dir` keeps tests and benchmarks away from the user's real settings and logs.
@@ -2235,19 +2373,47 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         None => app.path().app_config_dir()?,
     };
 
+    let measuring = parse_measure_args(std::env::args()).is_some();
+    // A second copy asks the first to come forward and leaves, before touching anything.
+    #[cfg(windows)]
+    let first_copy = if measuring {
+        None
+    } else {
+        let autostart = std::env::args().any(|a| a == AUTOSTART_FLAG);
+        match guard::single::claim(&data_dir, !autostart) {
+            Ok(Some(first)) => Some(first),
+            Ok(None) => std::process::exit(0),
+            Err(e) => {
+                log::error_io("could not check for a running copy", &e);
+                None
+            }
+        }
+    };
+    log::init(log::folder(&data_dir));
+    if !measuring {
+        let starts = Arc::new(guard::Starts::begin(&data_dir));
+        let shared = handle.state::<Shared>();
+        shared
+            .safe_mode
+            .store(starts.safe_mode(), Ordering::Release);
+        *lock(&shared.starts) = Some(starts.clone());
+        std::thread::spawn(move || {
+            std::thread::sleep(HEALTHY_AFTER);
+            starts.healthy();
+        });
+    }
+
     // Settings: a missing file is created so the hotkey is easy to find and edit.
     let settings_path = data_dir.join("settings.json");
     let mut settings = match Settings::load(&settings_path) {
         Ok(s) => {
-            if !settings_path.exists() {
-                if let Err(e) = s.save(&settings_path) {
-                    eprintln!("lookout: could not write default settings: {e}");
-                }
+            if !settings_path.exists() && s.save(&settings_path).is_err() {
+                log::warn("could not write the default settings");
             }
             s
         }
-        Err(e) => {
-            eprintln!("lookout: ignoring unreadable settings ({e}); using defaults");
+        Err(_) => {
+            log::error("the settings could not be read; using defaults");
             // The next save replaces the file: keep a hand-edited one to repair.
             if settings_path.exists() {
                 let _ = std::fs::copy(&settings_path, data_dir.join("settings.json.unreadable"));
@@ -2262,20 +2428,21 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let marked = settings.mark_configured_done();
     let existing = !settings.needs_first_run();
     let adopted = settings.ui.adopt(existing);
-    if settings.keep_start_with_windows_off() || marked || adopted {
-        if let Err(e) = settings.save(&settings_path) {
-            eprintln!("lookout: could not save settings: {e}");
-        }
+    if (settings.keep_start_with_windows_off() || marked || adopted)
+        && settings.save(&settings_path).is_err()
+    {
+        log::error("could not save the settings");
     }
 
     // After an update moved the program, point the startup entry at it again.
     // Not for developer runs: they would take the entry over.
-    if flags.data_dir.is_none() && !cfg!(debug_assertions) {
-        if let Err(e) = std::env::current_exe()
+    if flags.data_dir.is_none()
+        && !cfg!(debug_assertions)
+        && std::env::current_exe()
             .and_then(|exe| settings.verify_start_with_windows(&RunEntry::default(), &exe))
-        {
-            eprintln!("lookout: could not check the startup entry: {e}");
-        }
+            .is_err()
+    {
+        log::warn("could not check the startup entry");
     }
 
     // Developer flags that name folders (or generate an index) stand in for the first-run choice.
@@ -2312,38 +2479,41 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .store(settings.pinned, Ordering::Release);
     let blur_handle = handle.clone();
     window.on_window_event(move |event| {
-        if let WindowEvent::Moved(pos) = event {
-            on_bar_moved(&blur_handle, *pos);
-        }
-        if let WindowEvent::Focused(false) = event {
-            let shared = blur_handle.state::<Shared>();
-            if !blur_hide_allowed(&shared) {
-                return;
+        contain("a window event failed", || {
+            if let WindowEvent::Moved(pos) = event {
+                on_bar_moved(&blur_handle, *pos);
             }
-            // Focus may have moved to another window of Lookout (a file dialog,
-            // a message box): then the bar stays, with Settings, Disk or the
-            // confirm card as they are, and hides once focus leaves Lookout.
-            let h = blur_handle.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(150));
-                let deadline = Instant::now() + Duration::from_secs(600);
-                while lookout_core::winfocus::foreground_is_ours() && Instant::now() < deadline {
-                    if bar_window(&h)
-                        .and_then(|w| w.is_focused().map_err(BarError::from))
-                        .unwrap_or(false)
+            if let WindowEvent::Focused(false) = event {
+                let shared = blur_handle.state::<Shared>();
+                if !blur_hide_allowed(&shared) {
+                    return;
+                }
+                // Focus may have moved to another window of Lookout (a file dialog,
+                // a message box): then the bar stays, with Settings, Disk or the
+                // confirm card as they are, and hides once focus leaves Lookout.
+                let h = blur_handle.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(150));
+                    let deadline = Instant::now() + Duration::from_secs(600);
+                    while lookout_core::winfocus::foreground_is_ours() && Instant::now() < deadline
                     {
-                        return; // back in the bar: its next blur is handled again
+                        if bar_window(&h)
+                            .and_then(|w| w.is_focused().map_err(BarError::from))
+                            .unwrap_or(false)
+                        {
+                            return; // back in the bar: its next blur is handled again
+                        }
+                        std::thread::sleep(Duration::from_millis(250));
                     }
-                    std::thread::sleep(Duration::from_millis(250));
-                }
-                let focused = bar_window(&h)
-                    .and_then(|w| w.is_focused().map_err(BarError::from))
-                    .unwrap_or(false);
-                if !focused && blur_hide_allowed(&h.state::<Shared>()) {
-                    hide_bar_window(&h);
-                }
-            });
-        }
+                    let focused = bar_window(&h)
+                        .and_then(|w| w.is_focused().map_err(BarError::from))
+                        .unwrap_or(false);
+                    if !focused && blur_hide_allowed(&h.state::<Shared>()) {
+                        hide_bar_window(&h);
+                    }
+                });
+            }
+        });
     });
 
     // Tray: Pause / Quit.
@@ -2395,10 +2565,10 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(Arc::new(Thumbnails::default()));
     *lock(&handle.state::<CliAccess>().marker) =
         lookout_cli::winpipe::mark_running(lookout_cli::winpipe::RUNNING_MARKER_NAME);
-    if lock(&handle.state::<Services>().settings).cli_access {
-        if let Err(e) = apply_cli_access(&handle, true) {
-            eprintln!("lookout: {e}");
-        }
+    if lock(&handle.state::<Services>().settings).cli_access
+        && apply_cli_access(&handle, true).is_err()
+    {
+        log::error("command-line access could not start");
     }
 
     // If the page never reports ready the hotkey would silently do nothing forever.
@@ -2412,10 +2582,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         {
             return;
         }
-        eprintln!(
-            "lookout: ERROR frontend not ready {} s after launch",
-            READY_TIMEOUT.as_secs()
-        );
+        log::error("the interface did not load in time");
         watchdog
             .dialog()
             .message(
@@ -2428,6 +2595,19 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             .show(|_| {});
     });
 
+    #[cfg(windows)]
+    if let Some(first) = first_copy {
+        let h = handle.clone();
+        let listening = first.listen(move || {
+            if show_bar(&h).is_err() {
+                log::error("could not show the bar for a second start");
+            }
+        });
+        if let Err(e) = listening {
+            log::error_io("could not watch for a second start", &e);
+        }
+    }
+
     if let Some(args) = parse_measure_args(std::env::args()) {
         let (tx, rx) = mpsc::channel();
         *lock(&handle.state::<Shared>().samples_tx) = Some(tx);
@@ -2437,6 +2617,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn run() {
+    log::install_panic_hook(after_panic);
     let result = tauri::Builder::default()
         .manage(Shared {
             pause: PauseState::new(),
@@ -2458,6 +2639,9 @@ pub fn run() {
             move_gen: AtomicU64::new(0),
             ignore_moves_until: Mutex::new(None),
             dragging: AtomicBool::new(false),
+            safe_mode: AtomicBool::new(false),
+            starts: Mutex::new(None),
+            fault: AtomicBool::new(false),
         })
         .plugin(tauri_plugin_dialog::init())
         // Only used when the user clicks "Check for updates" in Settings.
@@ -2468,24 +2652,32 @@ pub fn run() {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
-                    let is_pause = lock(&app.state::<Shared>().pause_shortcut)
-                        .as_ref()
-                        .is_some_and(|s| s == shortcut);
-                    let is_grab = lock(&app.state::<Shared>().grab_shortcut)
-                        .as_ref()
-                        .is_some_and(|s| s == shortcut);
-                    if is_pause {
-                        let paused = app.state::<Shared>().pause.is_paused();
-                        apply_pause(app, !paused);
-                    } else if is_grab {
-                        start_grab(app);
-                    } else {
-                        toggle_bar(app);
-                    }
+                    contain("a hotkey action failed", || {
+                        let is_pause = lock(&app.state::<Shared>().pause_shortcut)
+                            .as_ref()
+                            .is_some_and(|s| s == shortcut);
+                        let is_grab = lock(&app.state::<Shared>().grab_shortcut)
+                            .as_ref()
+                            .is_some_and(|s| s == shortcut);
+                        if is_pause {
+                            let paused = app.state::<Shared>().pause.is_paused();
+                            apply_pause(app, !paused);
+                        } else if is_grab {
+                            start_grab(app);
+                        } else {
+                            toggle_bar(app);
+                        }
+                    });
                 })
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(contained(tauri::generate_handler![
+            notices,
+            leave_safe_mode,
+            copy_diagnostics,
+            open_log_folder,
+            rebuild_index,
+            rebuild_status,
             hide_bar,
             preview_file,
             preview_thumbnail,
@@ -2587,11 +2779,21 @@ pub fn run() {
             set_remember_last_search,
             drag_check,
             start_drag
-        ])
+        ]))
         .setup(setup)
-        .run(tauri::generate_context!());
-    if let Err(e) = result {
-        eprintln!("lookout: fatal: {e}");
+        .build(tauri::generate_context!())
+        .map(|app| {
+            app.run(|app, event| {
+                // Closing on purpose is not a crash.
+                if let RunEvent::Exit = event {
+                    if let Some(s) = lock(&app.state::<Shared>().starts).as_ref() {
+                        s.healthy();
+                    }
+                }
+            });
+        });
+    if result.is_err() {
+        log::error("Lookout could not start");
         std::process::exit(1);
     }
 }

@@ -109,6 +109,10 @@ pub struct Settings {
     pub pause_hotkey: String,
     /// Global hotkey for "grab text from screen". Empty switches it off.
     pub grab_hotkey: String,
+    /// Set by the app after repeated crashes: no plugins and no background
+    /// indexing in this run. Never saved.
+    #[serde(skip)]
+    pub safe_mode: bool,
     /// Index file contents (full-text search).
     pub index_contents: bool,
     /// Read the text in images and screenshots (Windows OCR).
@@ -208,6 +212,7 @@ impl Default for Settings {
             excluded_folders: Vec::new(),
             pause_hotkey: DEFAULT_PAUSE_HOTKEY.to_owned(),
             grab_hotkey: DEFAULT_GRAB_HOTKEY.to_owned(),
+            safe_mode: false,
             index_contents: true,
             ocr: true,
             idle_secs: 10,
@@ -800,6 +805,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("settings.json");
         let s = Settings {
+            safe_mode: false,
             hotkey: "Ctrl+Shift+K".into(),
             index_roots: vec![PathBuf::from("D:\\Work")],
             excluded_names: vec!["private".into()],

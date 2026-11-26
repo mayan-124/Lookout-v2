@@ -523,15 +523,15 @@ fn run(sh: &Shared) {
     let missed = sh.store.take_due(now_ms());
     if !missed.is_empty() {
         let (title, body) = missed_message(&missed);
-        if let Err(e) = sh.notifier.notify(&title, &body) {
-            eprintln!("lookout: {e}");
+        if sh.notifier.notify(&title, &body).is_err() {
+            crate::log::warn("a timer could not be saved or shown");
         }
     }
     loop {
         let now = now_ms();
         for t in sh.store.take_due(now) {
-            if let Err(e) = sh.notifier.notify("Timer finished", &body_for(&t)) {
-                eprintln!("lookout: {e}");
+            if sh.notifier.notify("Timer finished", &body_for(&t)).is_err() {
+                crate::log::warn("a timer could not be saved or shown");
             }
         }
         let next = sh.store.next_end();

@@ -70,25 +70,56 @@ pub fn save(index: &SharedIndex, path: &Path, key: &Key, fingerprint: &str) -> i
 /// Loads the snapshot if it exists, decrypts and was made for `fingerprint`.
 /// Anything else (missing, unreadable, made for other folders) yields `None`.
 pub fn load(path: &Path, key: &Key, fingerprint: &str, max_entries: usize) -> Option<NameIndex> {
-    let file = File::open(path).ok()?;
-    let mut r = OpenReader::new(BufReader::new(file), key).ok()?;
+    try_load(path, key, fingerprint, max_entries).ok().flatten()
+}
+
+/// A snapshot that is there but cannot be read back.
+#[derive(Debug)]
+pub struct Damaged;
+
+/// [`load`], telling a damaged snapshot apart from one that is missing, too
+/// large or made for other settings.
+pub fn try_load(
+    path: &Path,
+    key: &Key,
+    fingerprint: &str,
+    max_entries: usize,
+) -> Result<Option<NameIndex>, Damaged> {
+    crate::guard::contain("the name index could not be read", || {
+        read_snapshot(path, key, fingerprint, max_entries)
+    })
+    .unwrap_or(Err(Damaged))
+}
+
+fn read_snapshot(
+    path: &Path,
+    key: &Key,
+    fingerprint: &str,
+    max_entries: usize,
+) -> Result<Option<NameIndex>, Damaged> {
+    // Missing, or held by another program: not damage.
+    let Ok(file) = File::open(path) else {
+        return Ok(None);
+    };
+    let bad = |_: io::Error| Damaged;
+    let mut r = OpenReader::new(BufReader::new(file), key).map_err(|_| Damaged)?;
     let mut len = [0u8; 4];
-    r.read_exact(&mut len).ok()?;
+    r.read_exact(&mut len).map_err(bad)?;
     let len = u32::from_le_bytes(len) as usize;
     if len > 1 << 20 {
-        return None;
+        return Err(Damaged);
     }
     let mut fp = vec![0u8; len];
-    r.read_exact(&mut fp).ok()?;
+    r.read_exact(&mut fp).map_err(bad)?;
     if fp != fingerprint.as_bytes() {
-        return None;
+        return Ok(None);
     }
     let mut total = [0u8; 4];
-    r.read_exact(&mut total).ok()?;
+    r.read_exact(&mut total).map_err(bad)?;
     if u32::from_le_bytes(total) as usize > max_entries {
-        return None;
+        return Ok(None);
     }
-    NameIndex::import(&mut r).ok()
+    NameIndex::import(&mut r).map(Some).map_err(|_| Damaged)
 }
 
 /// Entry count (files plus folders) recorded in a snapshot, without loading it.
@@ -138,8 +169,11 @@ impl Persister {
             .spawn(move || {
                 let mut last = Instant::now().checked_sub(MIN_SAVE_INTERVAL);
                 let save_now = |d: &AtomicBool| {
-                    if let Err(e) = save(&index, &path, &key, &fingerprint) {
-                        eprintln!("lookout: could not save the name index: {e}");
+                    let saved = crate::guard::contain("saving the name index failed", || {
+                        save(&index, &path, &key, &fingerprint)
+                    });
+                    if !matches!(saved, Some(Ok(()))) {
+                        crate::log::error("could not save the name index");
                         d.store(true, Ordering::Release);
                     }
                 };

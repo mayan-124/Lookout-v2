@@ -156,11 +156,14 @@ impl Engine {
 
 fn run_source(source: &dyn Source, parsed: &ParsedQuery, ctx: &QueryContext, tx: &Sender<Msg>) {
     let generation = ctx.generation();
-    source.query(parsed, ctx, &mut |items| {
-        let _ = tx.send(Msg::Batch {
-            generation,
-            source: source.id(),
-            items,
+    // A source that faults gives no results; the search still completes.
+    crate::guard::contain("a search source failed", || {
+        source.query(parsed, ctx, &mut |items| {
+            let _ = tx.send(Msg::Batch {
+                generation,
+                source: source.id(),
+                items,
+            });
         });
     });
     let _ = tx.send(Msg::Done { generation });

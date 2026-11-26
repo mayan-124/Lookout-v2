@@ -121,6 +121,8 @@ pub struct ContentStore {
     open: RwLock<Option<Open>>,
     writer: Mutex<Option<IndexWriter>>,
     fields: Fields,
+    /// Opening found an unreadable index and made a new one.
+    rebuilt: bool,
     /// Folder of the on-disk index; `None` for an in-memory one.
     dir: Option<std::path::PathBuf>,
     /// OS lock on a file next to the index folder, held while this store is
@@ -230,7 +232,15 @@ impl ContentStore {
                 .1;
             Some((Self::finish(index).ok()?, fields))
         };
-        let (open, fields) = match existing() {
+        // A damaged index may make tantivy panic instead of failing.
+        let had = dir.join("meta.json").exists();
+        let found =
+            crate::guard::contain("the content index could not be read", existing).flatten();
+        let rebuilt = had && found.is_none();
+        if rebuilt {
+            crate::log::error("the content index was damaged and is being rebuilt");
+        }
+        let (open, fields) = match found {
             Some(found) => found,
             // Nothing there, or nothing readable: a new, empty index.
             None => {
@@ -245,6 +255,7 @@ impl ContentStore {
             open: RwLock::new(Some(open)),
             writer: Mutex::new(None),
             fields,
+            rebuilt,
             dir: Some(dir.to_owned()),
             owner: Mutex::new(Some(owner)),
             roots: RwLock::default(),
@@ -275,6 +286,17 @@ impl ContentStore {
         }
     }
 
+    /// Whether [`open`](Self::open) found an index it could not read and made a new one.
+    pub fn was_rebuilt(&self) -> bool {
+        self.rebuilt
+    }
+
+    /// Removes every document.
+    pub fn clear(&self) -> Result<(), StoreError> {
+        self.with_writer(|w| w.delete_all_documents().map(|_| ()))?;
+        self.commit()
+    }
+
     pub fn open_in_ram() -> Result<Self, StoreError> {
         let (schema, fields) = schema(true);
         let open = Self::finish(Index::create_in_ram(schema))?;
@@ -282,6 +304,7 @@ impl ContentStore {
             open: RwLock::new(Some(open)),
             writer: Mutex::new(None),
             fields,
+            rebuilt: false,
             dir: None,
             owner: Mutex::new(None),
             roots: RwLock::default(),
@@ -466,8 +489,8 @@ impl ContentStore {
     pub fn drop_caches(&self) {
         let guard = self.open.read().unwrap_or_else(PoisonError::into_inner);
         if let Some(o) = guard.as_ref() {
-            if let Err(e) = o.reader.reload() {
-                eprintln!("lookout: could not release the content index caches: {e}");
+            if o.reader.reload().is_err() {
+                crate::log::warn("could not release the content index caches");
             }
         }
     }

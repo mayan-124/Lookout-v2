@@ -283,8 +283,8 @@ impl PluginHost {
                 };
                 let manifest = match Manifest::parse(&text) {
                     Ok(m) => m,
-                    Err(e) => {
-                        eprintln!("lookout: ignoring plugin in {}: {e}", sub.display());
+                    Err(_) => {
+                        crate::log::warn("a plugin with an unreadable description was ignored");
                         continue;
                     }
                 };
@@ -327,10 +327,10 @@ impl PluginHost {
                 if h.stop.load(Ordering::Acquire) {
                     return;
                 }
-                h.supervise();
+                crate::guard::contain("checking on the plugins failed", || h.supervise());
             });
         if let Err(e) = spawned {
-            eprintln!("lookout: plugin supervisor did not start: {e}");
+            crate::log::error_io("plugin supervisor did not start", &e);
         }
         host
     }
@@ -508,6 +508,7 @@ impl PluginHost {
     // ----------------------------------------------------------- lifecycle
 
     fn fail(rt: &mut Runtime, why: String) {
+        crate::log::error("an add-on failed");
         if let Some(mut proc) = rt.proc.take() {
             proc.kill();
         }

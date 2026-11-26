@@ -28,5 +28,6 @@ debug = false
 [profile.release]
 lto = "thin"
 codegen-units = 4
-panic = "abort"
+# Unwinding, so a fault in one part can be contained and the app keeps running.
+panic = "unwind"
 strip = true

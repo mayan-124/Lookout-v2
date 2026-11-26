@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -240,7 +240,30 @@ pub struct Lookout {
     sizes_pending: Arc<AtomicBool>,
     /// The files of the latest Home "Recent" list, which can be opened too.
     home_targets: Mutex<HashMap<String, Target>>,
+    safe_mode: bool,
+    /// Unix seconds when the last crawl of this run finished (0: none yet).
+    last_crawl: Arc<AtomicU64>,
+    /// One sentence for the user about this start, until the shell takes it.
+    notice: Mutex<Option<&'static str>>,
+    /// The rebuild in progress.
+    rebuild: Mutex<Option<RebuildMark>>,
 }
+
+/// Where the counters stood when a rebuild was asked for.
+#[derive(Clone, Copy)]
+struct RebuildMark {
+    names: Option<u64>,
+    contents: Option<u64>,
+}
+
+/// One line about the rebuild, and whether it is over.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RebuildProgress {
+    pub line: String,
+    pub done: bool,
+}
+
+const REPAIRED: &str = "The search index was damaged, so Lookout is rebuilding it.";
 
 /// Extensions offered while `ext:` is typed.
 const SUGGESTED_EXTENSIONS: usize = 8;
@@ -322,7 +345,10 @@ impl Lookout {
         // True from loading a snapshot without sizes until a crawl has them.
         let sizes_pending: Arc<AtomicBool> = Arc::default();
         let hook_sizes = sizes_pending.clone();
+        let last_crawl: Arc<AtomicU64> = Arc::default();
+        let hook_crawled = last_crawl.clone();
         let on_reindexed: ReindexHook = Arc::new(move || {
+            hook_crawled.store(u64::from(unix_now()), Ordering::Release);
             apply_frecency(&hook_index, &hook_store, i64::from(unix_now()));
             count_extensions(&hook_index, &hook_extensions);
             hook_sizes.store(false, Ordering::Release);
@@ -339,10 +365,19 @@ impl Lookout {
         let fingerprint = names_store::fingerprint(&roots, &excludes_key);
         // Entries a loaded snapshot held in places that are skipped now.
         let mut tidied = 0;
+        let safe_mode = opts.settings.safe_mode;
+        let mut notice = None;
         let preloaded = match &snapshot_path {
             Some((path, key)) if !roots.is_empty() => {
                 let max = opts.settings.snapshot_max_entries;
-                let loaded = names_store::load(path, key, &fingerprint, max).or_else(|| {
+                let first = names_store::try_load(path, key, &fingerprint, max);
+                if first.is_err() {
+                    // Derived data: removed, and the startup crawl makes it again.
+                    crate::log::error("the name index was damaged and is being rebuilt");
+                    let _ = std::fs::remove_file(path);
+                    notice = Some(REPAIRED);
+                }
+                let loaded = first.ok().flatten().or_else(|| {
                     let old = with_appdata_roots(roots.clone());
                     let old = names_store::fingerprint(&old, &excludes_key);
                     names_store::load(path, key, &old, max)
@@ -361,12 +396,8 @@ impl Lookout {
                         true
                     }
                     None => {
-                        if let Some(n) = names_store::snapshot_entries(path, key, &fingerprint) {
-                            eprintln!(
-                                "lookout: the name snapshot has {n} entries (limit {}); not loading it, \
-                                 search starts empty and fills as the startup crawl runs",
-                                opts.settings.snapshot_max_entries
-                            );
+                        if names_store::snapshot_entries(path, key, &fingerprint).is_some() {
+                            crate::log::warn("the name snapshot is too large to load");
                         }
                         false
                     }
@@ -374,7 +405,8 @@ impl Lookout {
             }
             _ => false,
         };
-        let persister = match snapshot_path {
+        // Safe mode only reads the snapshot: an index nothing fills must not replace it.
+        let persister = match snapshot_path.filter(|_| !safe_mode) {
             Some((path, key)) => Some(
                 Persister::start(index.clone(), path, key, fingerprint, pause.clone())
                     .map_err(StartError::Saver)?,
@@ -390,7 +422,7 @@ impl Lookout {
                 let hook: ReindexHook = Arc::new(move || d.store(true, Ordering::Release));
                 hook
             });
-        let plugin_host = opts.plugins.clone().map(|mut cfg| {
+        let plugin_host = opts.plugins.clone().filter(|_| !safe_mode).map(|mut cfg| {
             if cfg.master_key.is_none() {
                 cfg.master_key = storage.key.clone();
             }
@@ -398,11 +430,19 @@ impl Lookout {
         });
         // Full-text index and its worker. A failure here only disables content search.
         let mut content_error: Option<String> = None;
-        let store = if opts.settings.index_contents
+        let store = if !safe_mode
+            && opts.settings.index_contents
             && (opts.synthetic_files.is_none() || !content_roots.is_empty())
         {
             let opened = match (&storage.paths, &storage.key) {
-                (Some(p), Some(k)) => ContentStore::open(&p.content_dir(), k),
+                (Some(p), Some(k)) => {
+                    open_content(&p.content_dir(), k).inspect(|(_, rebuilt)| {
+                        if *rebuilt {
+                            notice = Some(REPAIRED);
+                        }
+                    })
+                }
+                .map(|(store, _)| store),
                 _ => ContentStore::open_in_ram(),
             };
             match opened {
@@ -411,7 +451,7 @@ impl Lookout {
                     Some(Arc::new(st))
                 }
                 Err(e) => {
-                    eprintln!("lookout: content search is off: {e}");
+                    crate::log::error("content search could not start");
                     content_error = Some(e.to_string());
                     None
                 }
@@ -443,7 +483,7 @@ impl Lookout {
                     match ContentService::start(cfg) {
                         Ok(s) => Some(s),
                         Err(e) => {
-                            eprintln!("lookout: content indexing is off: {e}");
+                            crate::log::error_io("content indexing could not start", &e);
                             None
                         }
                     }
@@ -475,6 +515,7 @@ impl Lookout {
         let hours = opts.settings.rescan_hours;
         let make_config = |watch| {
             let mut c = IndexConfig::new(roots.clone(), excludes.clone());
+            c.crawl = !safe_mode;
             c.duty = opts.settings.crawl_duty;
             c.watch = watch;
             c.rescan_interval = (hours > 0).then(|| Duration::from_secs(u64::from(hours) * 3600));
@@ -608,7 +649,7 @@ impl Lookout {
                     frecency: frecency.clone(),
                     progress: progress.clone(),
                 })
-                .map_err(|e| eprintln!("lookout: semantic indexing is off: {e}"))
+                .map_err(|e| crate::log::error_io("semantic indexing could not start", &e))
                 .ok();
                 Some(SemanticRuntime {
                     client,
@@ -731,7 +772,119 @@ impl Lookout {
             extensions,
             sizes_pending,
             home_targets: Mutex::default(),
+            safe_mode,
+            last_crawl,
+            notice: Mutex::new(notice),
+            rebuild: Mutex::default(),
         })
+    }
+
+    /// The sentence about this start (a repaired index), once.
+    pub fn take_notice(&self) -> Option<&'static str> {
+        self.notice
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// Reads the file names and file contents again from scratch. Search keeps
+    /// answering meanwhile: the old names stay until the new ones are complete.
+    /// Nothing else (history, notes, settings, saved scans) is touched.
+    pub fn rebuild_index(&self) -> Result<(), &'static str> {
+        if self.safe_mode {
+            return Err("Turn everything back on first.");
+        }
+        if self.pause.is_paused() {
+            return Err("Lookout is paused. Resume it from the tray icon, then rebuild.");
+        }
+        let mut mark = self.rebuild.lock().unwrap_or_else(PoisonError::into_inner);
+        if mark.is_some() {
+            return Ok(());
+        }
+        let service = self.service.lock().unwrap_or_else(PoisonError::into_inner);
+        let service = service.as_ref().ok_or("Search is not running.")?;
+        if service.status().crawling {
+            return Err("Lookout is still reading your folders. Try again when it has finished.");
+        }
+        let names = service.can_rescan().then(|| service.rescan_count());
+        let contents = self.content.as_ref().and_then(|c| {
+            let guard = c.service.lock().unwrap_or_else(PoisonError::into_inner);
+            let svc = guard.as_ref()?;
+            let before = c.stats.rebuilt.load(Ordering::Acquire);
+            svc.rebuild();
+            Some(before)
+        });
+        if names.is_none() && contents.is_none() {
+            return Err("There are no folders to read. Choose folders first.");
+        }
+        if names.is_some() {
+            service.request_rescan();
+        }
+        *mark = Some(RebuildMark { names, contents });
+        Ok(())
+    }
+
+    /// The state of the rebuild, if one was asked for. A finished one is
+    /// reported once.
+    pub fn rebuild_progress(&self) -> Option<RebuildProgress> {
+        let mut mark = self.rebuild.lock().unwrap_or_else(PoisonError::into_inner);
+        let m = (*mark)?;
+        let names_done = m.names.is_none_or(|before| {
+            self.service
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(|s| s.rescan_count() > before)
+        });
+        let stats = self.content.as_ref().map(|c| &c.stats);
+        let contents_done = m
+            .contents
+            .is_none_or(|before| stats.is_some_and(|s| s.rebuilt.load(Ordering::Acquire) > before));
+        let done = names_done && contents_done;
+        let line = if done {
+            *mark = None;
+            "Search index rebuilt.".to_owned()
+        } else if self.pause.is_paused() {
+            "Rebuild paused. Resume from the tray icon.".to_owned()
+        } else if !names_done {
+            "Rebuilding: reading file names…".to_owned()
+        } else {
+            let sum = |a: &AtomicU64, b: &AtomicU64| {
+                a.load(Ordering::Relaxed) + b.load(Ordering::Relaxed)
+            };
+            match stats.map(|s| {
+                (
+                    sum(&s.read_done, &s.ocr_done),
+                    sum(&s.read_total, &s.ocr_total),
+                )
+            }) {
+                Some((read, total)) if total > 0 => {
+                    format!("Rebuilding: {read} of {total} files read…")
+                }
+                _ => "Rebuilding: reading file contents…".to_owned(),
+            }
+        };
+        Some(RebuildProgress { line, done })
+    }
+
+    /// Numbers for the diagnostics text: no names, searches or paths.
+    pub fn counts(&self) -> crate::diagnostics::Counts {
+        let st = self.status();
+        let crawled = self.last_crawl.load(Ordering::Acquire);
+        crate::diagnostics::Counts {
+            files: st.files,
+            folders: st.folders,
+            apps: st.apps,
+            content_docs: st.content_docs,
+            last_crawl: (crawled > 0).then_some(crawled),
+            plugins: self.plugins.as_ref().map_or_else(Vec::new, |h| {
+                h.list()
+                    .into_iter()
+                    .filter(|p| p.enabled)
+                    .map(|p| p.id)
+                    .collect()
+            }),
+        }
     }
 
     fn stop_semantic(&self) {
@@ -1062,8 +1215,8 @@ impl Lookout {
         }
         self.storage.detach();
         // Out of memory too; nothing is written any more.
-        if let Err(e) = self.notes.clear() {
-            eprintln!("lookout: could not forget the notes: {e}");
+        if self.notes.clear().is_err() {
+            crate::log::warn("could not forget the notes");
         }
         *write(&self.index) = crate::name_index::NameIndex::new();
         if let Some(paths) = &self.storage.paths {
@@ -1420,8 +1573,8 @@ impl Lookout {
     fn after_run(&self, done: &Done) {
         if done.action_id == open::ID && !done.was_undo {
             for id in &done.items {
-                if let Err(e) = self.record_open(id) {
-                    eprintln!("lookout: could not record the open: {e}");
+                if self.record_open(id).is_err() {
+                    crate::log::warn("could not record an open");
                 }
             }
         }
@@ -1438,6 +1591,36 @@ impl Lookout {
                 .set_frecency(std::path::Path::new(path), ranking::frecency_level(score));
         }
         Ok(())
+    }
+}
+
+/// Opens the content index; one that fails to open is removed and made again,
+/// once. The flag says that happened.
+fn open_content(
+    dir: &std::path::Path,
+    key: &crate::crypto::Key,
+) -> Result<(ContentStore, bool), crate::content::store::StoreError> {
+    use crate::content::store::StoreError;
+    let attempt = || {
+        crate::guard::contain("opening the content index failed", || {
+            ContentStore::open(dir, key)
+        })
+        .unwrap_or(Err(StoreError::Closed))
+    };
+    match attempt() {
+        Ok(store) => {
+            let rebuilt = store.was_rebuilt();
+            Ok((store, rebuilt))
+        }
+        // Another copy is using it: nothing is wrong with the files.
+        Err(StoreError::InUse) => Err(StoreError::InUse),
+        Err(_) => {
+            crate::log::error("the content index did not open and is being rebuilt");
+            if let Err(e) = std::fs::remove_dir_all(dir) {
+                crate::log::error_io("the damaged content index could not be removed", &e);
+            }
+            attempt().map(|store| (store, true))
+        }
     }
 }
 
@@ -2122,6 +2305,115 @@ mod tests {
             .iter()
             .all(|i| !i.title.contains("zebra")));
         assert!(!paths.meta_db().exists());
+    }
+
+    #[test]
+    fn diagnostics_hold_no_names_searches_notes_or_paths() {
+        let f = start(|d| {
+            fs::write(
+                d.join("files").join("zebrasecret plan.txt"),
+                b"quokkabody text",
+            )
+            .unwrap();
+        });
+        crate::log::init(crate::log::folder(f._dir.path()));
+        f.wait_indexed();
+        f.ask(1, "wombatquery");
+        f.lookout.history().record("wombatquery", true).unwrap();
+        f.ask(2, "note narwhalnote");
+        crate::log::error_io(
+            "could not save a test file",
+            &std::io::Error::other(format!("{}\\zebrasecret", f._dir.path().display())),
+        );
+        crate::log::panic_at("C:\\Users\\pangolin\\.cargo\\x\\src\\lib.rs", 3);
+
+        let errors = crate::log::last_errors(
+            &crate::log::folder(f._dir.path()),
+            crate::diagnostics::ERROR_LINES,
+        );
+        let facts = crate::diagnostics::Facts {
+            app_version: "1.2.3".into(),
+            scales: vec![1.5],
+            mode: "standard".into(),
+            theme: f._dir.path().display().to_string(),
+            safe_mode: false,
+        };
+        let text = crate::diagnostics::render(&facts, Some(&f.lookout.counts()), &errors);
+        assert!(text.contains("Lookout 1.2.3"), "{text}");
+        assert!(
+            text.contains("could not save a test file (Other)"),
+            "{text}"
+        );
+        assert!(text.contains("lib.rs line 3"), "{text}");
+        assert!(text.contains("3 files"), "{text}");
+        let folder = f._dir.path().file_name().unwrap().to_string_lossy();
+        for secret in [
+            "zebrasecret",
+            "quokkabody",
+            "wombatquery",
+            "narwhalnote",
+            "pangolin",
+            "budget",
+            "Notepad",
+            folder.as_ref(),
+            "\\",
+            "/",
+        ] {
+            assert!(!text.contains(secret), "{secret} in:\n{text}");
+        }
+    }
+
+    #[test]
+    fn rebuild_reads_everything_again_and_keeps_saved_data() {
+        let f = start(|_| {});
+        f.wait_indexed();
+        f.lookout.history().record("kept search", true).unwrap();
+        wait_until("the rebuild to start", || f.lookout.rebuild_index().is_ok());
+        wait_until("the rebuild to finish", || {
+            f.lookout.rebuild_progress().is_some_and(|p| p.done)
+        });
+        assert!(f.lookout.rebuild_progress().is_none());
+        assert_eq!(f.lookout.history().recent(5).unwrap(), ["kept search"]);
+        assert_eq!(f.ask(5, "budget alpha").items.len(), 1);
+    }
+
+    #[test]
+    fn a_damaged_index_is_rebuilt_and_said_once() {
+        let dir = tempfile::tempdir().unwrap();
+        make_files(dir.path());
+        fs::write(dir.path().join("names.idx"), b"not an index").unwrap();
+        fs::create_dir_all(dir.path().join("content")).unwrap();
+        fs::write(dir.path().join("content").join("meta.json"), b"junk").unwrap();
+        let (lookout, _) = launch(dir.path());
+        assert_eq!(lookout.take_notice(), Some(REPAIRED));
+        assert_eq!(lookout.take_notice(), None);
+        wait_until("the crawl", || lookout.status().files == 2);
+        lookout.shutdown();
+        let (again, _) = launch(dir.path());
+        assert_eq!(again.take_notice(), None);
+    }
+
+    #[test]
+    fn safe_mode_serves_the_snapshot_without_indexing_or_replacing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        make_files(dir.path());
+        let (first, _) = launch(dir.path());
+        wait_until("the crawl", || {
+            let s = first.status();
+            s.files == 2 && !s.indexing
+        });
+        first.shutdown();
+        fs::write(dir.path().join("files").join("new.txt"), b"x").unwrap();
+        let settings = Settings {
+            safe_mode: true,
+            ..Settings::default()
+        };
+        let (safe, _) = launch_with(dir.path(), settings, PauseState::new());
+        assert_eq!(safe.status().files, 2);
+        assert!(!safe.status().indexing);
+        assert!(safe.rebuild_index().is_err());
+        safe.shutdown();
+        assert!(dir.path().join("names.idx").exists());
     }
 
     #[test]

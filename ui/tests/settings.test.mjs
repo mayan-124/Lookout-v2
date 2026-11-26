@@ -47,7 +47,7 @@ test("Privacy has the history switch and Clear history", () => {
 test("the Advanced menu lists only what stayed there, each with a page", () => {
   const menu = src.slice(src.indexOf("const ADVANCED"), src.indexOf("// [switch, name"));
   const ids = [...menu.matchAll(/\["(\w+)", "/g)].map((m) => m[1]);
-  assert.deepEqual(ids, ["features", "folders", "privacy", "speed", "addons", "quickkeys", "delete"]);
+  assert.deepEqual(ids, ["features", "folders", "privacy", "speed", "addons", "quickkeys", "repair", "delete"]);
   // "delete" is the last, unnamed branch.
   for (const id of ids.slice(0, -1)) assert.ok(rest.includes(`section === "${id}"}`), id);
 });

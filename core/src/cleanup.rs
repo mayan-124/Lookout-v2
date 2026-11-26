@@ -978,7 +978,10 @@ impl Tidy {
             self.store.env.clone(),
         );
         std::thread::spawn(move || {
-            let items = scan(&env, &task, &pause, gentle);
+            let items = crate::guard::contain("the clean up scan failed", || {
+                scan(&env, &task, &pause, gentle)
+            })
+            .unwrap_or_default();
             task.finish(items);
         });
         Ok(())
@@ -1036,7 +1039,10 @@ impl Tidy {
         self.dupes.reset();
         let (task, pause, root) = (self.dupes.clone(), self.pause.clone(), root.to_path_buf());
         std::thread::spawn(move || {
-            let g = crate::dupes::find(&env, &root, min_size, &task, &pause, gentle);
+            let g = crate::guard::contain("the duplicate scan failed", || {
+                crate::dupes::find(&env, &root, min_size, &task, &pause, gentle)
+            })
+            .unwrap_or_default();
             task.finish(g);
         });
         Ok(())

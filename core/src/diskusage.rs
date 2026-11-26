@@ -1596,7 +1596,7 @@ impl DiskService {
         let handle = std::thread::Builder::new()
             .name("disk-scan".into())
             .spawn(move || {
-                let tree = work(&p);
+                let tree = crate::guard::contain("the disk scan failed", || work(&p)).flatten();
                 let state = match tree {
                     Some(t) => {
                         *r.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(t));

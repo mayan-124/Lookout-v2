@@ -127,6 +127,7 @@
     | "speed"
     | "addons"
     | "quickkeys"
+    | "repair"
     | "delete";
   const ADVANCED: [Section, string][] = [
     ["features", "Features"],
@@ -135,8 +136,43 @@
     ["speed", "Speed"],
     ["addons", "Add-ons"],
     ["quickkeys", "Quick keys"],
+    ["repair", "Repair"],
     ["delete", "Delete my data"],
   ];
+
+  // Repair: diagnostics, the log folder and the index rebuild.
+  let confirmingRebuild = $state(false);
+  let rebuildLine = $state("");
+  let repairNote = $state("");
+  async function repair(command: string, done = "") {
+    repairNote = "";
+    try {
+      await invoke(command);
+      repairNote = done;
+    } catch (e) {
+      repairNote = errorText(e);
+    }
+  }
+  async function rebuildIndex() {
+    confirmingRebuild = false;
+    await repair("rebuild_index");
+    await pollRebuild();
+  }
+  async function pollRebuild() {
+    try {
+      const p = await invoke<{ line: string; done: boolean } | null>("rebuild_status");
+      // A finished rebuild is reported once; its line stays on the page.
+      if (p) rebuildLine = p.line;
+    } catch {
+      // The next poll tries again.
+    }
+  }
+  $effect(() => {
+    if (section !== "repair") return;
+    pollRebuild();
+    const timer = setInterval(pollRebuild, 1000);
+    return () => clearInterval(timer);
+  });
   // [switch, name, what it is, where it shows]
   const FEATURES: [Feature, string, string, string][] = [
     ["disk", "Disk analyzer", "See what uses space.", "Shows in the dock and help."],
@@ -227,6 +263,7 @@
     else if (section === "general" && confirmingReset) confirmingReset = false;
     else if (section === "privacy" && (askClear || askClearNotes)) askClear = askClearNotes = false;
     else if (section === "quickkeys" && qkEditing !== null) qkEditing = null;
+    else if (section === "repair" && confirmingRebuild) confirmingRebuild = false;
     else if (discarding) discarding = false;
     else if (dirty) discarding = true;
     else onclose();
@@ -805,6 +842,31 @@
           <button class="btn small primary" onclick={addKey}>Add</button>
         </div>
         {#if qkError}<p class="danger-text" role="alert">{qkError}</p>{/if}
+      {:else if section === "repair"}
+        <h2 id="priv-title">Repair</h2>
+        <div class="scard">
+          <h3 class="stitle">Diagnostics</h3>
+          <p class="hint">Versions, screen setup, index counts and recent errors. No file names, searches, notes or clipboard text.</p>
+          <div class="row">
+            <button class="btn" onclick={() => repair("copy_diagnostics", "Diagnostics copied.")}>Copy diagnostics</button>
+            <button class="btn" onclick={() => repair("open_log_folder")}>Open log folder</button>
+          </div>
+        </div>
+        <div class="scard">
+          <h3 class="stitle">Search index</h3>
+          <p class="hint">Reads file names and file contents again. Notes, clipboard history and settings are not touched.</p>
+          {#if confirmingRebuild}
+            <p class="warning" role="alert">Rebuild the search index? Results from inside files come back as the files are read again.</p>
+            <div class="row">
+              <button class="btn" onclick={() => (confirmingRebuild = false)}>Cancel</button>
+              <button class="btn primary" onclick={rebuildIndex}>Rebuild</button>
+            </div>
+          {:else}
+            <p><button class="btn" onclick={() => (confirmingRebuild = true)}>Rebuild search index</button></p>
+          {/if}
+          {#if rebuildLine}<p class="note" role="status">{rebuildLine}</p>{/if}
+        </div>
+        {#if repairNote}<p class="note" role="status">{repairNote}</p>{/if}
       {:else}
         <h2 id="priv-title" class="danger-text">Delete my data</h2>
         {#if confirmingDelete}
