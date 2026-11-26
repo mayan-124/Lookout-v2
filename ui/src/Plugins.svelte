@@ -39,7 +39,7 @@
     message = "";
     try {
       await invoke("semantic_delete_index");
-      message = "Deleted the similar-meaning data and turned that search off.";
+      message = "Deleted meaning data and turned off search by meaning.";
       load(await invoke<PluginInfo[]>("plugins_list"));
       await loadSemantic();
     } catch (e) {
@@ -108,7 +108,7 @@
     message = "";
     try {
       await invoke("semantic_remove_files");
-      message = "Removed the downloaded files and turned similar-meaning search off.";
+      message = "Removed downloaded files and turned off search by meaning.";
       load(await invoke<PluginInfo[]>("plugins_list"));
     } catch (e) {
       message = errorText(e);
@@ -239,8 +239,11 @@
           </ul>
         {/if}
         <p class="note">
-          Its actions need {p.risk_floor === "safe" ? "no extra" : p.risk_floor === "confirm" ? "your" : "your careful"}
-          confirmation, as shown on each action card. It can see what you can see.
+          {p.risk_floor === "safe"
+            ? "Its actions need no extra confirmation."
+            : p.risk_floor === "confirm"
+              ? "Its actions ask you to confirm."
+              : "Its actions ask you to confirm carefully."} It can see what you can see.
         </p>
         {#if asking === p.id}
           <div class="row">
@@ -269,7 +272,7 @@
 
     {#if p.id === SEMANTIC_ID && semantic}
       <p class="note" role="status">
-        {#if semantic.state === "off"}Similar-meaning search is off.
+        {#if semantic.state === "off"}Search by meaning is off.
         {:else if semantic.state === "unavailable"}Not working: {semantic.reason ?? "unknown reason"}
         {:else if semantic.state === "waiting"}Waiting until you are idle.
         {:else if semantic.state === "indexing"}Looking at {semantic.done} of {semantic.total} files.
@@ -308,7 +311,7 @@
       <div class="row">
         {#if setupStatus?.phase === "ready" && !p.enabled}
           <button class="btn primary small" onclick={() => (p.approved ? setEnabled(p, true, true) : (asking = p.id))}>
-            Turn on similar-meaning search
+            Turn on search by meaning
           </button>
         {/if}
         {#if setupStatus?.phase === "downloading"}
@@ -322,7 +325,7 @@
           <button class="btn small" onclick={removeSemanticFiles}>Remove downloaded files</button>
         {/if}
         {#if semantic.done > 0 || semantic.state === "ready"}
-          <button class="btn small danger" onclick={deleteSemantic}>Delete similar-meaning data</button>
+          <button class="btn small danger" onclick={deleteSemantic}>Delete meaning data</button>
         {/if}
       </div>
       <p class="note">Downloads only when you click. Your files and searches never leave this PC.</p>
@@ -333,12 +336,12 @@
   {#if loading}
     <p class="note" role="status">Loading add-ons…</p>
   {:else if failed}
-    <p class="warning" role="alert">Could not load the add-ons. Close Lookout and open it again.</p>
+    <p class="warning" role="alert">Could not load add-ons. Restart Lookout.</p>
   {:else}
     <p class="note">No add-ons found.</p>
   {/if}
 {/each}
-<p class="note">Clipboard history: type <kbd>clip</kbd> to browse it, <kbd>clip clear</kbd> to delete it.</p>
+<p class="note">Type <kbd>clip</kbd> to see clipboard history, <kbd>clip clear</kbd> to delete it.</p>
 {#if message}<p class="note" role="status">{message}</p>{/if}
 
 <style>

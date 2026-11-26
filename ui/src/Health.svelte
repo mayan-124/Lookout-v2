@@ -112,7 +112,7 @@
       {:else}
         <button class="btn small" onclick={() => indexNow(true)}>Check files now</button>
       {/if}
-      <span class="hint">Reads everything now instead of waiting until you are idle.</span>
+      <span class="hint">Reads everything now, without waiting.</span>
     </div>
   {/if}
   {@render line("Text in pictures", health.screenshots.state, "", health.screenshots.reason, health.screenshots.last_error)}
@@ -122,7 +122,7 @@
 {:else if loading}
   <p class="note" role="status">Checking status…</p>
 {:else if failed}
-  <p class="warning" role="alert">Could not read the status. Close Lookout and open it again.</p>
+  <p class="warning" role="alert">Could not read status. Restart Lookout.</p>
 {:else}
   <p class="note">Search is not running.</p>
 {/if}

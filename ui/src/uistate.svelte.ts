@@ -1,0 +1,38 @@
+// The interface choices, shared by the bar, Settings and the setup. They are
+// saved in the settings file and only change what is shown.
+import { invoke } from "@tauri-apps/api/core";
+import { resetLook } from "./look.svelte";
+import type { Feature, Mode, UiState } from "./modes";
+
+export const ui = $state<UiState>({
+  mode: "standard",
+  custom: false,
+  show: { disk: false, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true },
+  hide_tips: false,
+  advanced_open: false,
+  disk_notice: false,
+});
+
+/** Runs a command that answers with the new state. Returns the error, or "". */
+async function apply(command: string, args?: Record<string, unknown>): Promise<string> {
+  try {
+    Object.assign(ui, await invoke<UiState>(command, args));
+    return "";
+  } catch (e) {
+    return String(e);
+  }
+}
+
+export const loadUi = () => apply("ui_state");
+export const setMode = (mode: Mode) => apply("set_ui_mode", { mode });
+export const setShow = (feature: Feature, on: boolean) => apply("set_ui_show", { show: { ...ui.show, [feature]: on } });
+export const setHideTips = (hide: boolean) => apply("set_hide_tips", { hide });
+export const setAdvancedOpen = (open: boolean) => apply("set_advanced_open", { open });
+export const dismissDiskNotice = () => apply("dismiss_disk_notice");
+
+/** Visibility, theme and layout back to recommended. Data is not touched. */
+export async function resetToRecommended(): Promise<string> {
+  const error = await apply("reset_ui");
+  if (!error) resetLook();
+  return error;
+}

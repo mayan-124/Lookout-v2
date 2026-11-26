@@ -22,6 +22,7 @@ use lookout_core::settings::{
     monitor_key, position_on_monitor, Appearance, Settings, DEFAULT_HOTKEY,
 };
 use lookout_core::storage::{DataPaths, Storage};
+use lookout_core::uimode::{Mode, Show, Ui, UiState};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewWindow, WindowEvent};
@@ -1319,6 +1320,51 @@ fn set_appearance(appearance: Appearance, services: State<Services>) -> Result<(
 }
 
 #[tauri::command]
+fn ui_state(services: State<Services>) -> UiState {
+    lock(&services.settings).ui.state()
+}
+
+fn change_ui(services: &Services, change: impl FnOnce(&mut Ui)) -> Result<UiState, String> {
+    let mut s = lock(&services.settings);
+    s.update_ui(&services.paths.settings(), change)?;
+    Ok(s.ui.state())
+}
+
+#[tauri::command]
+fn set_ui_mode(mode: Mode, services: State<Services>) -> Result<UiState, String> {
+    change_ui(&services, |ui| ui.set_mode(mode))
+}
+
+#[tauri::command]
+fn set_ui_show(show: Show, services: State<Services>) -> Result<UiState, String> {
+    change_ui(&services, |ui| ui.set_show(show))
+}
+
+#[tauri::command]
+fn set_hide_tips(hide: bool, services: State<Services>) -> Result<UiState, String> {
+    change_ui(&services, |ui| ui.hide_tips = hide)
+}
+
+#[tauri::command]
+fn set_advanced_open(open: bool, services: State<Services>) -> Result<UiState, String> {
+    change_ui(&services, |ui| ui.advanced_open = open)
+}
+
+#[tauri::command]
+fn dismiss_disk_notice(services: State<Services>) -> Result<UiState, String> {
+    change_ui(&services, |ui| ui.disk_notice = false)
+}
+
+/// "Reset to recommended": visibility and layout. Indexing is not restarted.
+#[tauri::command]
+fn reset_ui(shared: State<Shared>, services: State<Services>) -> Result<UiState, String> {
+    let mut s = lock(&services.settings);
+    s.reset_ui(&services.paths.settings())?;
+    shared.pinned.store(false, Ordering::Release);
+    Ok(s.ui.state())
+}
+
+#[tauri::command]
 fn get_chart_colors(services: State<Services>) -> String {
     lock(&services.settings).chart_colors.clone()
 }
@@ -1913,10 +1959,13 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // An install that already has folders never sees the setup, and one set up
-    // earlier does not start with Windows unless asked to.
+    // An install that already has folders never sees the setup, one set up
+    // earlier does not start with Windows unless asked to, and one from before
+    // modes starts in Standard and is told where Disk went.
     let marked = settings.mark_configured_done();
-    if settings.keep_start_with_windows_off() || marked {
+    let existing = !settings.needs_first_run();
+    let adopted = settings.ui.adopt(existing);
+    if settings.keep_start_with_windows_off() || marked || adopted {
         if let Err(e) = settings.save(&settings_path) {
             eprintln!("lookout: could not save settings: {e}");
         }
@@ -2152,6 +2201,13 @@ pub fn run() {
             privacy_state,
             get_appearance,
             set_appearance,
+            ui_state,
+            set_ui_mode,
+            set_ui_show,
+            set_hide_tips,
+            set_advanced_open,
+            dismiss_disk_notice,
+            reset_ui,
             pick_folder,
             help_entries,
             setup_folders,

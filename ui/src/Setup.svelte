@@ -4,6 +4,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount, tick } from "svelte";
   import ThemePicker from "./ThemePicker.svelte";
+  import ModePicker from "./ModePicker.svelte";
   import { captureCombo } from "./hotkey";
   import { STEPS, TRY_EXAMPLES } from "./setupflow";
 
@@ -172,7 +173,7 @@
     {#if step === 1}
       <h2 id="setup-title">Welcome to Lookout</h2>
       <p class="lead">Find files, apps and things you saw, all on this PC. Nothing leaves it.</p>
-      <p class="hint">Setup takes about a minute. You can run it again from Settings.</p>
+      <p class="hint">Takes about a minute. Run it again from Settings.</p>
     {:else if step === 2}
       <h2 id="setup-title">What should Lookout search?</h2>
       <ul class="folders">
@@ -188,10 +189,10 @@
         {/each}
       </ul>
       <button type="button" class="btn small" onclick={addFolder}>Add folder…</button>
-      <p class="hint">Lookout never reads node_modules, .git, Windows, Program Files, browser profiles or password-manager folders.</p>
+      <p class="hint">Always skipped: node_modules, .git, Windows, Program Files, browser profiles and password-manager folders.</p>
       <label class="field">
         <span class="fl">
-          <span class="ft">Search inside file contents</span>
+          <span class="ft">Search inside files</span>
           <span class="hint">Find files by the words written in them.</span>
         </span>
         <span class="switch">
@@ -201,7 +202,7 @@
       </label>
       <label class="field">
         <span class="fl">
-          <span class="ft">Read text in pictures (OCR)</span>
+          <span class="ft">Read text in pictures</span>
           <span class="hint">Find screenshots and photos by the words in them.</span>
         </span>
         <span class="switch">
@@ -209,13 +210,13 @@
           <span class="track"></span>
         </span>
       </label>
-      {#if loaded && !anyFolder}<p class="hint" role="status">Tick or add a folder to start indexing.</p>{/if}
+      {#if loaded && !anyFolder}<p class="hint" role="status">Tick or add a folder to start.</p>{/if}
     {:else if step === 3}
       <h2 id="setup-title">Shortcuts</h2>
       <label class="field">
         <span class="fl">
           <span class="ft">Open Lookout</span>
-          <span class="hint">Click the box, then press the new combination.</span>
+          <span class="hint">Click the box, then press new keys.</span>
         </span>
         <input class="code combo" type="text" readonly value={hotkey} onkeydown={hotkeyKeydown} aria-label="Open Lookout hotkey" />
       </label>
@@ -223,7 +224,7 @@
       <label class="field">
         <span class="fl">
           <span class="ft">Start Lookout when I sign in to Windows</span>
-          <span class="hint">So the hotkey works after every restart. You can turn this off any time.</span>
+          <span class="hint">Keeps the hotkey working after restarts.</span>
         </span>
         <span class="switch">
           <input type="checkbox" role="switch" bind:checked={startup} disabled={!loaded} onchange={saveStartup} />
@@ -232,10 +233,11 @@
       </label>
     {:else if step === 4}
       <h2 id="setup-title">Make it yours</h2>
+      <ModePicker />
       <ThemePicker />
     {:else}
       <h2 id="setup-title">Try it</h2>
-      <p class="hint">Pick one to search for it.</p>
+      <p class="hint">Pick one to try it.</p>
       <ul class="tries">
         {#each TRY_EXAMPLES as [example, what]}
           <li>
@@ -246,7 +248,7 @@
           </li>
         {/each}
       </ul>
-      <p class="lead">Type <kbd>help</kbd> any time to see everything you can do.</p>
+      <p class="lead">Type <kbd>help</kbd> to see what you can do.</p>
     {/if}
   </div>
 
@@ -257,7 +259,7 @@
     <span class="msg" role="status">{message}</span>
     {#if step > 1}<button type="button" class="btn" onclick={() => go(step - 1)}>Back</button>{/if}
     {#if step === 1}
-      <button bind:this={primary} type="button" class="btn primary" onclick={() => go(2)}>Start</button>
+      <button bind:this={primary} type="button" class="btn primary" onclick={() => go(2)}>Start setup</button>
     {:else if step === 2}
       <button type="button" class="btn" onclick={() => go(3)}>Skip this step</button>
       <button bind:this={primary} type="button" class="btn primary" disabled={busy || !anyFolder} onclick={startIndexing}>Start indexing</button>

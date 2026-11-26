@@ -1,42 +1,55 @@
-<script lang="ts" module>
-  export interface HelpRow {
-    group: string;
-    what: string;
-    example: string;
-    fill: string;
-  }
-</script>
-
 <script lang="ts">
-  // Everything Lookout can do. The rows come from a fixed table in the app.
+  // What Lookout can do. The rows come from a fixed table in the app; the mode
+  // decides which are listed.
+  import type { HelpEntry } from "./modes";
+
   let {
-    rows,
+    entries,
     selected = $bindable(),
     onpick,
-  }: { rows: HelpRow[]; selected: number; onpick: (text: string) => void } = $props();
+    ontoggle,
+  }: {
+    entries: HelpEntry[];
+    selected: number;
+    onpick: (text: string) => void;
+    ontoggle: () => void;
+  } = $props();
 
   let list: HTMLElement | undefined = $state();
   $effect(() => {
     list?.querySelector(`[data-help="${selected}"]`)?.scrollIntoView({ block: "nearest" });
   });
+  /** The group heading above entry `i`, if one starts there. */
+  function heading(i: number): string | null {
+    const e = entries[i];
+    const before = entries[i - 1];
+    if (!("row" in e)) return null;
+    return before && "row" in before && before.row.group === e.row.group ? null : e.row.group;
+  }
 </script>
 
 <div class="help" bind:this={list}>
-  {#each rows as r, i (r.example)}
-    {#if i === 0 || rows[i - 1].group !== r.group}
-      <h3 class="label-caps">{r.group}</h3>
+  {#each entries as e, i ("row" in e ? e.row.example : "advanced")}
+    {#if heading(i)}
+      <h3 class="label-caps">{heading(i)}</h3>
     {/if}
     <button
       type="button"
       class="hrow"
+      class:fold={!("row" in e)}
       class:selected={i === selected}
       data-help={i}
+      aria-expanded={"row" in e ? undefined : e.open}
       onmousemove={() => (selected = i)}
       onfocus={() => (selected = i)}
-      onclick={() => onpick(r.fill)}
+      onclick={() => ("row" in e ? onpick(e.row.fill) : ontoggle())}
     >
-      <span class="what">{r.what}</span>
-      <span class="code example">{r.example}</span>
+      {#if "row" in e}
+        <span class="what">{e.row.what}</span>
+        <span class="code example">{e.row.example}</span>
+      {:else}
+        <span class="label-caps">{e.open ? "▾" : "▸"} Advanced</span>
+      {/if}
     </button>
   {/each}
 </div>
@@ -63,6 +76,10 @@
     border-radius: var(--r-md);
     font-size: var(--fs-md);
     cursor: pointer;
+  }
+  .hrow.fold {
+    margin-top: 10px;
+    justify-content: flex-start;
   }
   .hrow.selected {
     background: var(--accent-soft);

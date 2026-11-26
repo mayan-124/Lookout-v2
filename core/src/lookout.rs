@@ -697,7 +697,7 @@ impl Lookout {
         let name_state = if st.paused {
             (
                 "paused",
-                "Indexing is paused; names already indexed still work.".to_owned(),
+                "Indexing is paused. Names already indexed still work.".to_owned(),
             )
         } else if st.indexing {
             (
@@ -705,7 +705,7 @@ impl Lookout {
                 "Reading your folders for the first time.".to_owned(),
             )
         } else if st.roots == 0 {
-            ("off", "No folders are chosen to index.".to_owned())
+            ("off", "No folders chosen.".to_owned())
         } else {
             (
                 "up to date",
@@ -730,7 +730,7 @@ impl Lookout {
         let (cstate, creason) = match (&self.content, &stats) {
             _ if !self.index_contents => (
                 "off",
-                "File contents are switched off in Settings.".to_owned(),
+                "Off in Settings.".to_owned(),
             ),
             (None, _) => (
                 "off",
@@ -749,27 +749,27 @@ impl Lookout {
                 match s.state.load(Ordering::Acquire) {
                     STATE_PAUSED => (
                         "paused",
-                        "Indexing is paused (pause key or tray). Nothing is read until you resume."
+                        "Paused from the pause key or tray. Resume to continue."
                             .to_owned(),
                     ),
                     STATE_WAITING_IDLE => (
                         "waiting for idle",
                         format!(
-                            "Large files and screenshots wait until you have been idle for {} s. Small text files you save are still indexed at once.",
+                            "Large files and screenshots wait until you are idle for {} s. Small text files are read right away.",
                             c.idle_secs
                         ),
                     ),
                     STATE_RUNNING if running => (
                         "running",
                         if s.boost.load(Ordering::Acquire) {
-                            "Index now is running without waiting for idle.".to_owned()
+                            "Reading files now, without waiting.".to_owned()
                         } else {
                             "Reading files in the background.".to_owned()
                         },
                     ),
                     _ => (
                         "up to date",
-                        "Nothing is waiting; changes are picked up as you save.".to_owned(),
+                        "Up to date. New changes are picked up as you save.".to_owned(),
                     ),
                 }
             }
@@ -804,15 +804,15 @@ impl Lookout {
         };
 
         let (sstate, sreason) = match self.content.as_ref().map(|c| &c.ocr) {
-            None => ("off", "File contents are off, so screenshots are not read.".to_owned()),
-            Some(None) => ("off", "Screenshot reading is switched off in Settings.".to_owned()),
+            None => ("off", "File text is off, so pictures are not read.".to_owned()),
+            Some(None) => ("off", "Off in Settings.".to_owned()),
             Some(Some(o)) if o.available() => (
                 "available",
-                "Windows can read text in images with your OCR language.".to_owned(),
+                "Ready to read text in pictures.".to_owned(),
             ),
             Some(Some(_)) => (
                 "unavailable",
-                "No OCR language installed. Add one in Windows Settings > Time & language > Language & region.".to_owned(),
+                "No text-reading language installed. Add one in Windows Settings > Time & language > Language & region.".to_owned(),
             ),
         };
         let screenshots = ScreenshotHealth {
@@ -829,16 +829,13 @@ impl Lookout {
                     .into_iter()
                     .map(|p| {
                         let (state, reason) = if !p.enabled {
-                            ("off", "Switched off in Add-ons.".to_owned())
+                            ("off", "Off in Add-ons.".to_owned())
                         } else if !p.approved {
-                            (
-                                "off",
-                                "Waiting for you to accept its permissions.".to_owned(),
-                            )
+                            ("off", "Waiting for you to allow it.".to_owned())
                         } else if p.running {
-                            ("running", "The add-on program is running.".to_owned())
+                            ("running", "Running.".to_owned())
                         } else if p.last_error.is_some() {
-                            ("failed", "The add-on stopped with an error.".to_owned())
+                            ("failed", "Stopped with an error.".to_owned())
                         } else {
                             ("ready", "Starts when it is first needed.".to_owned())
                         };

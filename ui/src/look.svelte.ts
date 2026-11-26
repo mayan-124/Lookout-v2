@@ -93,6 +93,19 @@ export function setReduceMotion(on: boolean) {
   applyMotion();
 }
 
+/** The recommended look: the default theme and accent, glass on, motion as Windows says. */
+export function resetLook() {
+  look.theme = DEFAULT_THEME;
+  look.accent = null;
+  look.glass = true;
+  look.reduceMotion = null;
+  persist();
+  applyGlass();
+  applyMotion();
+  paint();
+  saveAppearance();
+}
+
 /** Applies the saved theme; main.ts draws nothing until this is done. */
 export async function loadAppearance() {
   try {

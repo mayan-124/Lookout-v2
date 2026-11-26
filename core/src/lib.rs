@@ -56,5 +56,6 @@ pub mod storage;
 pub mod synthetic;
 pub mod timefilter;
 pub mod timers;
+pub mod uimode;
 pub mod units;
 pub mod winfocus;

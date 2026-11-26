@@ -4,6 +4,9 @@
   import Plugins from "./Plugins.svelte";
   import Health from "./Health.svelte";
   import ThemePicker from "./ThemePicker.svelte";
+  import ModePicker from "./ModePicker.svelte";
+  import { modeLabel, type Feature } from "./modes";
+  import { resetToRecommended, setAdvancedOpen, setHideTips, setShow, ui } from "./uistate.svelte";
   import { captureCombo } from "./hotkey";
   import { look, setGlass, setReduceMotion } from "./look.svelte";
   import { getVersion } from "@tauri-apps/api/app";
@@ -42,7 +45,7 @@
       if (u) upd = u;
       else updMsg = "Lookout is up to date.";
     } catch {
-      updMsg = "Could not check for updates. Check your internet connection and try again.";
+      updMsg = "Could not check for updates. Check your internet connection.";
     }
     updBusy = false;
   }
@@ -54,7 +57,7 @@
       await upd.downloadAndInstall();
       updMsg = "Installing. Lookout will restart.";
     } catch {
-      updMsg = "The update could not be downloaded or verified. Nothing was changed.";
+      updMsg = "Could not download or verify the update. Nothing changed.";
       updBusy = false;
     }
   }
@@ -113,16 +116,39 @@
   }
   onMount(loadKeys);
 
-  type Section = "general" | "folders" | "privacy" | "speed" | "addons" | "shortcuts" | "status" | "delete";
-  const SECTIONS: [Section, string][] = [
-    ["general", "General"],
-    ["folders", "Folders"],
+  // Basic is the General page; everything else sits under "Advanced".
+  type Section =
+    | "general"
+    | "features"
+    | "folders"
+    | "privacy"
+    | "appearance"
+    | "speed"
+    | "addons"
+    | "shortcuts"
+    | "status"
+    | "setup"
+    | "delete";
+  const ADVANCED: [Section, string][] = [
+    ["features", "Features"],
+    ["folders", "Skipped folders"],
     ["privacy", "Privacy"],
+    ["appearance", "Appearance"],
     ["speed", "Speed"],
     ["addons", "Add-ons"],
     ["shortcuts", "Shortcuts"],
     ["status", "Status"],
+    ["setup", "Setup and updates"],
     ["delete", "Delete my data"],
+  ];
+  // [switch, name, what it is, where it shows]
+  const FEATURES: [Feature, string, string, string][] = [
+    ["disk", "Disk analyzer", "See what uses space.", "Shows in the dock and help."],
+    ["clipboard", "Clipboard", "Find text you copied.", "Shows in the dock and help."],
+    ["capture", "Capture", "Take screenshots and recordings.", "Shows in the dock and help."],
+    ["timers", "Timers", "Count down from the search box.", "Shows in help and tips."],
+    ["quick_keys", "Quick keys", "Open things with a short word.", "Shows in help, tips and results."],
+    ["filters", "Date and kind filters", "Search like “pdf last week”.", "Shows in help and tips."],
   ];
   const ALWAYS_SKIPPED = [
     "node_modules",
@@ -139,7 +165,7 @@
   invoke<string[]>("skip_list").then((l) => (skipList = l)).catch(() => {});
 
   let info: PrivacyState | null = $state(null);
-  let section: Section = $state("folders");
+  let section: Section = $state("general");
   let roots: string[] = $state([]);
   let excluded: string[] = $state([]);
   let busy = $state(false);
@@ -292,26 +318,43 @@
   }
 
   let grabMessage = $state("");
+  let openMessage = $state("");
 
-  async function grabKeydown(e: KeyboardEvent) {
+  /** Saves a hotkey from a capture box; returns the line to show under it. */
+  async function hotkeyKeydown(command: "set_grab_hotkey" | "set_open_hotkey", e: KeyboardEvent, show: (text: string) => void) {
     const got = captureCombo(e);
     if (!got) return;
     if ("hint" in got) {
-      grabMessage = got.hint;
+      show(got.hint);
       return;
     }
-    grabMessage = "";
+    show("");
     const combo = got.combo;
     try {
       // Keep unsaved edits in the other fields: only the hotkey comes from the answer.
       const keep = { roots: [...roots], excluded: [...excluded], idleSecs, rescanHours, maxMb, speed };
-      const s = await invoke<PrivacyState>("set_grab_hotkey", { wanted: combo });
+      const s = await invoke<PrivacyState>(command, { wanted: combo });
       load(s);
       ({ roots, excluded, idleSecs, rescanHours, maxMb, speed } = keep);
-      grabMessage = `Saved: ${combo}. Active now.`;
+      show(`Saved: ${combo}. Active now.`);
     } catch (err) {
-      grabMessage = errorText(err);
+      show(errorText(err));
     }
+  }
+
+  // Interface choices: each applies at once.
+  let uiError = $state("");
+  const choose = async (change: Promise<string>) => (uiError = await change);
+  function toggleAdvanced() {
+    if (ui.advanced_open) section = "general";
+    choose(setAdvancedOpen(!ui.advanced_open));
+  }
+  let confirmingReset = $state(false);
+  async function reset() {
+    confirmingReset = false;
+    section = "general";
+    await choose(resetToRecommended());
+    if (!uiError) message = "Reset to recommended.";
   }
 
   async function deleteIndex() {
@@ -319,7 +362,7 @@
     message = "";
     try {
       load(await invoke<PrivacyState>("delete_index"));
-      message = "Your search data and its encryption key were deleted.";
+      message = "Deleted your search data and its key.";
     } catch (e) {
       message = errorText(e);
     }
@@ -348,84 +391,228 @@
   </span>
 {/snippet}
 
+{#snippet toggle(title: string, hint: string, on: boolean, change: (el: HTMLInputElement) => void)}
+  <label class="field">
+    {@render field(title, hint)}
+    <span class="switch">
+      <input type="checkbox" role="switch" checked={on} onchange={(e) => change(e.currentTarget)} />
+      <span class="track"></span>
+    </span>
+  </label>
+{/snippet}
+
+<!-- One control, shown on Privacy and on Features. -->
+{#snippet cliSwitch()}
+  {@render toggle(
+    "Command line access",
+    "Any program running as you can search your files and screen text through this. Off unless you need it.",
+    info?.cli_access ?? false,
+    setCliAccess,
+  )}
+  {#if cliMessage}<p class="hint" role="alert">{cliMessage}</p>{/if}
+{/snippet}
+
 <section class="settings" aria-labelledby="priv-title">
   <div class="layout">
     <nav class="menu" aria-label="Settings sections">
-      {#each SECTIONS as [id, name]}
-        <button
-          class="item"
-          class:on={section === id}
-          class:danger={id === "delete"}
-          aria-current={section === id ? "page" : undefined}
-          onclick={() => (section = id)}>{name}</button
-        >
-      {/each}
+      <button class="item" class:on={section === "general"} aria-current={section === "general" ? "page" : undefined} onclick={() => (section = "general")}
+        >General</button
+      >
+      <button class="item fold" aria-expanded={ui.advanced_open} onclick={toggleAdvanced}>{ui.advanced_open ? "▾" : "▸"} Advanced</button>
+      {#if ui.advanced_open}
+        {#each ADVANCED as [id, name]}
+          <button
+            class="item sub"
+            class:on={section === id}
+            class:danger={id === "delete"}
+            aria-current={section === id ? "page" : undefined}
+            onclick={() => (section = id)}>{name}</button
+          >
+        {/each}
+      {/if}
     </nav>
 
     <div class="body">
+      {#if uiError}<p class="danger-text" role="alert">{uiError}</p>{/if}
       {#if section === "general"}
         <h2 id="priv-title">General</h2>
         <div class="scard">
-        <h3 class="stitle">Startup</h3>
-        <label class="field">
-          {@render field("Start Lookout when I sign in to Windows", "So the hotkey works after every restart.")}
-          <span class="switch">
+          <h3 class="stitle">Folders to search</h3>
+          <p class="hint">Lookout only reads files inside these folders.</p>
+          {@render folderList(roots, "No folders chosen", (p) => (roots = roots.filter((r) => r !== p)), "Remove")}
+          <p><button bind:this={first} class="btn" onclick={() => add("roots")}>Add folder…</button></p>
+        </div>
+        <div class="scard">
+          <div class="field">
+            {@render field("Open Lookout", "Click the box, then press new keys.")}
             <input
-              type="checkbox"
-              role="switch"
-              checked={info?.start_with_windows ?? false}
-              disabled={!info}
-              onchange={(e) => setStartWithWindows(e.currentTarget)}
+              class="code"
+              type="text"
+              readonly
+              value={info?.open_hotkey ?? ""}
+              onkeydown={(e) => hotkeyKeydown("set_open_hotkey", e, (t) => (openMessage = t))}
+              aria-label="Open Lookout hotkey"
             />
-            <span class="track"></span>
+          </div>
+          {#if openMessage}<p class="note" role="status">{openMessage}</p>{/if}
+          <label class="field">
+            {@render field("Start with Windows", "Keeps the hotkey working after restarts.")}
+            <span class="switch">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={info?.start_with_windows ?? false}
+                disabled={!info}
+                onchange={(e) => setStartWithWindows(e.currentTarget)}
+              />
+              <span class="track"></span>
+            </span>
+          </label>
+          {#if startupMessage}<p class="hint" role="alert">{startupMessage}</p>{/if}
+        </div>
+        <div class="scard">
+          <ModePicker />
+        </div>
+        <div class="scard">
+          <ThemePicker part="theme" />
+        </div>
+        <div class="scard">
+          {#if confirmingReset}
+            <p class="warning" role="alert">
+              Reset mode, features, tips, theme and layout? Folders, privacy settings and saved data stay.
+            </p>
+            <div class="row end">
+              <button class="btn" onclick={() => (confirmingReset = false)}>Cancel</button>
+              <button class="btn primary" onclick={reset}>Reset</button>
+            </div>
+          {:else}
+            <div class="field">
+              {@render field("Recommended settings", "Restores what you see. Your data stays.")}
+              <button class="btn" onclick={() => (confirmingReset = true)}>Reset to recommended</button>
+            </div>
+          {/if}
+        </div>
+      {:else if section === "features"}
+        <h2 id="priv-title">Features</h2>
+        <p class="hint">Mode: {modeLabel(ui)}. Hidden features still work when you type them.</p>
+        {#each FEATURES as [key, name, what, where] (key)}
+          {@render toggle(name, `${what} ${where}`, ui.show[key], (el) => choose(setShow(key, el.checked)))}
+        {/each}
+        {@render cliSwitch()}
+      {:else if section === "folders"}
+        <h2 id="priv-title">Skipped folders</h2>
+        <h3 class="label-caps">Folders to skip</h3>
+        <p class="hint">Names, file text and text in pictures in these folders are never read.</p>
+        {@render folderList(excluded, "No skipped folders", (p) => (excluded = excluded.filter((r) => r !== p)), "Stop skipping")}
+        <button class="btn" onclick={() => add("excluded")}>Skip folder…</button>
+
+        <h3 class="label-caps">Always skipped</h3>
+        <p class="hint">These are never read, whatever you choose above.</p>
+        <div class="tags">{#each ALWAYS_SKIPPED as t}<span class="tag">{t}</span>{/each}</div>
+        <h3 class="label-caps">Not read inside AppData</h3>
+        <p class="hint">
+          Files in AppData\Local and AppData\Roaming show up by name, but text in these cache and log folders is not read.
+        </p>
+        <div class="tags">{#each skipList as t}<span class="tag">{t}</span>{/each}</div>
+
+        <h3 class="label-caps">Pause</h3>
+        {@render toggle(
+          "Pause all background work",
+          "Stops preparing files, reading file text and reading text in pictures until you turn it back on.",
+          info?.paused ?? false,
+          (el) => setPaused(el.checked),
+        )}
+      {:else if section === "privacy"}
+        <h2 id="priv-title">Privacy</h2>
+        <h3 class="label-caps">What is stored</h3>
+        <p class="hint">File names, file text, usage history and the undo log. Nothing leaves this PC.</p>
+        <h3 class="label-caps">How it is protected</h3>
+        <p class="hint">
+          Encrypted with a key only your Windows account can unlock. API keys, private keys and card numbers are
+          masked before text is saved.
+        </p>
+        <h3 class="label-caps">What Lookout reads</h3>
+        {@render toggle(
+          "Search inside files",
+          "Reads the text inside your files so you can search for words in them.",
+          info?.index_contents ?? false,
+          (el) => setContentOption("index_contents", el),
+        )}
+        {@render toggle(
+          "Read text in pictures",
+          "Finds words inside images and screenshots so they can be searched.",
+          info?.ocr ?? false,
+          (el) => setContentOption("ocr", el),
+        )}
+        {#if contentMessage}<p class="hint" role="alert">{contentMessage}</p>{/if}
+        <h3 class="label-caps">Other programs</h3>
+        {@render cliSwitch()}
+      {:else if section === "appearance"}
+        <h2 id="priv-title">Appearance</h2>
+        <ThemePicker part="accent" />
+        {@render toggle("Glass effect", "Tinted panels. Off makes them solid.", look.glass, (el) => setGlass(el.checked))}
+        {@render toggle("Reduce motion", "Stops animations. Follows Windows until you change it.", look.reduced, (el) => setReduceMotion(el.checked))}
+        {@render toggle("Tips on Home", "One tip each time you open Lookout.", !ui.hide_tips, (el) => choose(setHideTips(!el.checked)))}
+      {:else if section === "speed"}
+        <h2 id="priv-title">Speed</h2>
+        <label class="field">
+          {@render field("Background speed", "Used only while you are idle.")}
+          <select bind:value={speed}>
+            <option value="gentle">Gentle</option>
+            <option value="balanced">Balanced</option>
+            <option value="fast">Fast</option>
+          </select>
+        </label>
+        <label class="field">
+          {@render field("Wait before reading", "Seconds you must be idle before file text is read.")}
+          <span class="num">
+            <input type="number" bind:value={idleSecs} aria-invalid={!!idleError} aria-describedby="e-idle" />
+            <span id="e-idle" class="err" role="alert">{idleError}</span>
           </span>
         </label>
-        {#if startupMessage}<p class="hint" role="alert">{startupMessage}</p>{/if}
-        </div>
-        <div class="scard">
-        <h3 class="stitle">Appearance</h3>
-        <ThemePicker />
+        <label class="field">
+          {@render field("Check for changes every", "Hours between full checks. 0 means never.")}
+          <span class="num">
+            <input type="number" bind:value={rescanHours} aria-invalid={!!rescanError} aria-describedby="e-rescan" />
+            <span id="e-rescan" class="err" role="alert">{rescanError}</span>
+          </span>
+        </label>
+        <label class="field">
+          {@render field("File text size limit", "Disk space for file text, in MB. At least 100.")}
+          <span class="num">
+            <input type="number" bind:value={maxMb} aria-invalid={!!mbError} aria-describedby="e-mb" />
+            <span id="e-mb" class="err" role="alert">{mbError}</span>
+          </span>
+        </label>
+        <p class="note">
+          Gentle works up to 10% of the time, Balanced (default) 25%, Fast 60% (under one CPU core).
+        </p>
+      {:else if section === "addons"}
+        <h2 id="priv-title">Add-ons</h2>
+        <Plugins />
+      {:else if section === "shortcuts"}
+        <h2 id="priv-title">Shortcuts</h2>
         <div class="field">
-          {@render field("Glass effect", "Tinted gradient panels. Off gives flat solid panels.")}
-          <label class="switch">
-            <input type="checkbox" role="switch" checked={look.glass} onchange={(e) => setGlass(e.currentTarget.checked)} />
-            <span class="track"></span>
-          </label>
+          {@render field("Read text from the screen", "Click the box, then press new keys.")}
+          <input
+            class="code"
+            type="text"
+            readonly
+            value={info?.grab_hotkey ?? ""}
+            onkeydown={(e) => hotkeyKeydown("set_grab_hotkey", e, (t) => (grabMessage = t))}
+            aria-label="Grab text hotkey"
+          />
         </div>
+        {#if grabMessage}<p class="note" role="status">{grabMessage}</p>{/if}
         <div class="field">
-          {@render field("Reduce motion", "Stops the orb and result animations. On by default when Windows animations are off.")}
-          <label class="switch">
-            <input type="checkbox" role="switch" checked={look.reduced} onchange={(e) => setReduceMotion(e.currentTarget.checked)} />
-            <span class="track"></span>
-          </label>
+          {@render field("Pause", "Pauses and resumes background work from anywhere.")}
+          {#if info?.pause_hotkey}<kbd>{info.pause_hotkey}</kbd>{/if}
         </div>
-        </div>
-        <div class="scard">
-        <h3 class="stitle">Setup</h3>
-        <div class="field">
-          {@render field("First-run setup", dirty ? "Save or discard your changes first." : "Folders, shortcuts and theme, step by step.")}
-          <button class="btn" disabled={dirty} onclick={onsetup}>Run setup again</button>
-        </div>
-        </div>
-        <div class="scard">
-        <h3 class="stitle">Updates</h3>
-        <div class="field">
-          {@render field("Updates", `Version ${appVersion}. Connects to the internet only when you click a button here, and only receives files.`)}
-          <button class="btn" disabled={updBusy} onclick={checkUpdates}>Check for updates</button>
-        </div>
-        {#if upd}
-          <div class="field">
-            {@render field(`Version ${upd.version} is available`, upd.body ?? "")}
-            <button class="btn primary" disabled={updBusy} onclick={installUpdate}>Download and install</button>
-          </div>
-        {/if}
-        {#if updMsg}<p role="status">{updMsg}</p>{/if}
-        </div>
-        <div class="scard">
-        <h3 class="stitle">Quick keys</h3>
-        <div class="field">
-          {@render field("Quick keys", "A short word for an app, file, folder, web address or system action. Type the word and a space in search to put it on top. To use an app or system action, select its result and click Set quick key.")}
-        </div>
+        <h3 class="label-caps">Quick keys</h3>
+        <p class="hint">
+          A short word for anything you open often. Type it and a space to put it on top. For apps and system actions,
+          select the result and click Set quick key.
+        </p>
         {#each qkeys as k (k.alias)}
           <div class="field">
             <span class="fl">
@@ -455,144 +642,26 @@
           <button class="btn small primary" onclick={addKey}>Add</button>
         </div>
         {#if qkError}<p class="danger-text" role="alert">{qkError}</p>{/if}
-        </div>
-      {:else if section === "folders"}
-        <h2 id="priv-title">Folders</h2>
-        <h3 class="label-caps">Folders to search</h3>
-        <p class="hint">Lookout only reads files inside these folders.</p>
-        {@render folderList(roots, "No folders chosen", (p) => (roots = roots.filter((r) => r !== p)), "Remove")}
-        <button bind:this={first} class="btn" onclick={() => add("roots")}>Add folder…</button>
-
-        <h3 class="label-caps">Folders to skip</h3>
-        <p class="hint">Names, file text and text in pictures in these folders are never read.</p>
-        {@render folderList(excluded, "No exclusions", (p) => (excluded = excluded.filter((r) => r !== p)), "Stop excluding")}
-        <button class="btn" onclick={() => add("excluded")}>Exclude folder…</button>
-
-        <h3 class="label-caps">Always skipped</h3>
-        <p class="hint">These are never read, whatever you choose above.</p>
-        <div class="tags">{#each ALWAYS_SKIPPED as t}<span class="tag">{t}</span>{/each}</div>
-        <h3 class="label-caps">Not read inside AppData</h3>
-        <p class="hint">
-          AppData\Local and AppData\Roaming can be found by name, but the contents of these
-          cache and log folders are not read. The folders' own names stay searchable.
-        </p>
-        <div class="tags">{#each skipList as t}<span class="tag">{t}</span>{/each}</div>
-
-        <h3 class="label-caps">Pause</h3>
-        <label class="field">
-          {@render field("Pause all background work", "Stops preparing files, reading file text and reading text in pictures until you turn it back on.")}
-          <span class="switch">
-            <input
-              type="checkbox"
-              role="switch"
-              checked={info?.paused ?? false}
-              onchange={(e) => setPaused(e.currentTarget.checked)}
-            />
-            <span class="track"></span>
-          </span>
-        </label>
-      {:else if section === "privacy"}
-        <h2 id="priv-title">Privacy</h2>
-        <h3 class="label-caps">What is stored</h3>
-        <p class="hint">
-          Search data: file names, text from your files, your usage history and the undo log. Nothing leaves this PC.
-        </p>
-        <h3 class="label-caps">How it is protected</h3>
-        <p class="hint">
-          Everything is encrypted with a key that only your Windows account can unlock. Secrets such as API keys,
-          private keys and card numbers are masked before text is stored.
-        </p>
-        <h3 class="label-caps">What Lookout reads</h3>
-        <label class="field">
-          {@render field("Index file contents", "Reads the text inside your files so you can search for words in them.")}
-          <span class="switch">
-            <input
-              type="checkbox"
-              role="switch"
-              checked={info?.index_contents ?? false}
-              onchange={(e) => setContentOption("index_contents", e.currentTarget)}
-            />
-            <span class="track"></span>
-          </span>
-        </label>
-        <label class="field">
-          {@render field("Read text in pictures (OCR)", "Finds words inside images and screenshots so they can be searched.")}
-          <span class="switch">
-            <input
-              type="checkbox"
-              role="switch"
-              checked={info?.ocr ?? false}
-              onchange={(e) => setContentOption("ocr", e.currentTarget)}
-            />
-            <span class="track"></span>
-          </span>
-        </label>
-        {#if contentMessage}<p class="hint" role="alert">{contentMessage}</p>{/if}
-        <h3 class="label-caps">Command line access</h3>
-        <label class="field">
-          {@render field("Let the lookout command search", "Any program running as you can search your files and screen text through this. Off unless you need it.")}
-          <span class="switch">
-            <input
-              type="checkbox"
-              role="switch"
-              checked={info?.cli_access ?? false}
-              onchange={(e) => setCliAccess(e.currentTarget)}
-            />
-            <span class="track"></span>
-          </span>
-        </label>
-        {#if cliMessage}<p class="hint">{cliMessage}</p>{/if}
-      {:else if section === "speed"}
-        <h2 id="priv-title">Speed</h2>
-        <label class="field">
-          {@render field("Background speed", "Only applies while you are idle.")}
-          <select bind:value={speed}>
-            <option value="gentle">Gentle</option>
-            <option value="balanced">Balanced</option>
-            <option value="fast">Fast</option>
-          </select>
-        </label>
-        <label class="field">
-          {@render field("Wait before reading", "Seconds you must be idle before file text is read.")}
-          <span class="num">
-            <input type="number" bind:value={idleSecs} aria-invalid={!!idleError} aria-describedby="e-idle" />
-            <span id="e-idle" class="err" role="alert">{idleError}</span>
-          </span>
-        </label>
-        <label class="field">
-          {@render field("Check for changes every", "Hours between full checks. 0 means never.")}
-          <span class="num">
-            <input type="number" bind:value={rescanHours} aria-invalid={!!rescanError} aria-describedby="e-rescan" />
-            <span id="e-rescan" class="err" role="alert">{rescanError}</span>
-          </span>
-        </label>
-        <label class="field">
-          {@render field("File text size limit", "Most disk space for saved file text, in MB (at least 100).")}
-          <span class="num">
-            <input type="number" bind:value={maxMb} aria-invalid={!!mbError} aria-describedby="e-mb" />
-            <span id="e-mb" class="err" role="alert">{mbError}</span>
-          </span>
-        </label>
-        <p class="note">
-          Gentle works at most 10% of the time. Balanced (default) up to 25%. Fast up to 60%, under one CPU core.
-        </p>
-      {:else if section === "addons"}
-        <h2 id="priv-title">Add-ons</h2>
-        <Plugins />
-      {:else if section === "shortcuts"}
-        <h2 id="priv-title">Shortcuts</h2>
-        <div class="field">
-          {@render field("Read text from the screen", "Click the box, then press the new combination.")}
-          <input class="code" type="text" readonly value={info?.grab_hotkey ?? ""} onkeydown={grabKeydown} aria-label="Grab text hotkey" />
-        </div>
-        {#if grabMessage}<p class="note" role="status">{grabMessage}</p>{/if}
-        <div class="field">
-          {@render field("Pause", "Pauses and resumes background work from anywhere.")}
-          {#if info?.pause_hotkey}<kbd>{info.pause_hotkey}</kbd>{/if}
-        </div>
       {:else if section === "status"}
         <h2 id="priv-title">Status</h2>
         <Health />
+      {:else if section === "setup"}
+        <h2 id="priv-title">Setup and updates</h2>
+        <div class="field">
+          {@render field("First-run setup", dirty ? "Save or discard your changes first." : "Folders, shortcuts, mode and theme, step by step.")}
+          <button class="btn" disabled={dirty} onclick={onsetup}>Run setup again</button>
+        </div>
+        <div class="field">
+          {@render field("Updates", `Version ${appVersion}. Connects to the internet only when you click a button here, and only receives files.`)}
+          <button class="btn" disabled={updBusy} onclick={checkUpdates}>Check for updates</button>
+        </div>
+        {#if upd}
+          <div class="field">
+            {@render field(`Version ${upd.version} is available`, upd.body ?? "")}
+            <button class="btn primary" disabled={updBusy} onclick={installUpdate}>Download and install</button>
+          </div>
+        {/if}
+        {#if updMsg}<p role="status">{updMsg}</p>{/if}
       {:else}
         <h2 id="priv-title" class="danger-text">Delete my data</h2>
         {#if confirmingDelete}
@@ -641,13 +710,12 @@
   }
   .menu {
     flex: none;
-    width: 170px;
+    width: 190px;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    gap: 0;
+    gap: 2px;
     padding: 12px 8px 12px 12px;
-    gap: 4px;
     overflow-y: auto;
   }
   .item {
@@ -669,6 +737,13 @@
   }
   .item.danger {
     color: var(--danger);
+  }
+  .item.fold {
+    margin-top: 8px;
+  }
+  .item.sub {
+    padding: 4px 10px 4px 24px;
+    white-space: nowrap;
   }
   .item:focus-visible {
     outline: 2px solid var(--accent);
@@ -782,6 +857,10 @@
   .row {
     display: flex;
     gap: 8px;
+  }
+  .row.end {
+    justify-content: flex-end;
+    margin-bottom: 8px;
   }
   .savebar {
     flex: none;

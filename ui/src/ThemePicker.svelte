@@ -2,6 +2,9 @@
   // The theme grid and the accent choice. Both apply and save as they are picked.
   import { ACCENT_PRESETS, THEMES, normalizeHex, themeById } from "./theme";
   import { look, previewAccent, setAccent, setTheme } from "./look.svelte";
+  import { radioKeys } from "./radiokeys";
+
+  let { part = "all" }: { part?: "all" | "theme" | "accent" } = $props();
 
   // The accent as chosen (the theme's own when there is no custom one).
   const chosenAccent = $derived(look.accent ?? themeById(look.theme).accent);
@@ -22,19 +25,9 @@
     hexText = value;
     setAccent(value);
   }
-  // Arrow keys move and pick within a radio group.
-  function radioKeys(e: KeyboardEvent) {
-    const step = ["ArrowRight", "ArrowDown"].includes(e.key) ? 1 : ["ArrowLeft", "ArrowUp"].includes(e.key) ? -1 : 0;
-    const from = e.target as HTMLElement;
-    if (!step || from.getAttribute("role") !== "radio") return;
-    e.preventDefault();
-    const all = [...from.closest('[role="radiogroup"]')!.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
-    const next = all[(all.indexOf(from as HTMLButtonElement) + step + all.length) % all.length];
-    next.focus();
-    next.click();
-  }
 </script>
 
+{#if part !== "accent"}
 <div class="field">
   <span class="fl">
     <span class="ft">Theme</span>
@@ -61,6 +54,8 @@
     {/each}
   </div>
 </div>
+{/if}
+{#if part !== "theme"}
 <div class="field">
   <span class="fl">
     <span class="ft">Accent</span>
@@ -114,8 +109,9 @@
   </div>
   {#if hexError}<span class="err" role="alert">{hexError}</span>{/if}
   {#if look.lightened}<span class="hint" role="status">Lightened so it stays readable on this theme.</span>{/if}
-  {#if look.saveError}<span class="err" role="alert">Not saved: {look.saveError}</span>{/if}
 </div>
+{/if}
+{#if look.saveError}<span class="err" role="alert">Not saved: {look.saveError}</span>{/if}
 
 <style>
   .field {

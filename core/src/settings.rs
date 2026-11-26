@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(windows)]
 use crate::autostart::RunEntry;
 use crate::ranking::RankingWeights;
+use crate::uimode::Ui;
 
 pub const DEFAULT_HOTKEY: &str = "Alt+Space";
 
@@ -142,6 +143,8 @@ pub struct Settings {
     /// Last window position (physical pixels) per monitor, keyed by
     /// [`monitor_key`]. A monitor that is gone simply has no use.
     pub window_positions: std::collections::BTreeMap<String, (i32, i32)>,
+    /// What the window shows: mode, visibility switches and tips.
+    pub ui: Ui,
 }
 
 /// Identifies a monitor by name, size and place, so a saved position is only
@@ -212,6 +215,7 @@ impl Default for Settings {
             start_with_windows: None,
             pinned: false,
             window_positions: std::collections::BTreeMap::new(),
+            ui: Ui::default(),
         }
     }
 }
@@ -756,6 +760,11 @@ mod tests {
             cli_access: true,
             start_with_windows: Some(true),
             window_positions: [("M|0,0|1x1".to_owned(), (5, 6))].into(),
+            ui: Ui {
+                mode: Some(crate::uimode::Mode::Simple),
+                hide_tips: true,
+                ..Ui::default()
+            },
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

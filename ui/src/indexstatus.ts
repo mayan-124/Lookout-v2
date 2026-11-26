@@ -23,7 +23,7 @@ export function indexLine(s: IndexCounts | null): { state: IndexState; text: str
   if (!s) return { state: "loading", text: "Checking files…" };
   const n = (v: number) => v.toLocaleString("en-US");
   const files = (v: number) => `${n(v)} ${v === 1 ? "file" : "files"}`;
-  if (s.roots === 0 && s.files === 0) return { state: "nofolders", text: "No folders to search yet" };
+  if (s.roots === 0 && s.files === 0) return { state: "nofolders", text: "No folders chosen" };
   if (s.paused) return { state: "paused", text: `Indexing paused · ${files(s.files)} ready` };
   if (s.indexing) return { state: "running", text: `Indexing ${files(s.files)}` };
   const total = s.read_total + s.ocr_total;

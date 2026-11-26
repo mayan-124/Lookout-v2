@@ -11,8 +11,10 @@
   import Orb from "./Orb.svelte";
   import { look } from "./look.svelte";
   import Setup from "./Setup.svelte";
-  import Help, { type HelpRow } from "./Help.svelte";
+  import Help from "./Help.svelte";
   import { FOLDER_STEP, chooseFoldersTarget, isHelpQuery, stepOnShow } from "./setupflow";
+  import { dockItems, footerHints, helpEntries, isDiskCommand, tipsFor, typedSection, type HelpRow, type View } from "./modes";
+  import { dismissDiskNotice, loadUi, setHideTips, setShow, ui } from "./uistate.svelte";
   import { indexLine, type IndexCounts } from "./indexstatus";
 
   type Kind = string | { custom: string };
@@ -217,7 +219,6 @@
   let privacy: ReturnType<typeof Privacy> | undefined = $state();
   // The disk usage analyzer. It scans only while this view is open.
   let disk = $state(false);
-  const isDiskCommand = (q: string) => /^disk( usage| analy[sz]er)?$/i.test(q.trim());
   function openDisk() {
     disk = true;
     query = "";
@@ -338,20 +339,14 @@
       .filter((p) => p.text !== "");
   }
 
-  // The five dock sections. Clipboard and Capture are the existing "clip" and
-  // "shot" searches; Disk and Settings are their own pages.
-  const SECTIONS = ["Search", "Disk", "Clipboard", "Capture", "Settings"] as const;
-  const section = $derived(
-    panel
-      ? 4
-      : disk
-        ? 1
-        : /^\s*(clip|clipboard|clips)(\s|$)/i.test(query)
-          ? 2
-          : /^\s*(shot|screenshot)(\s|$)/i.test(query)
-            ? 3
-            : 0,
-  );
+  // Clipboard and Capture are the "clip" and "shot" searches; Disk and
+  // Settings are their own pages. The mode only decides which the dock lists.
+  const section = $derived(panel ? 4 : disk ? 1 : typedSection(query));
+  async function uiChange(change: Promise<string>) {
+    const error = await change;
+    if (error) notice = error;
+    input?.focus();
+  }
   function gotoSection(n: number) {
     if (card) return;
     if (panel) {
@@ -374,12 +369,6 @@
     run(query);
     tick().then(() => input?.focus());
   }
-  // The empty-bar welcome: what to type and what it does.
-  const TRY: [string, string][] = [
-    ["renovation invoice", "find words inside files"],
-    ["kill port 3000", "see what uses a port"],
-    ["10 km to miles", "convert and calculate"],
-  ];
   function tryExample(text: string) {
     query = text;
     run(text);
@@ -456,9 +445,15 @@
     setup = FOLDER_STEP;
   }
 
-  // The help view: a fixed table, asked for the first time it is shown.
+  // Help and the Home tip come from one fixed table, asked for once.
   let helpRows: HelpRow[] = $state([]);
   let helpSelected = $state(0);
+  let helpAdvanced = $state(false);
+  const helpList = $derived(helpEntries(helpRows, ui.mode, ui.show, helpAdvanced));
+  // One tip on Home; the next one at each open.
+  let tipTurn = $state(0);
+  const tips = $derived(tipsFor(helpRows, ui.mode, ui.show));
+  const tip = $derived(ui.hide_tips || tips.length === 0 ? null : tips[tipTurn % tips.length]);
   const showHelp = $derived(isHelpQuery(query) && !panel && !disk && !card);
   async function loadHelp() {
     if (helpRows.length > 0) return;
@@ -467,6 +462,7 @@
 
   function closePanel() {
     panel = false;
+    loadPinned();
     refreshStatus();
     loadHotkey();
     tick().then(() => input?.focus());
@@ -627,6 +623,8 @@
   onMount(() => {
     loadHotkey();
     loadPinned();
+    loadUi();
+    loadHelp();
     const unlistenShown = listen<{ id: number; hidden_secs: number | null }>("bar-shown", async (event) => {
       const { hidden_secs } = event.payload;
       const restore =
@@ -636,6 +634,7 @@
         (query.trim() !== "" || panel || disk || setup !== null);
       notice = "";
       visible = true;
+      tipTurn += 1;
       // A confirm card is never brought back: its preview must be seen fresh.
       if (card?.phase === "confirm") invoke("cancel_action", { ticket: card.prepared.ticket });
       card = null;
@@ -740,15 +739,17 @@
     if (showHelp) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
-        const n = helpRows.length;
+        const n = helpList.length;
         if (n > 0) helpSelected = (helpSelected + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
         return;
       }
       if (e.key === "Enter") {
         if (e.target !== input) return; // a focused row clicks itself
         e.preventDefault();
-        const row = helpRows[helpSelected];
-        if (row && !e.repeat) tryExample(row.fill);
+        const entry = helpList[helpSelected];
+        if (!entry || e.repeat) return;
+        if ("row" in entry) tryExample(entry.row.fill);
+        else helpAdvanced = !helpAdvanced;
         return;
       }
     }
@@ -967,6 +968,24 @@
     begin(() => invoke<Prepared>("prepare_action", { action: "copy_clip", id: i.id }));
   }
 
+  const view = $derived.by<View>(() => {
+    if (card) return card.phase === "confirm" ? "confirm" : "done";
+    if (panel) return "settings";
+    if (disk) return "disk";
+    if (showSetup) return "setup";
+    if (showHelp) return "help";
+    return query.trim() === "" ? "home" : "results";
+  });
+  const hints = $derived(
+    footerHints(view, {
+      mode: ui.mode,
+      hotkey: openHotkey,
+      enter: defaultAction(cur) ? openLabel(cur) : null,
+      path: PATHLIKE.test(query),
+      clears: pinned && query !== "",
+    }),
+  );
+
   const dur = (n: number) => (look.reduced ? 0 : n);
 </script>
 
@@ -1082,7 +1101,7 @@
         }}
         class="search"
         type="text"
-        placeholder={panel ? "settings" : "Search files and apps, or calculate: 2+2, 10 km to miles"}
+        placeholder={panel ? "Settings" : "Search files and apps, or type help"}
         readonly={panel}
         autocomplete="off"
         spellcheck="false"
@@ -1191,14 +1210,14 @@
         </section>
       {:else if showHelp}
         <div class="card glass">
-          <Help rows={helpRows} bind:selected={helpSelected} onpick={tryExample} />
+          <Help entries={helpList} bind:selected={helpSelected} onpick={tryExample} ontoggle={() => (helpAdvanced = !helpAdvanced)} />
         </div>
       {:else if home}
         <div class="home" out:fade={{ duration: dur(70) }}>
-          <section class="card glass pick" aria-label="Pick up where you left off">
-            <h3 class="label-caps">Pick up where you left off</h3>
+          <section class="card glass pick" aria-label="Recent">
+            <h3 class="label-caps">Recent</h3>
             {#if recent.length === 0}
-              <p class="empty">{noFolders ? "Nothing here yet. Choose folders to search." : "Nothing here yet. Type to search."}</p>
+              <p class="empty">{noFolders ? "Nothing yet. Choose folders to search." : "Nothing yet. Type to search."}</p>
             {:else}
               <ul class="recent">
                 {#each recent as r, n (r.item.id)}
@@ -1223,25 +1242,27 @@
             {/if}
           </section>
 
-          <section class="card glass side" aria-label="Tips and index">
-            <h3 class="label-caps">Try typing</h3>
-            <ul class="tips">
-              {#each TRY as [example, what]}
-                <li>
-                  <button class="ex" onclick={() => tryExample(example)}>{example}</button>
-                  <span class="what">{what}</span>
-                </li>
-              {/each}
-            </ul>
+          <section class="card glass side" aria-label={tip ? "Tip and index" : "Index"}>
+            {#if tip}
+              <h3 class="label-caps">Tip</h3>
+              <div class="tip">
+                <button class="ex" onclick={() => tryExample(tip.fill)}>{tip.example}</button>
+                <span class="what">{tip.what}</span>
+              </div>
+              <div class="tipacts">
+                <button class="btn small" onclick={() => (tipTurn += 1)}>Next tip</button>
+                <button class="btn small" onclick={() => uiChange(setHideTips(true))}>Hide tips</button>
+              </div>
+            {/if}
             <div class="idx">
               <div>
                 <strong>{idx.text}</strong>
                 <span class="sub">{status ? fmt(status.apps) : "…"} apps</span>
               </div>
               {#if noFolders}
-                <button class="btn small primary" onclick={chooseFolders}>Choose folders to search</button>
+                <button class="btn small primary" onclick={chooseFolders}>Choose folders</button>
               {:else}
-                <button class="btn small" onclick={() => (panel = true)}>Folders</button>
+                <button class="btn small" onclick={() => (panel = true)}>Manage folders</button>
               {/if}
             </div>
           </section>
@@ -1257,8 +1278,8 @@
                   ></span
                 >
                 <span class="text">
-                  <span class="title">Disk usage analyzer</span>
-                  <span class="snippet">See what takes the space on a drive or folder. Scans only when you press Scan.</span>
+                  <span class="title">Disk analyzer</span>
+                  <span class="snippet">See what uses space on a drive or folder. Scans only when you press Scan.</span>
                 </span>
                 <span class="hint-enter"><kbd>Enter</kbd></span>
               </div>
@@ -1413,7 +1434,7 @@
                 {#if kindName(cur.kind) === "clipboard" && defaultAction(cur) !== "copy_clip"}
                   <button class="btn small" onclick={() => copyText(cur)}>Copy text</button>
                 {/if}
-                {#if canKey(cur) && !keyFor}
+                {#if ui.show.quick_keys && canKey(cur) && !keyFor}
                   <button class="btn small" onclick={() => startKey(cur)}>Set quick key</button>
                 {/if}
               </div>
@@ -1443,9 +1464,16 @@
     </div>
 
     <div class="foot">
+    {#if ui.disk_notice && !card && !showSetup}
+      <div class="moved glass" role="status">
+        <span>Disk moved to Full mode in Settings &gt; Features</span>
+        <button type="button" class="btn small primary" onclick={() => uiChange(setShow("disk", true))}>Turn Disk on</button>
+        <button type="button" class="btn small" onclick={() => uiChange(dismissDiskNotice())}>Dismiss</button>
+      </div>
+    {/if}
     {#if !card}
       <nav class="dock glass" aria-label="Sections">
-        {#each SECTIONS as name, n}
+        {#each dockItems(ui.show) as { name, n } (n)}
           <button
             type="button"
             class="dockbtn"
@@ -1463,12 +1491,8 @@
       <span>
         {#if notice}
           <span class="warn">{notice}</span>
-        {:else if showSetup}
-          Tab next · Enter choose · Esc skip setup
-        {:else if showHelp}
-          ↑↓ pick · Enter try it · Esc back
         {:else}
-          Enter open · Space preview · Tab next lane · Ctrl+1–5 sections · Esc back{#if openHotkey} · {openHotkey} opens Lookout{/if}
+          {hints.join(" · ")}
         {/if}
       </span>
     </footer>
@@ -1626,6 +1650,18 @@
     min-height: 0;
   }
 
+  .moved {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-self: center;
+    padding: 8px 16px;
+    border-radius: var(--r-pill);
+    font-size: var(--fs-sm);
+  }
+
   /* ---- home ---- */
   .home {
     display: grid;
@@ -1741,17 +1777,16 @@
   .idx strong {
     font-weight: 500;
   }
-  .tips {
-    list-style: none;
-    margin: 0;
-    padding: 0;
+  .tip {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    align-items: flex-start;
+    gap: 2px;
   }
-  .tips li {
+  .tipacts {
     display: flex;
-    flex-direction: column;
+    flex-wrap: wrap;
+    gap: 8px;
   }
   .ex {
     all: unset;
