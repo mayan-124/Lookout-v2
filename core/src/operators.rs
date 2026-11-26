@@ -201,13 +201,17 @@ impl Operators {
         true
     }
 
+    /// Whether the file name holds every `name:` word.
+    pub fn names_match(&self, path: &Path) -> bool {
+        let name = folded_name(path);
+        self.names.iter().all(|w| name.contains(w))
+    }
+
     /// Whether a found file passes, for sources that know only its path. The
     /// size is read from the disk, and only when a size was asked for. `in:` is
     /// matched from the indexed folder the file lies in.
     pub fn accepts_path(&self, path: &Path, roots: &[PathBuf]) -> bool {
-        let name = path
-            .file_name()
-            .map_or_else(String::new, |n| ranking::fold_lower(&n.to_string_lossy()));
+        let name = folded_name(path);
         if !self.exts.is_empty() && !self.exts.iter().any(|e| has_extension(&name, e)) {
             return false;
         }
@@ -215,16 +219,7 @@ impl Operators {
             return false;
         }
         if !self.folders.is_empty() {
-            let parent = path.parent().unwrap_or(path);
-            // From the indexed folder's own name downwards.
-            let base = roots
-                .iter()
-                .filter(|r| path.starts_with(r))
-                .max_by_key(|r| r.as_os_str().len())
-                .and_then(|r| r.parent());
-            let below = base.and_then(|b| parent.strip_prefix(b).ok());
-            let relative = ranking::fold_lower(&below.unwrap_or(parent).to_string_lossy());
-            let full = ranking::fold_lower(&parent.to_string_lossy());
+            let (relative, full) = folder_text(path, roots);
             if !self.folders.iter().all(|f| {
                 if is_absolute(f) {
                     full.starts_with(f.as_str())
@@ -241,6 +236,26 @@ impl Operators {
             None => true,
         }
     }
+}
+
+/// The file name as the filters compare it.
+pub fn folded_name(path: &Path) -> String {
+    path.file_name()
+        .map_or_else(String::new, |n| ranking::fold_lower(&n.to_string_lossy()))
+}
+
+/// The folder of `path` as `in:` compares it: from the name of the indexed
+/// folder it lies in downwards, and in full.
+pub fn folder_text(path: &Path, roots: &[PathBuf]) -> (String, String) {
+    let parent = path.parent().unwrap_or(path);
+    let base = roots
+        .iter()
+        .filter(|r| path.starts_with(r))
+        .max_by_key(|r| r.as_os_str().len())
+        .and_then(|r| r.parent());
+    let below = base.and_then(|b| parent.strip_prefix(b).ok());
+    let text = |p: &Path| ranking::fold_lower(&p.to_string_lossy());
+    (text(below.unwrap_or(parent)), text(parent))
 }
 
 /// A fragment that names a whole path (`c:\…`, `\\server\…`).

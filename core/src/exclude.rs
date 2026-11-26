@@ -134,6 +134,15 @@ impl Excludes {
         self
     }
 
+    /// The excluded names and folders, to hand to another process, which adds
+    /// them to [`Excludes::default`].
+    pub fn lists(&self) -> (Vec<String>, Vec<PathBuf>) {
+        (
+            self.names.iter().cloned().collect(),
+            self.folders.iter().map(PathBuf::from).collect(),
+        )
+    }
+
     /// True if `path` is an excluded folder or lies below one.
     pub fn is_excluded_folder(&self, path: &Path) -> bool {
         if self.folders.is_empty() {

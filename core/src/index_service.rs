@@ -90,6 +90,9 @@ pub struct IndexConfig {
     /// then builds a fresh index and swaps it in (like a rescan) instead of
     /// adding every file a second time.
     pub preloaded: bool,
+    /// The startup crawl of a preloaded index reads the disk in Windows'
+    /// background mode (used once, to collect the sizes an old snapshot lacks).
+    pub background: bool,
 }
 
 impl IndexConfig {
@@ -104,6 +107,7 @@ impl IndexConfig {
             on_changed: None,
             on_path: None,
             preloaded: false,
+            background: false,
         }
     }
 }
@@ -266,14 +270,14 @@ impl IndexService {
         }
 
         let c = ctx;
-        let preloaded = config.preloaded;
+        let (preloaded, background) = (config.preloaded, config.background);
         threads.push(
             std::thread::Builder::new()
                 .name("lookout-crawl".into())
                 .spawn(move || {
                     if preloaded {
                         // Serves the snapshot until the fresh crawl replaces it.
-                        rescan(&c);
+                        rescan(&c, background);
                     } else {
                         crawl_roots(&c);
                         write(&c.index).shrink_to_fit();
@@ -470,7 +474,7 @@ fn event_loop(ctx: &Ctx, rx: &Receiver<Signal>, rescan_every: Option<Duration>) 
             continue;
         }
         if rescan_wanted {
-            rescan(ctx);
+            rescan(ctx, false);
             rescan_wanted = false;
             last_rescan = Instant::now();
             // Events that arrived during the rescan are applied below; repeating
@@ -485,10 +489,46 @@ fn event_loop(ctx: &Ctx, rx: &Receiver<Signal>, rescan_every: Option<Duration>) 
     }
 }
 
+/// Low CPU, disk and memory priority for this thread until dropped.
+struct BackgroundMode;
+
+impl BackgroundMode {
+    fn begin() -> Self {
+        set_background(true);
+        Self
+    }
+}
+
+impl Drop for BackgroundMode {
+    fn drop(&mut self) {
+        set_background(false);
+    }
+}
+
+#[cfg(windows)]
+fn set_background(on: bool) {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
+        THREAD_MODE_BACKGROUND_END,
+    };
+    let mode = if on {
+        THREAD_MODE_BACKGROUND_BEGIN
+    } else {
+        THREAD_MODE_BACKGROUND_END
+    };
+    // SAFETY: changes only the calling thread's priority; a refusal is harmless.
+    unsafe {
+        SetThreadPriority(GetCurrentThread(), mode);
+    }
+}
+
+#[cfg(not(windows))]
+fn set_background(_: bool) {}
+
 /// Crawls every root into a fresh index and swaps it in. Queries keep using
 /// the old index until the swap, which is a pointer-sized replace under the
 /// write lock. Peak memory is two indexes.
-fn rescan(ctx: &Ctx) {
+fn rescan(ctx: &Ctx, background: bool) {
     ctx.crawling.store(true, Ordering::Release);
     let fresh = new_shared_index();
     let scratch = Ctx {
@@ -504,7 +544,11 @@ fn rescan(ctx: &Ctx) {
         on_changed: None,
         on_path: None,
     };
-    crawl_roots(&scratch);
+    {
+        // Only the crawl: the swap below holds a lock searches wait for.
+        let _low = background.then(BackgroundMode::begin);
+        crawl_roots(&scratch);
+    }
     if !ctx.stop.load(Ordering::Relaxed) {
         let mut built = std::mem::take(&mut *write(&fresh));
         built.shrink_to_fit();

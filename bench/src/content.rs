@@ -548,6 +548,7 @@ fn seg_search(files: usize) -> Result<bool, String> {
                     path: format!(r"C:\bench\f{i:05}.txt"),
                     mtime: 1_700_000_000,
                     kind: DocKind::Text,
+                    size: 0,
                     text: words(&mut seed, 1000 + (i * 7919) % 14_000),
                 })
                 .map_err(|e| e.to_string())?;

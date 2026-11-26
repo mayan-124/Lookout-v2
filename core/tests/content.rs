@@ -966,6 +966,7 @@ mod cap {
             mtime: 1,
             text: "tidyword".into(),
             kind: lookout_core::content::store::DocKind::Text,
+            size: 0,
         };
         // Neither file exists: only the skipped one may go while paused.
         store.upsert(&doc(root.join("kept.txt"))).unwrap();

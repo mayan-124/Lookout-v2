@@ -74,6 +74,7 @@
     needs_setup: boolean;
     semantic_done: number;
     semantic_total: number;
+    sizes_pending: boolean;
   }
 
   // The orb animates only while the window is on screen.
@@ -228,6 +229,7 @@
   // whether something only looked like one.
   let typedOps: string[] = $state([]);
   let badOperator = $state(false);
+  const typedSize = () => typedOps.some((t) => /^size:/i.test(t));
   // Values for `ext:` and `in:`, asked for once per open, when first needed.
   let opValues: OperatorValues = $state(NO_VALUES);
   let opAsked = false;
@@ -577,11 +579,14 @@
   }
 
   async function refreshStatus() {
+    const collecting = !!status?.sizes_pending;
     try {
       status = await invoke<Status | null>("index_status");
     } catch {
       status = null;
     }
+    // The sizes have arrived: a `size:` search on screen is asked again.
+    if (collecting && status && !status.sizes_pending && typedSize()) run(query);
   }
 
   // Settings may ask "Discard changes?" first.
@@ -1772,6 +1777,7 @@
                 {/if}
               </div>
             {/if}
+            {#if status?.sizes_pending && typedSize()}<p class="readline muted" role="status">Sizes are still being collected</p>{/if}
             {#if opsShown && badOperator && offers.length === 0}<p class="readline" role="status">{OPERATOR_HINT}</p>{/if}
             {#if meant}<p class="readline" role="status">{meant}</p>{/if}
             {#if understoodLine}<p class="readline" role="status">{understoodLine}</p>{/if}
@@ -2095,6 +2101,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .readline.muted {
+    color: var(--muted);
   }
   .search[readonly] {
     caret-color: transparent;

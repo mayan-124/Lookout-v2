@@ -161,6 +161,8 @@ pub struct Status {
     pub roots: usize,
     pub indexing: bool,
     pub paused: bool,
+    /// A `size:` search may still miss files: the sizes are being collected.
+    pub sizes_pending: bool,
     /// The user has not yet chosen folders (first run): the UI shows the chooser.
     pub needs_setup: bool,
     /// Documents in the full-text index (file contents and screenshot text).
@@ -231,6 +233,8 @@ pub struct Lookout {
     share_rules: Arc<Rules>,
     /// The common extensions in the name index, counted when a crawl ends.
     extensions: Arc<Mutex<Vec<String>>>,
+    /// File sizes are still missing from the name index; the crawl brings them.
+    sizes_pending: Arc<AtomicBool>,
     /// The files of the latest Home "Recent" list, which can be opened too.
     home_targets: Mutex<HashMap<String, Target>>,
 }
@@ -312,9 +316,13 @@ impl Lookout {
         let (hook_index, hook_store) = (index.clone(), frecency.clone());
         let extensions: Arc<Mutex<Vec<String>>> = Arc::default();
         let hook_extensions = extensions.clone();
+        // True from loading a snapshot without sizes until a crawl has them.
+        let sizes_pending: Arc<AtomicBool> = Arc::default();
+        let hook_sizes = sizes_pending.clone();
         let on_reindexed: ReindexHook = Arc::new(move || {
             apply_frecency(&hook_index, &hook_store, i64::from(unix_now()));
             count_extensions(&hook_index, &hook_extensions);
+            hook_sizes.store(false, Ordering::Release);
         });
         // The encrypted snapshot of the name index, if it was made for these folders.
         let snapshot_path = match (&storage.paths, &storage.key, opts.synthetic_files) {
@@ -346,6 +354,7 @@ impl Lookout {
                         *write(&index) = idx;
                         apply_frecency(&index, &frecency, i64::from(unix_now()));
                         count_extensions(&index, &extensions);
+                        sizes_pending.store(read(&index).has_unsized_files(), Ordering::Release);
                         true
                     }
                     None => {
@@ -394,7 +403,10 @@ impl Lookout {
                 _ => ContentStore::open_in_ram(),
             };
             match opened {
-                Ok(st) => Some(Arc::new(st)),
+                Ok(st) => {
+                    st.set_roots(content_roots.clone());
+                    Some(Arc::new(st))
+                }
                 Err(e) => {
                     eprintln!("lookout: content search is off: {e}");
                     content_error = Some(e.to_string());
@@ -467,6 +479,7 @@ impl Lookout {
             c.on_changed = on_changed.clone();
             c.on_path = on_path.clone();
             c.preloaded = preloaded;
+            c.background = sizes_pending.load(Ordering::Acquire);
             c
         };
         // A watcher that cannot start (for example a network share) must not stop indexing.
@@ -699,6 +712,7 @@ impl Lookout {
             excludes,
             share_rules,
             extensions,
+            sizes_pending,
             home_targets: Mutex::default(),
         })
     }
@@ -1192,6 +1206,7 @@ impl Lookout {
             roots: self.roots,
             indexing: s.is_some_and(|s| s.crawling) || self.populating.load(Ordering::Acquire),
             paused: self.pause.is_paused(),
+            sizes_pending: self.sizes_pending.load(Ordering::Acquire),
             needs_setup: self.needs_setup,
             content_docs: self.content.as_ref().map_or(0, |c| c.store.doc_count()),
             semantic_done: sem.as_ref().map_or(0, |s| s.done),
@@ -1869,6 +1884,47 @@ mod tests {
             "excluded folder is never indexed: {r:?}"
         );
         assert_eq!(f.lookout.status().files, 2);
+    }
+
+    #[test]
+    fn a_snapshot_without_sizes_says_so_until_the_crawl_has_them() {
+        let dir = tempfile::tempdir().unwrap();
+        make_files(dir.path());
+        let files = dir.path().join("files");
+        let old = new_shared_index();
+        {
+            let mut w = write(&old);
+            let root = w.add_root(&files, 0).unwrap();
+            w.add_file(root, "budget alpha.xlsx", 0).unwrap();
+        }
+        let fingerprint = names_store::fingerprint(
+            std::slice::from_ref(&files),
+            &names_store::excludes_key(&[], &[]),
+        );
+        let names = paths_in(dir.path()).names_file();
+        names_store::save(&old, &names, &test_key(), &fingerprint).unwrap();
+
+        let pause = PauseState::new();
+        pause.set(true);
+        let (lookout, updates) = launch_with(dir.path(), Settings::default(), pause.clone());
+        let f = Fixture {
+            lookout,
+            updates,
+            _dir: tempfile::tempdir().unwrap(),
+        };
+        assert!(f.lookout.status().sizes_pending);
+        // The snapshot is still served: only the sizes are missing.
+        assert_eq!(f.ask(1, "budget").items.len(), 1);
+        assert!(f.ask(2, "size:<1kb").items.is_empty());
+
+        pause.set(false);
+        f.wait_indexed();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while f.lookout.status().sizes_pending {
+            assert!(Instant::now() < deadline, "the sizes never arrived");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(f.ask(3, "size:<1kb").items.len(), 2);
     }
 
     #[test]

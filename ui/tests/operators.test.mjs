@@ -58,6 +58,16 @@ test("the operators are in help for every list, with one tip outside Simple", ()
   assert.deepEqual(tipsFor(ops, "simple", SHOW), []);
 });
 
+test("a size search says when sizes are still being collected", () => {
+  const app = readFileSync(new URL("../src/App.svelte", import.meta.url), "utf8");
+  assert.match(app, /sizes_pending && typedSize\(\)\}<p class="readline muted" role="status">Sizes are still being collected</);
+});
+
+test("the preview hint says where Space works", () => {
+  const panel = readFileSync(new URL("../src/Preview.svelte", import.meta.url), "utf8");
+  assert.match(panel, /Click here, then <kbd>Space<\/kbd> for a larger preview/);
+});
+
 test("the window shows chips and suggestions outside Simple only", () => {
   const app = readFileSync(new URL("../src/App.svelte", import.meta.url), "utf8");
   assert.match(app, /ui\.mode !== "simple"/);

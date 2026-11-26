@@ -1,30 +1,44 @@
 //! Thumbnails and file icons from the Windows shell, for the file preview.
 //!
 //! The pictures come from whatever thumbnail handler is installed for a type:
-//! third-party code. Each request runs on its own worker thread and is waited
-//! for at most [`TIMEOUT`]. A handler cannot be stopped from outside, so a
-//! cancelled or late worker is abandoned and its answer dropped; no new one is
-//! started while [`MAX_WORKERS`] are still running. Callers check first that the
-//! file may be previewed ([`crate::preview::may_thumbnail`]). Nothing is written
-//! to disk here (Windows keeps its own thumbnail cache), and the few pictures
-//! kept in memory are dropped when the bar has been hidden for a while.
+//! third-party code. It never runs in Lookout's process. Each request starts
+//! one helper (this same program with [`HELPER_ARG`]), which reads the request
+//! from its input, checks the skip rules again, writes the file's icon and then
+//! its thumbnail as PNG, and exits. The helper is killed after [`TIMEOUT`] or
+//! when the selection moves on; after [`MAX_CRASHES`] crashes in a row only
+//! icons are asked for, until Lookout restarts. No helper runs otherwise.
+//! Nothing is written to disk (Windows keeps its own thumbnail cache), and the
+//! few pictures kept in memory are dropped when the bar has been hidden a while.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::preview::base64;
+use serde::{Deserialize, Serialize};
 
+use crate::exclude::Excludes;
+use crate::preview::{self, base64};
+use crate::share::Rules;
+
+/// The argument that makes the program a thumbnail helper.
+pub const HELPER_ARG: &str = "--thumbnail-helper";
 pub const TIMEOUT: Duration = Duration::from_secs(2);
 /// Largest side asked of a handler, in pixels.
 pub const MAX_SIDE: u32 = 1024;
 const MIN_SIDE: u32 = 64;
-const MAX_WORKERS: usize = 3;
+/// Crashes in a row after which thumbnails stop for the rest of the session.
+pub const MAX_CRASHES: u32 = 3;
 const CACHE_ITEMS: usize = 8;
 const CACHE_BYTES: usize = 12 * 1024 * 1024;
 const POLL: Duration = Duration::from_millis(20);
+/// A helper whose parent is gone ends itself after this long.
+const WATCHDOG: Duration = Duration::from_secs(10);
+const MAX_REQUEST: u64 = 1024 * 1024;
+const MAX_PICTURE: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Shot {
@@ -34,44 +48,62 @@ pub struct Shot {
     pub icon: bool,
 }
 
-/// Makes the pictures of a file, the quick one (its icon) first. The last
-/// argument turns true once nobody waits any more.
-pub type Extract =
-    Arc<dyn Fn(&Path, u32, &dyn Fn(Shot), &dyn Fn() -> bool) + Send + Sync + 'static>;
+/// What the helper is told, as JSON on its input.
+#[derive(Serialize, Deserialize)]
+struct Request {
+    path: PathBuf,
+    side: u32,
+    icon_only: bool,
+    /// The skip rules: indexed folders, and what the user excluded.
+    roots: Vec<PathBuf>,
+    names: Vec<String>,
+    folders: Vec<PathBuf>,
+}
+
+/// The command that starts a helper.
+pub type Launch = Arc<dyn Fn() -> std::io::Result<Command> + Send + Sync>;
 
 type Key = (PathBuf, u32, u64, Option<SystemTime>);
 
 pub struct Thumbnails {
-    extract: Extract,
+    launch: Launch,
     timeout: Duration,
-    running: Arc<AtomicUsize>,
+    /// Helpers that crashed since the last one that did not.
+    crashes: AtomicU32,
     /// Requests numbered up to this one are no longer wanted.
-    cancelled: Arc<AtomicU64>,
+    cancelled: AtomicU64,
     /// Oldest first.
     cache: Mutex<Vec<(Key, Shot)>>,
 }
 
 impl Default for Thumbnails {
     fn default() -> Self {
-        Self::new(Arc::new(shell), TIMEOUT)
+        let this_program = || {
+            let mut cmd = Command::new(std::env::current_exe()?);
+            cmd.arg(HELPER_ARG);
+            Ok(cmd)
+        };
+        Self::new(Arc::new(this_program), TIMEOUT)
     }
 }
 
-struct Running(Arc<AtomicUsize>);
+/// Kills the helper and collects it, however the request ends.
+struct Helper(Child);
 
-impl Drop for Running {
+impl Drop for Helper {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
 impl Thumbnails {
-    pub fn new(extract: Extract, timeout: Duration) -> Self {
+    pub fn new(launch: Launch, timeout: Duration) -> Self {
         Self {
-            extract,
+            launch,
             timeout,
-            running: Arc::default(),
-            cancelled: Arc::default(),
+            crashes: AtomicU32::new(0),
+            cancelled: AtomicU64::new(0),
             cache: Mutex::default(),
         }
     }
@@ -87,41 +119,69 @@ impl Thumbnails {
         *cache = Vec::new();
     }
 
+    /// Whether too many helpers crashed and only icons are asked for.
+    pub fn icons_only(&self) -> bool {
+        self.crashes.load(Ordering::Acquire) >= MAX_CRASHES
+    }
+
     /// A thumbnail of `path`, else its icon, else `None`. Blocks for at most
     /// the timeout. Requests are numbered upwards by the caller.
-    pub fn get(&self, path: &Path, side: u32, request: u64) -> Option<Shot> {
+    pub fn get(&self, path: &Path, side: u32, request: u64, rules: &Rules) -> Option<Shot> {
         let side = side.clamp(MIN_SIDE, MAX_SIDE);
         let meta = std::fs::metadata(path).ok()?;
         let key: Key = (path.to_path_buf(), side, meta.len(), meta.modified().ok());
         if let Some(shot) = self.cached(&key) {
             return Some(shot);
         }
-        let floor = self.cancelled.clone();
-        let unwanted = move || floor.load(Ordering::Acquire) >= request;
+        let unwanted = || self.cancelled.load(Ordering::Acquire) >= request;
         if unwanted() {
             return None;
         }
-        if self.running.fetch_add(1, Ordering::AcqRel) >= MAX_WORKERS {
-            self.running.fetch_sub(1, Ordering::AcqRel);
-            return None;
-        }
-        let guard = Running(self.running.clone());
-        let (tx, rx) = mpsc::channel::<Shot>();
-        let (extract, path, gone) = (self.extract.clone(), path.to_path_buf(), unwanted.clone());
+        let icon_only = self.icons_only();
+        let (names, folders) = rules.excludes.lists();
+        let message = serde_json::to_vec(&Request {
+            path: path.to_path_buf(),
+            side,
+            icon_only,
+            roots: rules.roots.clone(),
+            names,
+            folders,
+        })
+        .ok()?;
+
         let deadline = Instant::now() + self.timeout;
+        let mut command = (self.launch)().ok()?;
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let mut helper = Helper(command.spawn().ok()?);
+        let (mut input, output) = (helper.0.stdin.take()?, helper.0.stdout.take()?);
+        let (tx, rx) = mpsc::channel::<Shot>();
+        // Writing and reading both wait on the helper, so they have their own thread.
         std::thread::Builder::new()
             .name("lookout-thumb".into())
             .spawn(move || {
-                let _guard = guard;
-                let send = |shot| {
-                    let _ = tx.send(shot);
-                };
-                // Late work stops between the icon and the thumbnail.
-                let stop = || gone() || Instant::now() >= deadline;
-                extract(&path, side, &send, &stop);
+                if input.write_all(&message).is_err() {
+                    return;
+                }
+                drop(input);
+                let mut output = output;
+                while let Some(shot) = read_frame(&mut output) {
+                    if tx.send(shot).is_err() {
+                        break;
+                    }
+                }
             })
             .ok()?;
+
         let mut best: Option<Shot> = None;
+        let mut ended = false;
         loop {
             if unwanted() {
                 return None;
@@ -139,10 +199,29 @@ impl Thumbnails {
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    ended = true;
+                    break;
+                }
             }
         }
-        // An icon that stood in for a slow handler is asked for again next time.
+        let thumbnail = best.as_ref().is_some_and(|s| !s.icon);
+        // Only an exit of its own tells a crash: a late helper is just killed.
+        let crashed = !thumbnail
+            && ended
+            && loop {
+                match helper.0.try_wait() {
+                    Ok(Some(status)) => break !status.success(),
+                    Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL),
+                    _ => return best,
+                }
+            };
+        if crashed {
+            self.crashes.fetch_add(1, Ordering::AcqRel);
+        } else if !icon_only && (thumbnail || ended) {
+            self.crashes.store(0, Ordering::Release);
+        }
+        // An icon that stood in for a thumbnail is asked for again next time.
         if let Some(shot) = best.as_ref().filter(|s| !s.icon) {
             self.keep(key, shot.clone());
         }
@@ -172,67 +251,129 @@ impl Thumbnails {
     }
 }
 
-/// A 32-bit BMP with an alpha channel from bottom-up BGRA pixels as the shell
-/// gives them: colours multiplied by alpha, or no alpha at all.
-fn bmp(width: u32, height: u32, mut pixels: Vec<u8>) -> Vec<u8> {
-    if pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
-        for p in pixels.as_chunks_mut::<4>().0 {
-            p[3] = 255;
-        }
-    } else {
-        for p in pixels.as_chunks_mut::<4>().0 {
-            let a = u32::from(p[3]);
-            if a > 0 && a < 255 {
-                for c in &mut p[..3] {
-                    *c = (u32::from(*c) * 255 / a).min(255) as u8;
-                }
-            }
-        }
+/// One picture from the helper: 1 for an icon or 0 for a thumbnail, the PNG's
+/// length, the PNG. `None` at the end, or on anything else.
+fn read_frame(from: &mut impl Read) -> Option<Shot> {
+    let mut head = [0u8; 5];
+    from.read_exact(&mut head).ok()?;
+    let [kind, a, b, c, d] = head;
+    let len = u32::from_le_bytes([a, b, c, d]) as usize;
+    if kind > 1 || len == 0 || len > MAX_PICTURE {
+        return None;
     }
-    // File header, then a version 4 info header naming the channel masks.
-    const HEADERS: u32 = 14 + 108;
-    let size = pixels.len() as u32;
-    let mut out = Vec::with_capacity(HEADERS as usize + pixels.len());
-    out.extend_from_slice(b"BM");
-    for v in [HEADERS + size, 0, HEADERS, 108, width, height] {
-        out.extend_from_slice(&v.to_le_bytes());
-    }
-    // One plane, 32 bits a pixel.
-    out.extend_from_slice(&[1, 0, 32, 0]);
-    // BI_BITFIELDS, image size, resolution, colour counts, masks, "sRGB".
-    for v in [
-        3,
-        size,
-        2835,
-        2835,
-        0,
-        0,
-        0x00FF_0000,
-        0x0000_FF00,
-        0x0000_00FF,
-        0xFF00_0000,
-        0x7352_4742,
-    ] {
-        out.extend_from_slice(&u32::to_le_bytes(v));
-    }
-    out.resize(HEADERS as usize, 0);
-    out.extend_from_slice(&pixels);
-    out
+    let mut png = vec![0u8; len];
+    from.read_exact(&mut png).ok()?;
+    Some(Shot {
+        image: format!("data:image/png;base64,{}", base64(&png)),
+        icon: kind == 1,
+    })
 }
 
-fn data_url(width: u32, height: u32, pixels: Vec<u8>) -> String {
-    format!(
-        "data:image/bmp;base64,{}",
-        base64(&bmp(width, height, pixels))
-    )
+fn write_frame(to: &mut impl Write, icon: bool, png: &[u8]) -> std::io::Result<()> {
+    let len = u32::try_from(png.len()).unwrap_or(u32::MAX);
+    to.write_all(&[u8::from(icon)])?;
+    to.write_all(&len.to_le_bytes())?;
+    to.write_all(png)?;
+    to.flush()
+}
+
+/// The whole life of a helper: one request from the input, its pictures to the
+/// output. `main` returns right after.
+pub fn helper_main() {
+    serve(shell);
+}
+
+/// [`helper_main`] with the pictures made by `make` (tests give their own):
+/// `make(path, side, icon_only, send)` sends the icon first.
+pub fn serve(make: impl FnOnce(&Path, u32, bool, &dyn Fn(bool, Vec<u8>))) {
+    quiet_crashes();
+    let _ = std::thread::Builder::new().spawn(|| {
+        std::thread::sleep(WATCHDOG);
+        std::process::exit(0);
+    });
+    let mut message = Vec::new();
+    if std::io::stdin()
+        .lock()
+        .take(MAX_REQUEST)
+        .read_to_end(&mut message)
+        .is_err()
+    {
+        return;
+    }
+    let Ok(r) = serde_json::from_slice::<Request>(&message) else {
+        return;
+    };
+    // Checked again here, with the built-in rules always in force.
+    let rules = Rules {
+        excludes: Excludes::default()
+            .with_extra(r.names)
+            .with_folders(r.folders),
+        roots: r.roots,
+    };
+    if !preview::may_thumbnail(&r.path, &rules) {
+        return;
+    }
+    let side = r.side.clamp(MIN_SIDE, MAX_SIDE);
+    make(&r.path, side, r.icon_only, &|icon, png| {
+        let _ = write_frame(&mut std::io::stdout().lock(), icon, &png);
+    });
+}
+
+/// A crashing handler ends the helper without a Windows error box.
+#[cfg(windows)]
+fn quiet_crashes() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetErrorMode(mode: u32) -> u32;
+    }
+    // SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
+    // SAFETY: sets a flag of this process only.
+    unsafe {
+        SetErrorMode(0x0001 | 0x0002 | 0x8000);
+    }
 }
 
 #[cfg(not(windows))]
-fn shell(_: &Path, _: u32, _: &dyn Fn(Shot), _: &dyn Fn() -> bool) {}
+fn quiet_crashes() {}
 
-/// The shell's icon for the file, then the installed handler's thumbnail.
+#[cfg(not(windows))]
+pub fn shell(_: &Path, _: u32, _: bool, _: &dyn Fn(bool, Vec<u8>)) {}
+
+/// Top-down BGRA pixels.
 #[cfg(windows)]
-fn shell(path: &Path, side: u32, send: &dyn Fn(Shot), stop: &dyn Fn() -> bool) {
+struct Pixels {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+/// The shell's icon for the file, then the installed handler's thumbnail. The
+/// handlers run on a thread of their own (they expect a single-threaded
+/// apartment); PNG encoding stays on this one.
+#[cfg(windows)]
+pub fn shell(path: &Path, side: u32, icon_only: bool, send: &dyn Fn(bool, Vec<u8>)) {
+    use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
+
+    let (tx, rx) = mpsc::channel::<(bool, Pixels)>();
+    let path = path.to_path_buf();
+    let handlers = std::thread::Builder::new().spawn(move || pictures(&path, side, icon_only, &tx));
+    if handlers.is_err() {
+        return;
+    }
+    // SAFETY: plain initialisation of this thread; an error only means it has
+    // an apartment already.
+    unsafe {
+        let _ = RoInitialize(RO_INIT_MULTITHREADED);
+    }
+    for (icon, pixels) in rx {
+        if let Ok(png) = png(pixels) {
+            send(icon, png);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn pictures(path: &Path, side: u32, icon_only: bool, send: &mpsc::Sender<(bool, Pixels)>) {
     use windows::core::PCWSTR;
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     use windows::Win32::UI::Shell::{
@@ -256,13 +397,11 @@ fn shell(path: &Path, side: u32, send: &dyn Fn(Shot), stop: &dyn Fn() -> bool) {
         let item: windows::core::Result<IShellItemImageFactory> =
             unsafe { SHCreateItemFromParsingName(PCWSTR(text.as_ptr()), None) };
         if let Ok(factory) = item {
-            for (side, flags, icon) in [
+            let wanted = [
                 (ICON, SIIGBF_ICONONLY, true),
                 (side, SIIGBF_THUMBNAILONLY, false),
-            ] {
-                if stop() {
-                    break;
-                }
+            ];
+            for (side, flags, icon) in wanted.into_iter().take(if icon_only { 1 } else { 2 }) {
                 let size = windows::Win32::Foundation::SIZE {
                     cx: side as i32,
                     cy: side as i32,
@@ -271,11 +410,8 @@ fn shell(path: &Path, side: u32, send: &dyn Fn(Shot), stop: &dyn Fn() -> bool) {
                 let Ok(bitmap) = (unsafe { factory.GetImage(size, flags) }) else {
                     continue;
                 };
-                if let Some((w, h, px)) = pixels(bitmap) {
-                    send(Shot {
-                        image: data_url(w, h, px),
-                        icon,
-                    });
+                if let Some(picture) = pixels(bitmap) {
+                    let _ = send.send((icon, picture));
                 }
             }
         }
@@ -284,9 +420,9 @@ fn shell(path: &Path, side: u32, send: &dyn Fn(Shot), stop: &dyn Fn() -> bool) {
     unsafe { CoUninitialize() };
 }
 
-/// The bitmap's size and bottom-up BGRA pixels. Deletes the bitmap.
+/// The bitmap's pixels, top row first. Deletes the bitmap.
 #[cfg(windows)]
-fn pixels(bitmap: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<(u32, u32, Vec<u8>)> {
+fn pixels(bitmap: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<Pixels> {
     use windows::Win32::Graphics::Gdi::{
         DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
         BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
@@ -305,7 +441,8 @@ fn pixels(bitmap: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<(u32, u32, V
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                 biWidth: w,
-                biHeight: h,
+                // Negative: the top row first.
+                biHeight: -h,
                 biPlanes: 1,
                 biBitCount: 32,
                 biCompression: BI_RGB.0,
@@ -313,8 +450,8 @@ fn pixels(bitmap: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<(u32, u32, V
             },
             ..Default::default()
         };
-        let mut px = vec![0u8; w as usize * h as usize * 4];
-        // SAFETY: the screen context is released right after; `px` holds `h`
+        let mut data = vec![0u8; w as usize * h as usize * 4];
+        // SAFETY: the screen context is released right after; `data` holds `h`
         // rows of `w` 32-bit pixels, as the header asks.
         let rows = unsafe {
             let dc = GetDC(None);
@@ -323,14 +460,18 @@ fn pixels(bitmap: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<(u32, u32, V
                 bitmap,
                 0,
                 h as u32,
-                Some(px.as_mut_ptr().cast()),
+                Some(data.as_mut_ptr().cast()),
                 &mut header,
                 DIB_RGB_COLORS,
             );
             ReleaseDC(None, dc);
             rows
         };
-        (rows == h).then_some((w as u32, h as u32, px))
+        (rows == h).then_some(Pixels {
+            width: w as u32,
+            height: h as u32,
+            data,
+        })
     };
     let out = read();
     // SAFETY: the bitmap is ours and no longer used.
@@ -340,119 +481,83 @@ fn pixels(bitmap: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<(u32, u32, V
     out
 }
 
+/// A bitmap without any alpha is opaque, not invisible.
+#[cfg(windows)]
+fn opaque_if_no_alpha(data: &mut [u8]) {
+    if data.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
+        for p in data.as_chunks_mut::<4>().0 {
+            p[3] = 255;
+        }
+    }
+}
+
+/// PNG through the Windows encoder, in memory. The shell's colours come
+/// multiplied by alpha.
+#[cfg(windows)]
+fn png(mut picture: Pixels) -> windows::core::Result<Vec<u8>> {
+    use windows::Graphics::Imaging::{BitmapAlphaMode, BitmapEncoder, BitmapPixelFormat};
+    use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
+
+    opaque_if_no_alpha(&mut picture.data);
+    let stream = InMemoryRandomAccessStream::new()?;
+    let encoder = BitmapEncoder::CreateAsync(BitmapEncoder::PngEncoderId()?, &stream)?.join()?;
+    encoder.SetPixelData(
+        BitmapPixelFormat::Bgra8,
+        BitmapAlphaMode::Premultiplied,
+        picture.width,
+        picture.height,
+        96.0,
+        96.0,
+        &picture.data,
+    )?;
+    encoder.FlushAsync()?.join()?;
+    let len = u32::try_from(stream.Size()?).unwrap_or(u32::MAX);
+    let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0)?)?;
+    reader.LoadAsync(len)?.join()?;
+    let mut out = vec![0u8; len as usize];
+    reader.ReadBytes(&mut out)?;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn shot(name: &str, icon: bool) -> Shot {
-        Shot {
-            image: name.into(),
-            icon,
+    #[test]
+    fn frames_carry_pictures_and_anything_else_ends_the_reading() {
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, true, &[1, 2, 3]).unwrap();
+        write_frame(&mut bytes, false, &[4]).unwrap();
+        let mut from = bytes.as_slice();
+        let icon = read_frame(&mut from).unwrap();
+        assert!(icon.icon && icon.image == "data:image/png;base64,AQID");
+        assert!(!read_frame(&mut from).unwrap().icon);
+        assert_eq!(read_frame(&mut from), None);
+        for bad in [
+            &[7, 1, 0, 0, 0, 9][..],
+            &[0, 0, 0, 0, 0],
+            &[0, 255, 255, 255, 255],
+            &[0, 9, 0, 0, 0, 1],
+        ] {
+            assert_eq!(read_frame(&mut { bad }), None, "{bad:?}");
         }
-    }
-
-    fn file() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("a.docx");
-        std::fs::write(&path, "x").unwrap();
-        (dir, path)
-    }
-
-    /// Sends the icon, then waits `delay` before the thumbnail.
-    fn slow(delay: Duration, calls: Arc<AtomicUsize>) -> Extract {
-        Arc::new(move |_, _, send, _| {
-            calls.fetch_add(1, Ordering::SeqCst);
-            send(shot("icon", true));
-            std::thread::sleep(delay);
-            send(shot("thumb", false));
-        })
-    }
-
-    #[test]
-    fn a_thumbnail_is_returned_and_kept_until_cleared() {
-        let (_d, path) = file();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let t = Thumbnails::new(slow(Duration::ZERO, calls.clone()), TIMEOUT);
-        assert_eq!(t.get(&path, 512, 1), Some(shot("thumb", false)));
-        assert_eq!(t.get(&path, 512, 2), Some(shot("thumb", false)));
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "the second was cached");
-        t.clear();
-        t.get(&path, 512, 3);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn a_handler_that_hangs_leaves_the_icon_after_the_timeout() {
-        let (_d, path) = file();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let t = Thumbnails::new(
-            slow(Duration::from_secs(5), calls.clone()),
-            Duration::from_millis(100),
-        );
-        let started = Instant::now();
-        assert_eq!(t.get(&path, 512, 1), Some(shot("icon", true)));
-        assert!(started.elapsed() < Duration::from_secs(3));
-        // Nothing but the icon came, so it is not cached; a hung worker counts
-        // until there are too many, and then no more are started.
-        for n in 2..=3 {
-            assert!(t.get(&path, 512, n).is_some());
-        }
-        assert_eq!(t.get(&path, 512, 4), None);
-        assert_eq!(calls.load(Ordering::SeqCst), MAX_WORKERS);
-    }
-
-    #[test]
-    fn a_handler_that_gives_nothing_or_panics_gives_nothing() {
-        let (_d, path) = file();
-        let t = Thumbnails::new(Arc::new(|_, _, _, _| {}), TIMEOUT);
-        assert_eq!(t.get(&path, 512, 1), None);
-        let t = Thumbnails::new(Arc::new(|_, _, _, _| panic!("bad handler")), TIMEOUT);
-        assert_eq!(t.get(&path, 512, 1), None);
-        assert_eq!(t.get(&path.with_extension("gone"), 512, 2), None);
-    }
-
-    #[test]
-    fn cancelling_stops_the_wait_and_old_requests_do_not_start() {
-        let (_d, path) = file();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let t = Arc::new(Thumbnails::new(
-            slow(Duration::from_secs(5), calls.clone()),
-            Duration::from_secs(30),
-        ));
-        let waiting = {
-            let (t, path) = (t.clone(), path.clone());
-            std::thread::spawn(move || t.get(&path, 512, 7))
-        };
-        while calls.load(Ordering::SeqCst) == 0 {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let started = Instant::now();
-        t.cancel(7);
-        assert_eq!(waiting.join().unwrap(), None);
-        assert!(started.elapsed() < Duration::from_secs(3));
-        assert_eq!(t.get(&path, 512, 6), None);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn shell_pixels_become_a_bmp_with_straight_alpha() {
-        // One half-transparent premultiplied pixel, one opaque.
-        let out = bmp(2, 1, vec![64, 0, 0, 128, 1, 2, 3, 255]);
-        assert_eq!(&out[..2], b"BM");
-        assert_eq!(out.len(), 122 + 8);
-        assert_eq!(&out[10..14], &122u32.to_le_bytes());
-        assert_eq!(&out[122..], &[127, 0, 0, 128, 1, 2, 3, 255]);
-        // No alpha channel at all: opaque, not invisible.
-        let out = bmp(1, 1, vec![9, 8, 7, 0]);
-        assert_eq!(&out[122..], &[9, 8, 7, 255]);
     }
 
     #[cfg(windows)]
     #[test]
-    fn windows_gives_a_picture_of_a_real_file() {
-        let (_d, path) = file();
-        let t = Thumbnails::new(Arc::new(shell), Duration::from_secs(30));
-        let got = t.get(&path, 256, 1).expect("at least the icon");
-        assert!(got.image.starts_with("data:image/bmp;base64,Qk"));
+    fn shell_pixels_become_a_png() {
+        let mut data = vec![9, 8, 7, 0];
+        opaque_if_no_alpha(&mut data);
+        assert_eq!(data, [9, 8, 7, 255]);
+        let mut data = vec![9, 8, 7, 0, 1, 1, 1, 128];
+        opaque_if_no_alpha(&mut data);
+        assert_eq!(data[3], 0, "some alpha: left as it is");
+        let out = png(Pixels {
+            width: 2,
+            height: 1,
+            data,
+        })
+        .unwrap();
+        assert_eq!(&out[..8], b"\x89PNG\r\n\x1a\n");
     }
 }

@@ -164,7 +164,7 @@
 {#if source}
   <aside class="panel" class:embedded aria-label="File preview" aria-busy={loading}>
     {@render body(false)}
-    {#if data}<p class="hintline"><kbd>Space</kbd> larger preview</p>{/if}
+    {#if data}<p class="hintline">Click here, then <kbd>Space</kbd> for a larger preview</p>{/if}
   </aside>
   {#if pv.overlay}
     <div class="scrim" role="presentation" onclick={() => (pv.overlay = false)}>

@@ -536,6 +536,14 @@ impl NameIndex {
         !found.is_empty()
     }
 
+    /// Whether some file's size is not known, as in a snapshot made before
+    /// sizes were kept.
+    pub fn has_unsized_files(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.flags & (FLAG_DIR | FLAG_DEAD) == 0 && e.size == SIZE_UNKNOWN)
+    }
+
     /// The most common file extensions, most files first.
     pub fn top_extensions(&self, limit: usize) -> Vec<String> {
         let mut counts: HashMap<&[u8], usize> = HashMap::new();
@@ -1677,6 +1685,7 @@ mod tests {
         let idx = NameIndex::import(&mut bytes.as_slice()).unwrap();
         assert_eq!(typed(&idx, "ext:pdf"), ["a.pdf"]);
         assert!(typed(&idx, "size:>=0kb").is_empty(), "size unknown");
+        assert!(idx.has_unsized_files());
     }
 
     #[test]

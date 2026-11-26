@@ -16,6 +16,8 @@ use crate::sources::{QueryContext, Source, Tier};
 /// is scaled down by this factor.
 const CONTENT_MATCH_SCALE: f32 = 0.6;
 pub const CONTENT_LIMIT: usize = 30;
+/// How many times more hits are asked for when some are dropped afterwards.
+const WIDER: usize = 5;
 /// Only this many top results get a snippet (each one re-reads its file).
 const SNIPPET_RESULTS: usize = 10;
 /// Snippet length in characters, and the lead-in before the first match.
@@ -106,23 +108,33 @@ impl Source for ContentSource {
         if q.tokens.is_empty() || !matches!(q.kind, None | Some(Kind::File | Kind::Screenshot)) {
             return;
         }
+        let ops = (!q.ops.is_empty()).then_some(&q.ops);
+        let inside = self.store.filters_inside();
+        // What the index cannot filter is dropped afterwards, from more hits.
+        let after = ops.filter(|o| !inside || !o.names.is_empty());
         let query = ContentQuery {
             text: &q.text,
             images_only: q.kind == Some(Kind::Screenshot),
             range: q.time.map(|t| (t.from, t.to)),
-            // Operators drop some hits afterwards, so more are asked for.
-            limit: if q.ops.is_empty() {
-                CONTENT_LIMIT
+            limit: if after.is_some() {
+                CONTENT_LIMIT * WIDER
             } else {
-                CONTENT_LIMIT * 5
+                CONTENT_LIMIT
             },
+            filter: ops,
         };
         let Ok(mut hits) = self.store.search(&query) else {
             return;
         };
-        if !q.ops.is_empty() {
+        if let Some(ops) = after {
             hits.retain(|h| {
-                !ctx.is_cancelled() && q.ops.accepts_path(Path::new(&h.path), &self.roots)
+                let path = Path::new(&h.path);
+                !ctx.is_cancelled()
+                    && if inside {
+                        ops.names_match(path)
+                    } else {
+                        ops.accepts_path(path, &self.roots)
+                    }
             });
             hits.truncate(CONTENT_LIMIT);
         }
@@ -282,6 +294,7 @@ mod tests {
                 path: p.to_string_lossy().into_owned(),
                 mtime: 1,
                 kind: DocKind::Text,
+                size: 0,
                 text: "the zebrafinding report".into(),
             })
             .unwrap();

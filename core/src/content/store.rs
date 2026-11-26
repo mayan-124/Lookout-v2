@@ -6,11 +6,13 @@
 //! it is dropped after each commit so an idle index holds no writer heap.
 
 use std::ops::Bound;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError, RwLock};
 
 use tantivy::collector::TopDocs;
-use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, RangeQuery, RegexQuery, TermQuery};
+use tantivy::query::{
+    AllQuery, BooleanQuery, ConstScoreQuery, Occur, Query, RangeQuery, RegexQuery, TermQuery,
+};
 use tantivy::schema::{
     Field, IndexRecordOption, OwnedValue, Schema, TantivyDocument, Value, FAST, INDEXED, STORED,
     STRING, TEXT,
@@ -19,6 +21,7 @@ use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
 use super::crypt_dir::EncryptedDirectory;
 use crate::crypto::Key;
+use crate::operators::{self, Operators};
 
 /// Bump when OCR output changes enough that indexed images should be read again.
 const OCR_VERSION: &str = "3";
@@ -59,6 +62,8 @@ pub struct ContentDoc {
     pub path: String,
     pub mtime: u64,
     pub kind: DocKind,
+    /// File size in bytes, for `size:`.
+    pub size: u64,
     /// Already masked (see `secrets`).
     pub text: String,
 }
@@ -79,6 +84,9 @@ pub struct ContentQuery<'a> {
     /// `[from, to)` in unix seconds.
     pub range: Option<(u64, u64)>,
     pub limit: usize,
+    /// `ext:`, `size:` and `in:`, applied inside the search when
+    /// [`ContentStore::filters_inside`]; `name:` is left to the caller.
+    pub filter: Option<&'a Operators>,
 }
 
 #[derive(Clone, Copy)]
@@ -89,6 +97,19 @@ struct Fields {
     preview: Field,
     kind: Field,
     mtime: Field,
+    /// Absent in an index made before the operators.
+    filters: Option<FilterFields>,
+}
+
+#[derive(Clone, Copy)]
+struct FilterFields {
+    /// Every ending of the file name after a dot.
+    ext: Field,
+    /// The folder from each of its parts on, below the indexed folder.
+    under: Field,
+    /// The folder's whole path.
+    dir: Field,
+    size: Field,
 }
 
 struct Open {
@@ -106,19 +127,82 @@ pub struct ContentStore {
     /// open, so a second process cannot open the same index. The system drops
     /// it if the process dies.
     owner: Mutex<Option<std::fs::File>>,
+    /// The indexed folders, for `in:`.
+    roots: RwLock<Vec<PathBuf>>,
 }
 
-fn schema() -> (Schema, Fields) {
+/// The current schema (`filters`), or the one from before the operators.
+fn schema(filters: bool) -> (Schema, Fields) {
     let mut b = Schema::builder();
-    let f = Fields {
+    let mut f = Fields {
         key: b.add_text_field("key", STRING),
         path: b.add_text_field("path", STORED),
         body: b.add_text_field("body", TEXT),
         preview: b.add_text_field("preview", STORED),
         kind: b.add_text_field("kind", STRING | STORED),
         mtime: b.add_u64_field("mtime", FAST | INDEXED | STORED),
+        filters: None,
     };
+    // Added last, so the fields above are the same in both.
+    f.filters = filters.then(|| FilterFields {
+        ext: b.add_text_field("ext", STRING),
+        under: b.add_text_field("under", STRING),
+        dir: b.add_text_field("dir", STRING),
+        size: b.add_u64_field("size", FAST | INDEXED),
+    });
     (b.build(), f)
+}
+
+type Clause = (Occur, Box<dyn Query>);
+
+/// The clauses for `ext:`, `size:` and `in:`; they add nothing to the score.
+fn filter_clauses(f: FilterFields, ops: &Operators) -> Result<Vec<Clause>, StoreError> {
+    let term = |field: Field, text: &str| -> Box<dyn Query> {
+        let term = Term::from_field_text(field, text);
+        Box::new(TermQuery::new(term, IndexRecordOption::Basic))
+    };
+    let mut wanted: Vec<Box<dyn Query>> = Vec::new();
+    if !ops.exts.is_empty() {
+        wanted.push(Box::new(BooleanQuery::new(
+            ops.exts
+                .iter()
+                .map(|e| (Occur::Should, term(f.ext, e)))
+                .collect(),
+        )));
+    }
+    for folder in &ops.folders {
+        let field = if operators::is_absolute(folder) {
+            f.dir
+        } else {
+            f.under
+        };
+        let pattern = format!("{}.*", literal(folder));
+        wanted.push(Box::new(RegexQuery::from_pattern(&pattern, field)?));
+    }
+    if let Some((lo, hi)) = ops.size {
+        let bound = |v: u32| Bound::Included(Term::from_field_u64(f.size, u64::from(v)));
+        wanted.push(Box::new(RangeQuery::new(bound(lo), bound(hi))));
+    }
+    Ok(wanted
+        .into_iter()
+        .map(|q| {
+            let free: Box<dyn Query> = Box::new(ConstScoreQuery::new(q, 0.0));
+            (Occur::Must, free)
+        })
+        .collect())
+}
+
+/// `text` as a pattern that matches it only. Just the operators of the pattern
+/// language are escaped: tantivy's parser refuses needless escapes.
+fn literal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if "\\.+*?()|[]{}^$".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Case-insensitive key for a Windows path.
@@ -133,17 +217,28 @@ impl ContentStore {
     pub fn open(dir: &Path, key: &Key) -> Result<Self, StoreError> {
         std::fs::create_dir_all(dir)?;
         let owner = Self::take_owner_lock(dir)?;
-        let (schema, fields) = schema();
-        let attempt = |schema: Schema| -> Result<Open, StoreError> {
-            let d = EncryptedDirectory::open(dir, key.clone())?;
-            Self::finish(Index::open_or_create(d, schema)?)
+        let directory = || EncryptedDirectory::open(dir, key.clone());
+        // An index made before the operators keeps working as it is: reading
+        // every file again is not worth it unasked.
+        let existing = || -> Option<(Open, Fields)> {
+            let index = Index::open(directory().ok()?).ok()?;
+            let found = index.schema();
+            let fields = [true, false]
+                .into_iter()
+                .map(schema)
+                .find(|(s, _)| *s == found)?
+                .1;
+            Some((Self::finish(index).ok()?, fields))
         };
-        let open = match attempt(schema.clone()) {
-            Ok(o) => o,
-            Err(_) => {
+        let (open, fields) = match existing() {
+            Some(found) => found,
+            // Nothing there, or nothing readable: a new, empty index.
+            None => {
                 std::fs::remove_dir_all(dir)?;
                 std::fs::create_dir_all(dir)?;
-                attempt(schema)?
+                let (schema, fields) = schema(true);
+                let index = Index::open_or_create(directory()?, schema)?;
+                (Self::finish(index)?, fields)
             }
         };
         let store = Self {
@@ -152,6 +247,7 @@ impl ContentStore {
             fields,
             dir: Some(dir.to_owned()),
             owner: Mutex::new(Some(owner)),
+            roots: RwLock::default(),
         };
         store.forget_old_ocr(dir);
         Ok(store)
@@ -180,7 +276,7 @@ impl ContentStore {
     }
 
     pub fn open_in_ram() -> Result<Self, StoreError> {
-        let (schema, fields) = schema();
+        let (schema, fields) = schema(true);
         let open = Self::finish(Index::create_in_ram(schema))?;
         Ok(Self {
             open: RwLock::new(Some(open)),
@@ -188,7 +284,18 @@ impl ContentStore {
             fields,
             dir: None,
             owner: Mutex::new(None),
+            roots: RwLock::default(),
         })
+    }
+
+    /// Whether this index filters `ext:`, `size:` and `in:` itself.
+    pub fn filters_inside(&self) -> bool {
+        self.fields.filters.is_some()
+    }
+
+    /// The indexed folders, before any file is added.
+    pub fn set_roots(&self, roots: Vec<PathBuf>) {
+        *self.roots.write().unwrap_or_else(PoisonError::into_inner) = roots;
     }
 
     fn take_owner_lock(dir: &Path) -> Result<std::fs::File, StoreError> {
@@ -261,6 +368,21 @@ impl ContentStore {
         d.add_text(f.preview, super::extract::preview(&doc.text, 240));
         d.add_text(f.kind, doc.kind.as_str());
         d.add_u64(f.mtime, doc.mtime);
+        if let Some(x) = f.filters {
+            let path = Path::new(&doc.path);
+            let name = operators::folded_name(path);
+            for (dot, _) in name.match_indices('.') {
+                d.add_text(x.ext, &name[dot + 1..]);
+            }
+            let roots = self.roots.read().unwrap_or_else(PoisonError::into_inner);
+            let (under, full) = operators::folder_text(path, &roots);
+            let parts = under.match_indices('\\').map(|(i, _)| i + 1);
+            for from in std::iter::once(0).chain(parts) {
+                d.add_text(x.under, &under[from..]);
+            }
+            d.add_text(x.dir, &full);
+            d.add_u64(x.size, u64::from(operators::size_code(doc.size)));
+        }
         self.with_writer(|w| {
             w.delete_term(Term::from_field_text(f.key, &key));
             w.add_document(d)?;
@@ -484,6 +606,9 @@ impl ContentStore {
                 )),
             ));
         }
+        if let (Some(x), Some(ops)) = (f.filters, q.filter) {
+            clauses.extend(filter_clauses(x, ops)?);
+        }
         let query = BooleanQuery::new(clauses);
         let searcher = o.reader.searcher();
         let top = searcher.search(&query, &TopDocs::with_limit(q.limit).order_by_score())?;
@@ -520,11 +645,128 @@ impl ContentStore {
 mod tests {
     use super::*;
 
+    fn filtered(store: &ContentStore, text: &str, typed: &str) -> Vec<String> {
+        let ops = operators::parse(typed).ops;
+        let mut found: Vec<String> = store
+            .search(&ContentQuery {
+                text,
+                limit: 30,
+                filter: Some(&ops),
+                ..ContentQuery::default()
+            })
+            .unwrap()
+            .into_iter()
+            .map(|h| h.path)
+            .collect();
+        found.sort_unstable();
+        found
+    }
+
+    #[test]
+    fn operators_are_applied_inside_the_search() {
+        let s = ContentStore::open_in_ram().unwrap();
+        let root = r"C:\Users\u\Documents";
+        s.set_roots(vec![PathBuf::from(root)]);
+        // Many better matches than the one that passes the filters.
+        for n in 0..100 {
+            let path = format!(r"{root}\n{n}.txt");
+            s.upsert(&doc(&path, "budget budget budget", DocKind::Text, 1))
+                .unwrap();
+        }
+        let odd = r"R&D - Old #1 ~x (a) [b] {c} +d^e$";
+        let pdf = format!(r"{root}\Work\{odd}\Reports\Q1 plan.PDF");
+        let mut one = doc(
+            &pdf,
+            "one budget among very many other words",
+            DocKind::Text,
+            1,
+        );
+        one.size = 5 * 1024 * 1024;
+        s.upsert(&one).unwrap();
+        s.commit().unwrap();
+        assert!(s.filters_inside());
+        for typed in [
+            "ext:pdf",
+            "ext:doc,pdf",
+            "size:>1mb",
+            "size:1mb..10mb",
+            "in:work",
+            "in:documents/work",
+            "in:reports",
+            "in:rep",
+            r"in:c:\users\u\documents\work",
+            r#"in:"r&d - old #1 ~x (a) [b] {c} +d^e$""#,
+            "ext:pdf in:work size:>1mb",
+        ] {
+            assert_eq!(filtered(&s, "budget", typed), [pdf.as_str()], "{typed}");
+            let ops = operators::parse(typed).ops;
+            // The same answer as the path check used elsewhere.
+            if ops.size.is_none() {
+                assert!(ops.accepts_path(Path::new(&pdf), &[root.into()]), "{typed}");
+            }
+        }
+        for typed in [
+            "ext:df",
+            "size:>10mb",
+            "in:users",
+            "in:ports",
+            "in:q1",
+            "in:work/ports",
+        ] {
+            assert!(filtered(&s, "budget", typed).is_empty(), "{typed}");
+        }
+        assert_eq!(filtered(&s, "budget", "ext:txt").len(), 30);
+        // Filters choose the files; they do not change their score.
+        let plain = s.search(&q("among")).unwrap();
+        let ops = operators::parse("ext:pdf size:>1mb in:work").ops;
+        let narrowed = s
+            .search(&ContentQuery {
+                filter: Some(&ops),
+                ..q("among")
+            })
+            .unwrap();
+        assert!((plain[0].score - narrowed[0].score).abs() < 1e-4);
+    }
+
+    #[test]
+    fn an_index_from_before_the_operators_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("content");
+        let key = Key::generate().unwrap();
+        std::fs::create_dir_all(&folder).unwrap();
+        {
+            let (old, f) = schema(false);
+            let d = EncryptedDirectory::open(&folder, key.clone()).unwrap();
+            let index = Index::open_or_create(d, old).unwrap();
+            let mut w: IndexWriter = index.writer_with_num_threads(1, WRITER_HEAP).unwrap();
+            let mut d = TantivyDocument::default();
+            d.add_text(f.key, r"c:\a.txt");
+            d.add_text(f.path, r"C:\a.txt");
+            d.add_text(f.body, "budget");
+            d.add_text(f.kind, "text");
+            d.add_u64(f.mtime, 7);
+            w.add_document(d).unwrap();
+            w.commit().unwrap();
+        }
+        let s = ContentStore::open(&folder, &key).unwrap();
+        assert!(!s.filters_inside());
+        assert_eq!(s.doc_count(), 1);
+        s.upsert(&doc(r"C:\b.txt", "budget", DocKind::Text, 8))
+            .unwrap();
+        s.commit().unwrap();
+        // The filter is ignored here; the source checks the paths itself.
+        assert_eq!(filtered(&s, "budget", "ext:pdf").len(), 2);
+        drop(s);
+        let fresh = ContentStore::open(&dir.path().join("new"), &key).unwrap();
+        assert!(fresh.filters_inside());
+    }
+
     fn doc(path: &str, text: &str, kind: DocKind, mtime: u64) -> ContentDoc {
         ContentDoc {
             path: path.into(),
             mtime,
             kind,
+            size: text.len() as u64,
             text: text.into(),
         }
     }

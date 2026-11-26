@@ -93,7 +93,14 @@ impl Source for SemanticSource {
             std::thread::sleep(Duration::from_millis(10));
         }
         let cancelled = || ctx.is_cancelled();
-        let Ok(hits) = self.client.search(&q.text, LIMIT * 2, &cancelled) else {
+        // The helper cannot filter, so with operators it is asked for five
+        // times as many (100, the most it gives).
+        let wanted = if q.ops.is_empty() {
+            LIMIT * 2
+        } else {
+            LIMIT * 10
+        };
+        let Ok(hits) = self.client.search(&q.text, wanted, &cancelled) else {
             return;
         };
         if ctx.is_cancelled() {

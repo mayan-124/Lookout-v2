@@ -864,6 +864,7 @@ impl Worker {
             path: c.path.to_string_lossy().into_owned(),
             mtime: c.mtime,
             kind,
+            size: c.len,
             text: masked,
         };
         let write_t = Instant::now();

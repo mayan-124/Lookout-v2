@@ -220,6 +220,14 @@ fn file_name(rng: &mut Rng) -> String {
     }
 }
 
+/// A made-up file size from any number: from 1 KiB to 64 MiB, each doubling as
+/// likely as the next.
+pub fn file_bytes(n: u64) -> u64 {
+    let r = Rng(n).next();
+    let step = 1024u64 << (r % 16);
+    step + (r >> 8) % step
+}
+
 /// Fills `index` with `files` synthetic files spread over a random directory
 /// tree (about one directory per 40 files, at most 6 levels deep) under a
 /// fictitious root. Output depends only on `files` and `seed`.
@@ -244,13 +252,15 @@ pub fn populate(
         dirs.push((id, depth + 1));
     }
     let three_years = 3 * 365 * 86_400;
-    for _ in 0..files {
+    for n in 0..files {
         let (dir, _) = dirs[rng.below(dirs.len())];
         let name = file_name(&mut rng);
-        index.add_file(
+        index.add_sized_file(
             dir,
             &name,
             now.saturating_sub(rng.below(three_years) as u32),
+            // Its own sequence, so names and dates stay as they were.
+            file_bytes(seed ^ n as u64),
         )?;
     }
     Ok(())

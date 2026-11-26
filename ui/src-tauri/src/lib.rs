@@ -1181,7 +1181,7 @@ async fn preview_thumbnail(
     let thumbnails = thumbnails.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         lookout_core::preview::may_thumbnail(&path, &rules)
-            .then(|| thumbnails.get(&path, size, request))
+            .then(|| thumbnails.get(&path, size, request, &rules))
             .flatten()
     })
     .await

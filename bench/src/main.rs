@@ -8,6 +8,7 @@ mod content;
 mod crawl;
 mod fixture;
 mod memory;
+mod operators;
 mod query;
 
 use std::path::PathBuf;
@@ -35,6 +36,7 @@ fn run() -> Result<bool, String> {
         Some("memory") => return memory::run(args),
         Some("query") => return query::run(args),
         Some("content") => return content::run(args),
+        Some("operators") => return operators::run(args),
         Some("crawl") => return crawl::run_crawl(args),
         Some("locks") => return crawl::run_locks(args),
         Some("rescan-memory") => return crawl::run_rescan_memory(args),
@@ -43,6 +45,7 @@ fn run() -> Result<bool, String> {
             return Err("usage: bench latency [--exe PATH] [--cycles N]\n       \
                         bench memory [--exe PATH] [--wait SECS] [--runs N] [--pid PID] [--app-arg ARG]...\n       \
                         bench query [--files N] [--reps N] [--seed N] [--threads N]\n       \
+                        bench operators [--files N] [--reps N]\n       \
                         bench crawl [--files N] [--duty D]...\n       \
                         bench locks [--files N]\n       \
                         bench rescan-memory [--files N]\n       \
