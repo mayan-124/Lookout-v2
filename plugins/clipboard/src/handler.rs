@@ -325,6 +325,15 @@ impl Handler for Clipboard {
         match method {
             "initialize" => self.initialize(&params),
             "query" => Ok(self.query(&params)),
+            // A masked clip is never handed out for a drag.
+            "drag_data" => {
+                let clip = self.clip_of(&params)?;
+                Ok(if clip.masked {
+                    json!({"masked": true})
+                } else {
+                    json!({"text": clip.text})
+                })
+            }
             "get_actions" => {
                 let id = params["items"][0]["id"].as_str().unwrap_or("");
                 if id.ends_with(":ignore_next") {
@@ -548,6 +557,21 @@ mod tests {
         let written = io.0.lock().unwrap().clone();
         assert_eq!(written.len(), 1);
         assert!(written[0].contains("[masked]") && !written[0].contains("ghp_abc"));
+    }
+
+    #[test]
+    fn a_clip_is_dragged_as_its_text_and_a_masked_one_not_at_all() {
+        let (mut c, io) = setup();
+        let items = c.handle("query", json!({"rest": ""})).unwrap();
+        let drag = |c: &mut Clipboard, n: usize| {
+            c.handle("drag_data", json!({"params": items["items"][n]["params"]}))
+        };
+        assert_eq!(drag(&mut c, 0).unwrap(), json!({"masked": true}));
+        assert_eq!(drag(&mut c, 1).unwrap(), json!({"text": "first clip"}));
+        let gone = json!({"params": {"clip_id": 999}});
+        assert!(c.handle("drag_data", gone).is_err());
+        // Dragging leaves the clipboard alone.
+        assert!(io.0.lock().unwrap().is_empty());
     }
 
     #[test]

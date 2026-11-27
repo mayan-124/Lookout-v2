@@ -20,10 +20,26 @@ const rule = (selector) => {
 test("Recent shows its empty text below three rows, else the newest six", () => {
   const rows = (n) => Array.from({ length: n }, (_, ts) => ({ ts }));
   assert.equal(MIN_RECENT, 3);
-  for (const n of [0, 1, 2]) assert.deepEqual(recentRows(rows(n)), []);
-  assert.deepEqual(recentRows(rows(8)).map((r) => r.ts), [7, 6, 5, 4, 3, 2]);
+  for (const n of [0, 1, 2]) assert.deepEqual(recentRows(rows(n), 10_000), []);
+  assert.deepEqual(recentRows(rows(8), 10_000).map((r) => r.ts), [7, 6, 5, 4, 3, 2]);
   // The files come from the backend, which drops junk and skipped places.
   assert.ok(app.includes('invoke<Item[]>("recent_files")') && !app.includes('"past week" })'));
+});
+
+test("clips from the last ten minutes lead Recent, then take their turn by time", () => {
+  const now = 10_000;
+  const rows = [
+    { ts: now - 5, clip: false },
+    { ts: now - 599, clip: true },
+    { ts: now - 60, clip: true },
+    { ts: now - 600, clip: true },
+    { ts: now - 700, clip: false },
+  ];
+  assert.deepEqual(recentRows(rows, now).map((r) => now - r.ts), [60, 599, 5, 600, 700]);
+  assert.deepEqual(recentRows(rows, now + 600).map((r) => now - r.ts), [5, 60, 599, 600, 700]);
+  // One just-copied clip is shown even when there is nothing else.
+  assert.equal(recentRows([rows[2]], now).length, 1);
+  assert.ok(app.includes('"Clip · just copied"') || app.includes('"Clip · just copied"'));
 });
 
 test("the recent searches take over the Recent card without changing its height", () => {

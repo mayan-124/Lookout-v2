@@ -25,7 +25,7 @@ use lookout_core::lookout::{Lookout, RebuildProgress, StartOptions, Status};
 use lookout_core::pause::PauseState;
 use lookout_core::placement::{self, Rect, Screen};
 use lookout_core::settings::{monitor_key, Appearance, Settings, DEFAULT_HOTKEY};
-use lookout_core::share::Refusal;
+use lookout_core::share::{Payload, Refusal};
 use lookout_core::storage::{DataPaths, Storage};
 use lookout_core::thumbnail::{Shot, Thumbnails};
 use lookout_core::uimode::{Mode, Show, Ui, UiState};
@@ -546,21 +546,21 @@ fn set_remember_last_search(
     Ok(privacy_of(&services, &shared))
 }
 
-/// Why a result cannot be dragged, if the user should be told: only for files
-/// that are online only.
+/// Why a result cannot be dragged, if the user should be told: for files that
+/// are online only and for clips with masked secrets.
 #[tauri::command]
 async fn drag_check(id: String, services: State<'_, Services>) -> Result<Option<String>, String> {
     let lookout = services_of(&services)?;
-    tauri::async_runtime::spawn_blocking(move || match lookout.shareable_path(&id) {
-        Err(Refusal::OnlineOnly) => Some(Refusal::OnlineOnly.to_string()),
+    tauri::async_runtime::spawn_blocking(move || match lookout.drag_payload(&id) {
+        Err(why @ (Refusal::OnlineOnly | Refusal::MaskedClip)) => Some(why.to_string()),
         _ => None,
     })
     .await
     .map_err(|e| e.to_string())
 }
 
-/// Drags the file behind a result into other programs (copy or link). The
-/// webview names only the result; the path and the rules are applied here.
+/// Drags the file or clip behind a result into other programs (copy or link).
+/// The webview names only the result; its content and the rules are applied here.
 #[tauri::command]
 async fn start_drag(
     id: String,
@@ -568,7 +568,7 @@ async fn start_drag(
     services: State<'_, Services>,
 ) -> Result<(), String> {
     let lookout = services_of(&services)?;
-    let path = tauri::async_runtime::spawn_blocking(move || lookout.shareable_path(&id))
+    let payload = tauri::async_runtime::spawn_blocking(move || lookout.drag_payload(&id))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
@@ -576,7 +576,7 @@ async fn start_drag(
     let handle = app.clone();
     // The drag loop belongs to the thread that owns the window.
     app.run_on_main_thread(move || {
-        let _ = tx.send(drag_out(&handle, &path));
+        let _ = tx.send(drag_out(&handle, &payload));
     })
     .map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || rx.recv())
@@ -586,24 +586,23 @@ async fn start_drag(
 }
 
 #[cfg(windows)]
-fn drag_out(app: &AppHandle, path: &std::path::Path) -> Result<(), String> {
+fn drag_out(app: &AppHandle, payload: &Payload) -> Result<(), String> {
     let window = bar_window(app).map_err(|e| e.to_string())?;
     let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
     let shared = app.state::<Shared>();
     if shared.dragging.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
-    let result = lookout_core::share::drag(path, hwnd);
+    let result = lookout_core::share::drag(payload, hwnd);
     shared.dragging.store(false, Ordering::Release);
-    // The blur that was held back: the drop gave another program the focus.
-    if !lookout_core::winfocus::foreground_is_ours() && blur_hide_allowed(&shared) {
-        hide_bar_window(app);
-    }
+    // The bar stays. A drop may have given another program the focus: taking
+    // it back keeps Esc and "click outside" working.
+    let _ = window.set_focus();
     result.map(|_| ())
 }
 #[cfg(not(windows))]
-fn drag_out(_app: &AppHandle, _path: &std::path::Path) -> Result<(), String> {
-    Err("Dragging files out is available on Windows only.".to_owned())
+fn drag_out(_app: &AppHandle, _payload: &Payload) -> Result<(), String> {
+    Err("Dragging out is available on Windows only.".to_owned())
 }
 
 /// Tab in a path query: the next folder name, or `None`.

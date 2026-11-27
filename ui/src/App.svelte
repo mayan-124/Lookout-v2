@@ -12,13 +12,13 @@
   import { look } from "./look.svelte";
   import Setup from "./Setup.svelte";
   import Help from "./Help.svelte";
-  import { isFileRow, movedEnough } from "./dragout";
+  import { isClipRow, isFileRow, movedEnough } from "./dragout";
   import { keepsPage, keepsSearch } from "./lastsearch";
   import { FOLDER_STEP, chooseFoldersTarget, isHelpQuery, stepOnShow } from "./setupflow";
   import { dockItems, footerHints, helpEntries, isDiskCommand, tipsFor, typedSection, type Action, type View } from "./modes";
   import { ACTIONS, ICONS, actionById, homeActions } from "./registry";
   import { didYouMean, ghostFor, isNoteText, opensHistory, placeSuggestions, readLine, suggest, worthRemembering } from "./discover";
-  import { recentRows } from "./home";
+  import { isFreshClip, recentRows } from "./home";
   import { NO_VALUES, OPERATOR_HINT, completions, operatorGhost, removeOperator, type OperatorValues } from "./operators";
   import { dismissDiskNotice, loadUi, setHideTips, setShow, ui } from "./uistate.svelte";
   import { footerStatus, indexLine, type IndexCounts } from "./indexstatus";
@@ -175,16 +175,20 @@
     item: Item;
     ts: number;
     clip: boolean;
+    /** Copied in the last few minutes. */
+    fresh?: boolean;
   }
-  const recent = $derived.by<Recent[]>(() =>
-    recentRows<Recent>([
-      ...homeClips
-        .filter((i) => !TEMPISH.test(i.title))
-        .slice(0, 3)
-        .map((item) => ({ item, ts: clipTime(item), clip: true })),
-      ...homeFiles.map((item) => ({ item, ts: item.modified_at ?? 0, clip: false })),
-    ]),
-  );
+  const recent = $derived.by<Recent[]>(() => {
+    const now = Math.floor(Date.now() / 1000);
+    const clips = homeClips
+      .filter((i) => !TEMPISH.test(i.title))
+      .map((item) => ({ item, ts: clipTime(item), clip: true }))
+      // Newest first: pinned clips lead the query's own order, however old.
+      .sort((a, b) => b.ts - a.ts)
+      .slice(0, 3);
+    const files = homeFiles.map((item) => ({ item, ts: item.modified_at ?? 0, clip: false }));
+    return recentRows<Recent>([...clips, ...files], now).map((r) => ({ ...r, fresh: isFreshClip(r, now) }));
+  });
   function openRecent(r: Recent) {
     if (r.clip) gotoSection(2);
     else activate(r.item);
@@ -752,7 +756,7 @@
   function onUpdate(u: Update) {
     if (u.generation !== generation) return;
     if (u.generation === homeGen) {
-      homeClips = u.items.filter((i) => kindName(i.kind) === "clipboard").slice(0, 3);
+      homeClips = u.items.filter((i) => kindName(i.kind) === "clipboard");
       return;
     }
     const keep = items[selected]?.id;
@@ -1435,7 +1439,10 @@
     if (noteMenu && !items.some((i) => i.id === noteMenu!.id)) noteMenu = null;
   });
 
-  // Dragging a file row into another program. A press becomes a drag only after
+  const isClip = (i: Item) => isClipRow(kindName(i.kind), i.source);
+  const canDrag = (i: Item) => isFile(i) || isClip(i);
+
+  // Dragging a file or clip row into another program. A press becomes a drag only after
   // the pointer has travelled; the shell then runs the drag until the release.
   let press: { id: string; x: number; y: number } | null = null;
   let dragging = false;
@@ -1444,7 +1451,7 @@
   // Why the row under the pointer cannot be dragged, shown as its tooltip.
   let refusal = $state<{ id: string; text: string } | null>(null);
   function checkDrag(i: Item) {
-    if (!isFile(i)) return;
+    if (!canDrag(i)) return;
     invoke<string | null>("drag_check", { id: i.id })
       .then((text) => (refusal = text ? { id: i.id, text } : null))
       .catch(() => {});
@@ -1453,8 +1460,10 @@
     dragged = false;
     press = null;
     // Shift extends a selection; touch scrolls; a button in the row is its own.
-    if (e.button !== 0 || e.shiftKey || e.pointerType === "touch" || card || !isFile(i)) return;
-    if ((e.target as Element).closest("button")) return;
+    if (e.button !== 0 || e.shiftKey || e.pointerType === "touch" || card || !canDrag(i)) return;
+    // A button inside the row is its own; a row that is a button is the row.
+    const button = (e.target as Element).closest("button");
+    if (button && button !== e.currentTarget) return;
     press = { id: i.id, x: e.clientX, y: e.clientY };
   }
   function dragMove(e: PointerEvent) {
@@ -1827,7 +1836,19 @@
                 <ul class="recent">
                   {#each recent as r, n (r.item.id)}
                     <li>
-                      <button class="row rrow" class:top={n === 0} onclick={() => openRecent(r)}>
+                      <button
+                        class="row rrow"
+                        class:top={n === 0}
+                        class:draggable={r.clip}
+                        title={refusal?.id === r.item.id ? refusal.text : undefined}
+                        onpointerenter={() => checkDrag(r.item)}
+                        onpointerdown={(e) => r.clip && pressRow(e, r.item)}
+                        ondragstart={(e) => e.preventDefault()}
+                        onclick={() => {
+                          if (!dragged) openRecent(r);
+                          dragged = false;
+                        }}
+                      >
                         {#if n === 0 && thumbSrc}
                           <img class="thumb" src={thumbSrc} alt="" />
                         {:else}
@@ -1836,7 +1857,7 @@
                         <span class="text">
                           <span class="title">{r.clip ? mask(r.item.title) : r.item.title}</span>
                           <span class="sub" class:code={!r.clip}
-                            >{r.clip ? "Copied" : (r.item.uri ?? r.item.subtitle ?? "")}</span
+                            >{r.clip ? (r.fresh ? "Clip · just copied" : "Copied") : (r.item.uri ?? r.item.subtitle ?? "")}</span
                           >
                         </span>
                         <span class="when">{dayLabel(r.ts)}</span>
@@ -2013,7 +2034,7 @@
                       class="row"
                       class:top
                       class:selected={i === selected}
-                      class:draggable={isFile(item)}
+                      class:draggable={canDrag(item)}
                       data-index={i}
                       title={refusal?.id === item.id ? refusal.text : undefined}
                       onmousemove={() => (selected = i)}
@@ -2706,7 +2727,7 @@
     gap: 8px;
     flex-wrap: wrap;
   }
-  /* A press on a file row starts a drag, not a text selection. */
+  /* A press on a draggable row starts a drag, not a text selection. */
   .row.draggable {
     user-select: none;
   }

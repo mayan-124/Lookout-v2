@@ -1,5 +1,6 @@
-//! Letting a file leave Lookout: dragging a result into another app, and
-//! "Copy file". Both go through [`Rules::path`], so they allow the same things.
+//! Letting something leave Lookout: dragging a result into another app, and
+//! "Copy file". Files go through [`Rules::path`] both ways, so they allow the
+//! same things; a clip is dragged as text, unless secrets in it were masked.
 //! Only COPY and LINK are ever offered; nothing here can move a file.
 
 use std::path::{Path, PathBuf};
@@ -23,6 +24,26 @@ pub enum Refusal {
     Excluded,
     #[error("{ONLINE_ONLY}")]
     OnlineOnly,
+    #[error("This clip has masked secrets, so it cannot be dragged.")]
+    MaskedClip,
+    #[error("That clip is no longer in the history.")]
+    ClipGone,
+}
+
+/// What a drag carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Payload {
+    File(PathBuf),
+    /// A stored clip, links included.
+    Text(String),
+}
+
+/// `CF_UNICODETEXT`: UTF-16 with its NUL.
+pub fn unicode_text(text: &str) -> Vec<u8> {
+    text.encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect()
 }
 
 /// What the indexer skips, and the folders it was given.
@@ -127,16 +148,23 @@ pub use native::{copy_files, drag};
 
 #[cfg(windows)]
 mod native {
+    use std::mem::ManuallyDrop;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use windows::core::{implement, Interface, BOOL, HRESULT, PCWSTR};
+    use windows::core::{implement, Interface, Ref, BOOL, HRESULT, PCWSTR};
     use windows::Win32::Foundation::{
-        COLORREF, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, HWND, POINT,
-        SIZE, S_OK,
+        GlobalFree, COLORREF, DATA_S_SAMEFORMATETC, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP,
+        DRAGDROP_S_USEDEFAULTCURSORS, DV_E_DVASPECT, DV_E_FORMATETC, DV_E_TYMED, E_NOTIMPL,
+        E_OUTOFMEMORY, E_POINTER, HWND, OLE_E_ADVISENOTSUPPORTED, POINT, SIZE, S_OK,
     };
     use windows::Win32::Graphics::Gdi::DeleteObject;
-    use windows::Win32::System::Com::{CoCreateInstance, IDataObject, CLSCTX_INPROC_SERVER};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, IAdviseSink, IDataObject, IDataObject_Impl, IEnumFORMATETC,
+        IEnumSTATDATA, CLSCTX_INPROC_SERVER, DATADIR_GET, DVASPECT_CONTENT, FORMATETC, STGMEDIUM,
+        STGMEDIUM_0, TYMED_HGLOBAL,
+    };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
     use windows::Win32::System::Ole::{
         IDropSource, IDropSource_Impl, OleInitialize, OleUninitialize, DROPEFFECT, DROPEFFECT_COPY,
         DROPEFFECT_LINK, DROPEFFECT_NONE,
@@ -147,10 +175,14 @@ mod native {
     };
     use windows::Win32::UI::Shell::{
         BHID_DataObject, CLSID_DragDropHelper, IDragSourceHelper, IShellItem,
-        IShellItemImageFactory, SHCreateItemFromParsingName, SHDoDragDrop, SHDRAGIMAGE,
-        SIIGBF_ICONONLY,
+        IShellItemImageFactory, SHCreateItemFromParsingName, SHCreateStdEnumFmtEtc, SHDoDragDrop,
+        SHDRAGIMAGE, SIIGBF_ICONONLY,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+
+    use super::Payload;
+
+    const CF_UNICODETEXT: u16 = 13;
 
     /// Side of the icon that follows the pointer, in pixels.
     const ICON: i32 = 48;
@@ -185,6 +217,112 @@ mod native {
 
         fn GiveFeedback(&self, _effect: DROPEFFECT) -> HRESULT {
             DRAGDROP_S_USEDEFAULTCURSORS
+        }
+    }
+
+    fn text_format() -> FORMATETC {
+        FORMATETC {
+            cfFormat: CF_UNICODETEXT,
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex: -1,
+            tymed: TYMED_HGLOBAL.0 as u32,
+        }
+    }
+
+    /// Whether `format` asks for the one thing a text drag carries.
+    fn offers_text(format: *const FORMATETC) -> HRESULT {
+        // SAFETY: the caller of a COM method passes a valid pointer or null.
+        let Some(f) = (unsafe { format.as_ref() }) else {
+            return E_POINTER;
+        };
+        if f.cfFormat != CF_UNICODETEXT {
+            DV_E_FORMATETC
+        } else if f.dwAspect != DVASPECT_CONTENT.0 {
+            DV_E_DVASPECT
+        } else if f.tymed & TYMED_HGLOBAL.0 as u32 == 0 {
+            DV_E_TYMED
+        } else {
+            S_OK
+        }
+    }
+
+    /// The data object of a text drag: `CF_UNICODETEXT` and nothing else.
+    #[implement(IDataObject)]
+    struct TextData(Vec<u8>);
+
+    impl IDataObject_Impl for TextData_Impl {
+        fn GetData(&self, format: *const FORMATETC) -> windows::core::Result<STGMEDIUM> {
+            offers_text(format).ok()?;
+            // SAFETY: the block is as large as the bytes and filled while
+            // locked; the receiver frees it (`ReleaseStgMedium`).
+            unsafe {
+                let block = GlobalAlloc(GMEM_MOVEABLE, self.0.len())?;
+                let to = GlobalLock(block).cast::<u8>();
+                if to.is_null() {
+                    let _ = GlobalFree(Some(block));
+                    return Err(E_OUTOFMEMORY.into());
+                }
+                std::ptr::copy_nonoverlapping(self.0.as_ptr(), to, self.0.len());
+                // Reports an "error" when the lock count reaches zero.
+                let _ = GlobalUnlock(block);
+                Ok(STGMEDIUM {
+                    tymed: TYMED_HGLOBAL.0 as u32,
+                    u: STGMEDIUM_0 { hGlobal: block },
+                    pUnkForRelease: ManuallyDrop::new(None),
+                })
+            }
+        }
+
+        fn GetDataHere(&self, _: *const FORMATETC, _: *mut STGMEDIUM) -> windows::core::Result<()> {
+            Err(E_NOTIMPL.into())
+        }
+
+        fn QueryGetData(&self, format: *const FORMATETC) -> HRESULT {
+            offers_text(format)
+        }
+
+        fn GetCanonicalFormatEtc(&self, _: *const FORMATETC, out: *mut FORMATETC) -> HRESULT {
+            // SAFETY: the caller passes a writable structure or null.
+            let Some(out) = (unsafe { out.as_mut() }) else {
+                return E_POINTER;
+            };
+            out.ptd = std::ptr::null_mut();
+            DATA_S_SAMEFORMATETC
+        }
+
+        fn SetData(
+            &self,
+            _: *const FORMATETC,
+            _: *const STGMEDIUM,
+            _: BOOL,
+        ) -> windows::core::Result<()> {
+            Err(E_NOTIMPL.into())
+        }
+
+        fn EnumFormatEtc(&self, direction: u32) -> windows::core::Result<IEnumFORMATETC> {
+            if direction != DATADIR_GET.0 as u32 {
+                return Err(E_NOTIMPL.into());
+            }
+            // SAFETY: the shell copies the list.
+            unsafe { SHCreateStdEnumFmtEtc(&[text_format()]) }
+        }
+
+        fn DAdvise(
+            &self,
+            _: *const FORMATETC,
+            _: u32,
+            _: Ref<IAdviseSink>,
+        ) -> windows::core::Result<u32> {
+            Err(OLE_E_ADVISENOTSUPPORTED.into())
+        }
+
+        fn DUnadvise(&self, _: u32) -> windows::core::Result<()> {
+            Err(OLE_E_ADVISENOTSUPPORTED.into())
+        }
+
+        fn EnumDAdvise(&self) -> windows::core::Result<IEnumSTATDATA> {
+            Err(OLE_E_ADVISENOTSUPPORTED.into())
         }
     }
 
@@ -230,9 +368,9 @@ mod native {
         }
     }
 
-    /// Drags `path` until the button is released. Must run on the thread that
-    /// owns `window`. True if another program took the drop.
-    pub fn drag(path: &Path, window: isize) -> Result<bool, String> {
+    /// Drags `payload` until the button is released. Must run on the thread
+    /// that owns `window`. True if another program took the drop.
+    pub fn drag(payload: &Payload, window: isize) -> Result<bool, String> {
         // Released before we got here: starting now would drop it at once.
         if !button_down() {
             return Ok(false);
@@ -240,16 +378,25 @@ mod native {
         // SAFETY: paired with OleUninitialize below, on the same thread.
         unsafe { OleInitialize(None) }.map_err(|e| e.message())?;
         let result = (|| {
-            let (item, data) = shell_data(path)?;
-            let _ = set_image(&item, &data);
+            let (data, effects) = match payload {
+                Payload::File(path) => {
+                    let (item, data) = shell_data(path)?;
+                    let _ = set_image(&item, &data);
+                    (data, DROPEFFECT_COPY | DROPEFFECT_LINK)
+                }
+                Payload::Text(text) => (
+                    IDataObject::from(TextData(super::unicode_text(text))),
+                    DROPEFFECT_COPY,
+                ),
+            };
             let source: IDropSource = Source.into();
-            // SAFETY: both objects live across the call; COPY and LINK only.
+            // SAFETY: both objects live across the call; never MOVE.
             let effect = unsafe {
                 SHDoDragDrop(
                     Some(HWND(window as *mut core::ffi::c_void)),
                     &data,
                     &source,
-                    DROPEFFECT_COPY | DROPEFFECT_LINK,
+                    effects,
                 )
             }?;
             Ok::<_, windows::core::Error>(effect != DROPEFFECT_NONE)
@@ -321,11 +468,6 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use windows::Win32::Foundation::GlobalFree;
-        use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
-        use windows::Win32::System::Memory::{
-            GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
-        };
         use windows::Win32::System::Ole::ReleaseStgMedium;
         use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 
@@ -359,6 +501,36 @@ mod native {
                 let _ = GlobalUnlock(h);
                 assert_eq!(read(HDROP(h.0)), [r"C:\Docs\résumé 1.pdf", r"D:\Work"]);
                 let _ = GlobalFree(Some(h));
+            }
+        }
+
+        #[test]
+        fn a_text_drag_offers_unicode_text_only() {
+            let text = "https://example.com/é 🙂\r\nline two";
+            let data = IDataObject::from(TextData(super::super::unicode_text(text)));
+            // SAFETY: plain calls on the object; the medium is read while
+            // locked and released.
+            unsafe {
+                let want = text_format();
+                assert_eq!(data.QueryGetData(&want), S_OK);
+                let mut other = want;
+                other.cfFormat = 15;
+                assert_ne!(data.QueryGetData(&other), S_OK);
+                assert!(data.GetData(&other).is_err());
+
+                let list = data.EnumFormatEtc(DATADIR_GET.0 as u32).unwrap();
+                let mut got = [FORMATETC::default(); 2];
+                let mut n = 0;
+                let _ = list.Next(&mut got, Some(&mut n));
+                assert_eq!((n, got[0].cfFormat), (1, CF_UNICODETEXT));
+
+                let mut medium = data.GetData(&want).unwrap();
+                let p = GlobalLock(medium.u.hGlobal).cast::<u16>();
+                let len = (0..).take_while(|&i| *p.add(i) != 0).count();
+                let read = String::from_utf16(std::slice::from_raw_parts(p, len)).unwrap();
+                let _ = GlobalUnlock(medium.u.hGlobal);
+                ReleaseStgMedium(&mut medium);
+                assert_eq!(read, text);
             }
         }
 

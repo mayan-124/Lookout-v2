@@ -47,7 +47,7 @@ use crate::semantic::{
     SemanticStatus, PLUGIN_ID,
 };
 use crate::settings::Settings;
-use crate::share::{Refusal, Rules};
+use crate::share::{Payload, Refusal, Rules};
 use crate::sources::{AppsSource, CalculatorSource, FilesSource, Source, UnitsSource};
 use crate::storage::{Storage, StorageError};
 use crate::synthetic;
@@ -1421,6 +1421,22 @@ impl Lookout {
         let target = self.target(item_id).ok_or(Refusal::NotAFile)?;
         self.share_rules
             .path(&target.kind, target.uri.as_deref(), target.origin.is_some())
+    }
+
+    /// What dragging a result into another program carries: a clip's stored
+    /// text, or a file.
+    pub fn drag_payload(&self, item_id: &str) -> Result<Payload, Refusal> {
+        let target = self.target(item_id).ok_or(Refusal::NotAFile)?;
+        if target.kind != Kind::Clipboard {
+            return self.shareable_path(item_id).map(Payload::File);
+        }
+        let origin = target.origin.as_ref().ok_or(Refusal::NotAFile)?;
+        let host = self.plugins.as_ref().ok_or(Refusal::ClipGone)?;
+        match host.drag_text(&origin.plugin_id, &origin.params) {
+            Ok(Some(text)) => Ok(Payload::Text(text)),
+            Ok(None) => Err(Refusal::MaskedClip),
+            Err(_) => Err(Refusal::ClipGone),
+        }
     }
 
     pub fn quick_keys(&self) -> &crate::quickkeys::QuickKeys {

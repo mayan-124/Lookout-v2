@@ -780,6 +780,27 @@ impl PluginHost {
 
     // ------------------------------------------------------------- actions
 
+    /// The text of one stored clip, to be dragged out. `None`: the plugin says
+    /// secrets in it were masked, so it is not dragged. Changes nothing.
+    pub fn drag_text(&self, id: &str, params: &Value) -> Result<Option<String>, HostError> {
+        let p = self.find(id)?;
+        let reply = self.call(
+            p,
+            "drag_data",
+            json!({"params": params}),
+            self.cfg.timeouts.preview,
+            true,
+        )?;
+        if reply.get("masked").and_then(Value::as_bool) == Some(true) {
+            return Ok(None);
+        }
+        reply
+            .get("text")
+            .and_then(Value::as_str)
+            .map(|t| Some(t.to_owned()))
+            .ok_or_else(|| HostError::BadReply("no text".into()))
+    }
+
     /// Preview of an action on one item, with the risk raised to the floor.
     pub fn plan(
         &self,

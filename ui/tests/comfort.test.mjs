@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { DRAG_THRESHOLD, isFileRow, movedEnough } from "../src/dragout.ts";
+import { DRAG_THRESHOLD, isClipRow, isFileRow, movedEnough } from "../src/dragout.ts";
 import { PAGE_KEEP_SECS, SEARCH_KEEP_SECS, keepsPage, keepsSearch } from "../src/lastsearch.ts";
 
 const text = (path) => readFileSync(new URL(path, import.meta.url), "utf8").replaceAll("\r\n", "\n");
@@ -77,4 +77,11 @@ test("a drag needs movement, and only file and folder rows have one", () => {
   }
   assert.equal(isFileRow("file", "plugin:files-tools", "C:\\a.txt"), false);
   assert.equal(isFileRow("file", "files", null), false);
+});
+
+test("stored clips can be dragged, clipboard commands cannot", () => {
+  assert.ok(isClipRow("clipboard", "plugin:com.lookout.clipboard"));
+  assert.ok(!isClipRow("clipboard_action", "plugin:com.lookout.clipboard"));
+  assert.ok(!isClipRow("clipboard_clear", "plugin:com.lookout.clipboard"));
+  assert.ok(!isClipRow("file", "files"));
 });
