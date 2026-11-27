@@ -1,5 +1,5 @@
-// What each kind of result does on each key, in one place: Enter, the menu,
-// Ctrl+C, Ctrl+Shift+C, Ctrl+E and Delete. No DOM, so node can test it.
+// What each kind of result does on each key, in one place: Enter, Shift+Enter,
+// the menu, Ctrl+C, Ctrl+Shift+C, Ctrl+E and Delete. No DOM, so node can test it.
 import { isFileRow } from "./dragout.ts";
 
 export interface RowItem {
@@ -14,7 +14,7 @@ export interface Keys {
   copy?: { action: string; label: string };
   /** Ctrl+Shift+C */
   copyFile?: string;
-  /** Menu only: paste a clip into the app that was in front. */
+  /** Shift+Enter: paste a clip into the app that was in front. */
   paste?: string;
   /** Ctrl+E */
   reveal?: string;
@@ -59,6 +59,20 @@ export function rowKeys(i: RowItem): Keys {
   }
   if (ANSWERS.includes(kind)) return { copy: { action: "answer_copy", label: "Copy" } };
   return {};
+}
+
+/** The clipboard add-on's answer when a clip was copied but could not be pasted. */
+export const PASTE_FAILED = "Copied. Press Ctrl+V";
+
+/**
+ * Whether a finished action puts the bar away: a paste that worked always, a
+ * copy or a saved note while "Hide the bar after copy or save" is on.
+ */
+export function hidesBar(action: string, message: string, hideAfterCopy: boolean): boolean {
+  const verb = verbOf(action);
+  if (verb === "paste_clip" || verb === "paste_plain") return message !== PASTE_FAILED;
+  const done = ["copy_path", "copy_file", "copy_clip", "copy_pretty", "answer_copy", "note_copy", "note_save"];
+  return hideAfterCopy && done.includes(verb);
 }
 
 /** Actions after which the list on screen is out of date. */

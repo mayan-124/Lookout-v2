@@ -715,6 +715,8 @@
     e.stopPropagation();
   }
 
+  let scanButton: HTMLButtonElement | undefined = $state();
+
   onMount(async () => {
     try {
       locations = await invoke<Location[]>("disk_locations");
@@ -724,6 +726,9 @@
     } catch {
       /* the view still opens; Scan reports the error */
     }
+    // Opened to scan: Enter starts it. Results already on screen keep their keys.
+    await tick();
+    if (!finished) scanButton?.focus();
     invoke<ColourMode>("get_chart_colors")
       .then((m) => (colours = m))
       .catch(() => {});
@@ -807,7 +812,7 @@
     {#if scanning}
       <button class="btn" onclick={cancel}>Cancel</button>
     {:else}
-      <button class="btn primary" onclick={() => scan(chosen)} disabled={!chosen}>
+      <button bind:this={scanButton} class="btn primary" onclick={() => scan(chosen)} disabled={!chosen}>
         {finished ? "Scan again" : "Scan"}{#if finished}<kbd>F5</kbd>{/if}
       </button>
       <button

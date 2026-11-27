@@ -241,7 +241,7 @@
     "synonyms": ["copy history", "clipboard history", "copied text", "paste history", "clip board", "clipbord", "clipborad", "pasteboard", "clipboard", "copied"],
     "commands": ["clip", "clips", "clipboard"],
     "example": "clip",
-    "description": "Find copied text (needs the add-on)",
+    "description": "Find copied text; Shift+Enter pastes (add-on)",
     "run": "show",
     "stem": "clip ",
     "ghost": ["clip", "clipboard"],

@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Gdi::{
     SRCCOPY,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, LoadCursorW,
     PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow, ShowWindow, TranslateMessage,
@@ -169,6 +169,26 @@ pub struct OverlaySession {
 
 thread_local! {
     static SESSION: RefCell<Option<OverlaySession>> = const { RefCell::new(None) };
+}
+
+/// Copies the selection and ends the session as cancelled, so no caller goes on
+/// to edit, record, scroll or read text. False (the overlay stays) without a
+/// selection or when the clipboard refuses.
+fn copy_selection(sess: &mut OverlaySession) -> bool {
+    let Some(r) = sess
+        .state
+        .rect
+        .filter(|r| r.width() >= 4 && r.height() >= 4)
+    else {
+        return false;
+    };
+    let copied = sess
+        .capture
+        .image
+        .crop(r)
+        .is_ok_and(|img| crate::clipboard::copy_to_clipboard(&img).is_ok());
+    sess.state.cancelled |= copied;
+    copied
 }
 
 fn lparam_to_point(lp: LPARAM) -> PointI {
@@ -607,10 +627,14 @@ unsafe extern "system" fn overlay_wndproc(
             let key = wparam.0;
             let mut should_close = false;
             let mut need_redraw = false;
+            // VK_CONTROL; the high bit says it is held down.
+            let ctrl = GetKeyState(0x11) < 0;
 
             SESSION.with(|s| {
                 if let Some(sess) = s.borrow_mut().as_mut() {
                     match key {
+                        // Ctrl+C copies the selection and closes
+                        0x43 if ctrl => should_close = copy_selection(sess),
                         0x1B => {
                             // Esc key cancels capture
                             sess.state.cancelled = true;
@@ -1416,7 +1440,11 @@ pub fn render_overlay_frame_scaled_opts(
             } else {
                 match capture_mode {
                     CaptureMode::Screenshot => {
-                        format!("{} × {}  (Enter to edit)", r.width(), r.height())
+                        format!(
+                            "{} × {}  (Enter to edit, Ctrl+C to copy)",
+                            r.width(),
+                            r.height()
+                        )
                     }
                     CaptureMode::RecordVideo => {
                         format!("{} × {}  (Enter to record)", r.width(), r.height())

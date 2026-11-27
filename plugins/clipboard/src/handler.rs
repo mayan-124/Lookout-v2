@@ -630,7 +630,7 @@ impl Handler for Clipboard {
                     self.put_back(&clip, a == "paste_plain")?;
                     Ok(match self.io.paste() {
                         Ok(()) => json!({"message": "Pasted"}),
-                        Err(_) => json!({"message": "Copied (nothing to paste into)"}),
+                        Err(_) => json!({"message": "Copied. Press Ctrl+V"}),
                     })
                 }
                 Some("open_link") => {
@@ -1079,7 +1079,7 @@ mod tests {
         let mut c = Clipboard::with_store(io.clone(), Store::in_memory());
         let id = add(&c, "hello", None, 1);
         let r = run(&mut c, "execute", "paste_clip", id).unwrap();
-        assert_eq!(r["message"], "Copied (nothing to paste into)");
+        assert_eq!(r["message"], "Copied. Press Ctrl+V");
         assert_eq!(io.0.lock().unwrap().as_slice(), ["hello"]);
     }
 

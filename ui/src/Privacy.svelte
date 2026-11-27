@@ -6,7 +6,7 @@
   import ThemePicker from "./ThemePicker.svelte";
   import ModePicker from "./ModePicker.svelte";
   import { modeLabel, type Feature } from "./modes";
-  import { resetToRecommended, setAdvancedOpen, setHideTips, setShow, ui } from "./uistate.svelte";
+  import { resetToRecommended, setAdvancedOpen, setHideAfterCopy, setHideTips, setShow, ui } from "./uistate.svelte";
   import { captureCombo } from "./hotkey";
   import { look, setGlass, setReduceMotion } from "./look.svelte";
   import { getVersion } from "@tauri-apps/api/app";
@@ -308,7 +308,8 @@
     } else if (start === "appearance") {
       await tick();
       appearanceCard?.scrollIntoView({ block: "start" });
-      appearanceCard?.querySelector<HTMLElement>("button, input")?.focus({ preventScroll: true });
+      // The theme in use, so one arrow press moves to its neighbour.
+      appearanceCard?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')?.focus({ preventScroll: true });
     }
   });
 
@@ -711,6 +712,12 @@
           {#if family === "This PC"}{@render cliSwitch()}{/if}
         {/each}
         <h3 class="label-caps">Window</h3>
+        {@render toggle(
+          "Hide the bar after copy or save",
+          "After Copy, Copy path, Copy file or saving a note.",
+          ui.hide_after_copy,
+          (el) => choose(setHideAfterCopy(el.checked)),
+        )}
         {@render toggle(
           "Remember my last search for 30 seconds",
           "Reopened soon, the bar shows it again. It is never saved to disk.",

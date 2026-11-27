@@ -11,7 +11,7 @@ One word for one meaning, on every screen, in help and in messages.
 | Copy | Put the row's text on the clipboard. | Ctrl+C. |
 | Copy path | Copy a file's or folder's address. | Ctrl+C on files. |
 | Copy file | Put the file itself on the clipboard. | Ctrl+Shift+C. |
-| Paste | Copy a clip and paste it into the app you were in. | |
+| Paste | Copy a clip and paste it into the app you were in. | Shift+Enter on a clip. |
 | Delete | Destroy something Lookout keeps: a note, clip, quick key, saved search, saved scan, your data. | Delete key; Undo where it exists. |
 | Remove | Take an entry off a list. The thing itself stays. | A folder you search, a filter. |
 | Move to Recycle Bin | Send files to the Windows Recycle Bin. | Never plain "Delete" for these. |

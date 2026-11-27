@@ -13,6 +13,7 @@ export interface UiState {
   hide_tips: boolean;
   advanced_open: boolean;
   disk_notice: boolean;
+  hide_after_copy: boolean;
 }
 
 export const MODES: readonly { id: Mode; name: string; what: string }[] = [
@@ -133,7 +134,17 @@ export const MAX_HINTS = 3;
 /** The key hints under the dock: only what works in this view. */
 export function footerHints(
   view: View,
-  o: { mode: Mode; hotkey: string; enter?: string | null; path?: boolean; clears?: boolean },
+  o: {
+    mode: Mode;
+    hotkey: string;
+    enter?: string | null;
+    path?: boolean;
+    clears?: boolean;
+    /** The selected row is a clip that Shift+Enter pastes. */
+    paste?: boolean;
+    /** Enter on this result card, or Esc on this Settings page, hides the bar. */
+    hides?: boolean;
+  },
 ): string[] {
   const jump = o.mode === "full" ? ["Ctrl+1–5 sections"] : o.hotkey ? [`${o.hotkey} opens Lookout`] : [];
   const esc = o.clears ? "Esc clear" : "Esc hide";
@@ -141,13 +152,13 @@ export function footerHints(
   const hints: Record<View, string[]> = {
     home: ["Type ? for help", esc, ...jump],
     history: ["Enter use", "Del delete", "Esc back"],
-    results: [enter, o.path ? "Tab complete" : "Tab filter", esc],
+    results: [enter, o.paste ? "Shift+Enter paste" : o.path ? "Tab complete" : "Tab filter", esc],
     help: ["↑↓ pick", "Enter try", esc],
     setup: ["Tab next", "Enter choose", "Esc skip setup"],
-    settings: ["Tab next", "Esc close"],
+    settings: ["Tab next", o.hides ? "Esc hide" : "Esc close"],
     disk: ["↑↓ move", "→ expand", "Esc close"],
     confirm: ["Tab move", "Enter choose", "Esc cancel"],
-    done: ["Esc close"],
+    done: o.hides ? ["Enter close and hide", "Esc close"] : ["Esc close"],
   };
   return hints[view].slice(0, MAX_HINTS);
 }

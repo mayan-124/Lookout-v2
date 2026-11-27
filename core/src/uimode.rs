@@ -65,6 +65,8 @@ pub struct Ui {
     pub advanced_open: bool,
     /// An existing install still has to be told that Disk left the dock.
     pub disk_notice: bool,
+    /// The bar stays open after a copy or a saved note.
+    pub keep_open_after_copy: bool,
 }
 
 /// What the window reads.
@@ -77,6 +79,7 @@ pub struct UiState {
     pub hide_tips: bool,
     pub advanced_open: bool,
     pub disk_notice: bool,
+    pub hide_after_copy: bool,
 }
 
 impl Ui {
@@ -100,6 +103,7 @@ impl Ui {
             hide_tips: self.hide_tips,
             advanced_open: self.advanced_open,
             disk_notice: self.disk_notice,
+            hide_after_copy: !self.keep_open_after_copy,
         }
     }
 
@@ -309,6 +313,7 @@ mod tests {
             hide_tips: true,
             advanced_open: true,
             disk_notice: true,
+            keep_open_after_copy: true,
         };
         s.reset_ui(&path).unwrap();
         assert_eq!(s.ui.mode(), Mode::Standard);

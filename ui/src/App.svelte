@@ -14,7 +14,7 @@
   import Help from "./Help.svelte";
   import Row from "./Row.svelte";
   import Icon, { type Ico } from "./Icon.svelte";
-  import { ageLabel, changesList, rowKeys, verbOf } from "./rows";
+  import { ageLabel, changesList, hidesBar, rowKeys, verbOf } from "./rows";
   import { isClipRow, isFileRow, movedEnough } from "./dragout";
   import { iconLoader, iconTarget, rowWatcher } from "./appicons";
   import { keepsPage, keepsSearch } from "./lastsearch";
@@ -68,7 +68,8 @@
   // What the card shows: a preview waiting for Confirm, or the outcome.
   type Card =
     | { phase: "confirm"; prepared: Prepared; presented: boolean; busy: boolean; error: string }
-    | { phase: "result"; ok: boolean; message: string; undoable: boolean };
+    // `hides`: Enter closes the card and puts the bar away.
+    | { phase: "result"; ok: boolean; message: string; undoable: boolean; hides?: boolean };
   interface Shown {
     id: number;
     hidden_secs: number | null;
@@ -464,7 +465,12 @@
     pending = { generation, find, missing };
   }
   let settingsStart: "general" | "appearance" | "privacy" = $state("general");
+  // Settings opened by typing a command: one Esc then hides the bar.
+  let settingsTyped = $state(false);
+  // Set only while that Esc asks Settings to close.
+  let hideOnClose = false;
   function openSettings(start: typeof settingsStart) {
+    settingsTyped = false;
     disk = false;
     earlier = null;
     settingsStart = start;
@@ -572,7 +578,10 @@
   // Leaving Home drops the list; leaving Settings, the page it was asked for.
   $effect(() => {
     if (!home) earlier = null;
-    if (!panel) settingsStart = "general";
+    if (!panel) {
+      settingsStart = "general";
+      settingsTyped = false;
+    }
   });
   function remember(text: string) {
     if (text === savedSearch || !worthRemembering(text)) return;
@@ -680,6 +689,10 @@
     refreshStatus();
     loadHotkey();
     tick().then(() => input?.focus());
+    if (hideOnClose) {
+      cleared = true;
+      hideBar();
+    }
   }
 
   function run(text: string) {
@@ -829,7 +842,9 @@
     if (!item || !action || card) return;
     const suggested = actionOf(item);
     if (suggested) {
+      const typed = query.trim() !== "";
       runAction(suggested);
+      if (typed && panel) settingsTyped = true;
       return;
     }
     remember(query);
@@ -853,7 +868,16 @@
       skip = [];
       run(query);
     }
-    card = { phase: "result", ok: true, message: done.message, undoable: done.undoable };
+    if (!done.was_undo && hidesBar(done.action_id, done.message, ui.hide_after_copy)) {
+      card = null;
+      cleared = true;
+      hideBar();
+      // The next show starts in the search box.
+      tick().then(() => input?.focus());
+      return;
+    }
+    const hides = !done.was_undo && verbOf(done.action_id) === "rename_files";
+    card = { phase: "result", ok: true, message: done.message, undoable: done.undoable, hides };
   }
 
   async function confirm(e: Event) {
@@ -1071,7 +1095,10 @@
     if (panel) {
       if (e.key === "Escape") {
         e.preventDefault();
+        // A question on the page is answered first: then nothing is hidden.
+        hideOnClose = settingsTyped;
         leavePanel();
+        hideOnClose = false;
       }
       return;
     }
@@ -1082,6 +1109,13 @@
       if (e.key === "Escape") {
         e.preventDefault();
         dismissCard();
+      } else if (e.key === "Enter" && card.phase === "result" && card.hides) {
+        // A focused button (Undo, Close) keeps its own Enter.
+        if (e.repeat || e.target instanceof HTMLButtonElement) return;
+        e.preventDefault();
+        dismissCard();
+        cleared = true;
+        hideBar();
       }
       return;
     }
@@ -1441,7 +1475,7 @@
     return cur && { item: cur, el: list?.querySelector(`[data-index="${selected}"]`) ?? null };
   }
 
-  /** Menu, Ctrl+C, Ctrl+Shift+C, Ctrl+E and Delete. True if the key was used. */
+  /** Menu, Shift+Enter, Ctrl+C, Ctrl+Shift+C, Ctrl+E and Delete. True if the key was used. */
   function rowKey(e: KeyboardEvent, menuAsked: boolean): boolean {
     const row = keyRow(e.target);
     if (!row) return false;
@@ -1452,6 +1486,10 @@
     if (menuAsked) {
       const r = row.el?.getBoundingClientRect();
       if (r) run = () => openMenu(rowMenu(row.item), r.left + 48, r.bottom - 8);
+    } else if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      // A focused button that is not a Home row keeps its own Enter.
+      const action = home || !(e.target instanceof HTMLButtonElement) ? keys.paste : undefined;
+      if (action) run = () => doAction(action, row.item);
     } else if (ctrl && letter === "c" && e.shiftKey) {
       const action = keys.copyFile;
       if (action) run = () => doAction(action, row.item);
@@ -1651,6 +1689,7 @@
   }
   $effect(fitScreen);
 
+  const cardHides = $derived.by(() => card?.phase === "result" && !!card.hides);
   const hints = $derived(
     footerHints(view, {
       mode: ui.mode,
@@ -1658,6 +1697,8 @@
       enter: defaultAction(cur) ? openLabel(cur) : null,
       path: PATHLIKE.test(query),
       clears: pinned && query !== "",
+      paste: !!cur && !!rowKeys(cur).paste && verbOf(defaultAction(cur) ?? "") === "copy_clip",
+      hides: view === "settings" ? settingsTyped : cardHides,
     }),
   );
 
@@ -2233,14 +2274,18 @@
               {/if}
               <div class="prevactions">
                 {#if defaultAction(cur)}
-                  <button class="btn small primary" onclick={() => activate(cur)}>{openLabel(cur)}</button>
+                  <button class="btn small primary" onclick={() => activate(cur)}
+                    >{openLabel(cur)}{#if rowKeys(cur).paste}&nbsp;<kbd>Enter</kbd>{/if}</button
+                  >
                 {/if}
                 {#if rowKeys(cur).paste && verbOf(defaultAction(cur) ?? "") === "copy_clip"}
-                  <button class="btn small" onclick={() => doAction(rowKeys(cur).paste ?? "", cur)}>Paste</button>
+                  <button class="btn small" onclick={() => doAction(rowKeys(cur).paste ?? "", cur)}>Paste <kbd>Shift+Enter</kbd></button>
                 {:else if kindName(cur.kind) === "clipboard" && verbOf(defaultAction(cur) ?? "") !== "copy_clip"}
-                  <button class="btn small" title="Ctrl+C" onclick={() => doAction(rowKeys(cur).copy?.action ?? "", cur)}>Copy</button>
+                  <button class="btn small" onclick={() => doAction(rowKeys(cur).copy?.action ?? "", cur)}>Copy <kbd>Ctrl+C</kbd></button>
                 {/if}
                 {#if isFile(cur)}
+                  <button class="btn small" title="Ctrl+E" onclick={() => doAction("reveal", cur)}>Show in folder</button>
+                  <button class="btn small" title="Ctrl+C" onclick={() => doAction("copy_path", cur)}>Copy path</button>
                   <button class="btn small" title="Ctrl+Shift+C" onclick={() => doAction("copy_file", cur)}>Copy file</button>
                 {/if}
                 {#if ui.show.quick_keys && canKey(cur) && !keyFor}

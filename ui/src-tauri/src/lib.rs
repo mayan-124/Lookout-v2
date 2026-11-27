@@ -1821,6 +1821,11 @@ fn set_advanced_open(open: bool, services: State<Services>) -> Result<UiState, S
 }
 
 #[tauri::command]
+fn set_hide_after_copy(hide: bool, services: State<Services>) -> Result<UiState, String> {
+    change_ui(&services, |ui| ui.keep_open_after_copy = !hide)
+}
+
+#[tauri::command]
 fn dismiss_disk_notice(services: State<Services>) -> Result<UiState, String> {
     change_ui(&services, |ui| ui.disk_notice = false)
 }
@@ -2756,6 +2761,7 @@ pub fn run() {
             set_ui_mode,
             set_ui_show,
             set_hide_tips,
+            set_hide_after_copy,
             set_advanced_open,
             dismiss_disk_notice,
             reset_ui,
