@@ -8,7 +8,7 @@ A local-first command bar for Windows. Find files and apps by name, by the text 
 2. Run it. It installs for your Windows account only, without administrator rights. The installer is not code-signed, so Windows SmartScreen may warn. If the Microsoft Edge WebView2 runtime is missing, the installer downloads it from Microsoft.
 3. On first run, choose the folders Lookout may index. Nothing is indexed until you choose.
 
-The add-ons, the `lookout` command and the Disk page's fast scan also need the Microsoft Visual C++ 2015-2022 x64 runtime, which the installer does not include. Most PCs already have it.
+The optional "By meaning" search also needs the Microsoft Visual C++ 2015-2022 x64 runtime, which the installer does not include. Most PCs already have it.
 
 Uninstall from Windows Settings. Your Lookout data stays unless you tick the "delete the application data" box. Screenshots and recordings you saved are not removed.
 

@@ -450,7 +450,8 @@ Parts of the installer that are not listed as crates or npm packages above.
 - **NSIS** (the installer and uninstaller program) — Copyright (C) 1999-2026 Contributors. zlib/libpng license; its LZMA compression module is under the Common Public License 1.0 with a special exception for linking. <https://nsis.sourceforge.io/License>
 - **nsis-tauri-utils** (installer plugin) — Apache-2.0 OR MIT — Copyright (c) 2019 - 2022 Tauri Programme within The Commons Conservancy — <https://github.com/tauri-apps/nsis-tauri-utils>
 - **OCR** — no OCR model or engine is shipped. Lookout calls the OCR built into Windows (`Windows.Media.Ocr`) with the languages installed on the PC.
-- **WebView2 runtime** and **Visual C++ runtime** — not shipped. The installer downloads Microsoft's WebView2 bootstrapper only if the runtime is missing.
+- **Microsoft Visual C++ runtime** — the parts Lookout's programs use are linked into them (Microsoft Visual Studio license terms). The redistributable is not shipped.
+- **WebView2 runtime** — not shipped. The installer downloads Microsoft's WebView2 bootstrapper only if the runtime is missing.
 
 ### Microsoft WebView2 SDK license
 

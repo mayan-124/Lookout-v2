@@ -1,0 +1,4 @@
+# Link the C runtime into every program, so a PC without the Visual C++
+# redistributable can run the add-ons, the `lookout` command and the helpers.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
