@@ -70,5 +70,6 @@ pub mod timefilter;
 pub mod timers;
 pub mod uimode;
 pub mod units;
+pub mod websearch;
 pub mod winfocus;
 pub mod zones;

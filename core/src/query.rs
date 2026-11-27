@@ -209,8 +209,11 @@ pub fn parse_opts<Tz: chrono::TimeZone>(
     now: &chrono::DateTime<Tz>,
     skip: Skip,
 ) -> ParsedQuery {
-    // A note or an answered date or time question is not made of filters.
-    if crate::notes::is_private(input) || crate::answers::is_question(input, now) {
+    // A note, a web search or an answered date or time question is not made of filters.
+    if crate::notes::is_private(input)
+        || crate::websearch::command(input).is_some()
+        || crate::answers::is_question(input, now)
+    {
         return plain(input);
     }
     let mut kind = None;

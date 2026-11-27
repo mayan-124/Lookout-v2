@@ -490,7 +490,7 @@ impl Action for BatchRemoveAction {
                 ));
                 (
                     "Empty the Recycle Bin".to_owned(),
-                    vec!["This deletes the items for good. They cannot be restored.".to_owned()],
+                    vec!["This deletes the items for good. This cannot be undone.".to_owned()],
                 )
             }
             Mode::Delete => (

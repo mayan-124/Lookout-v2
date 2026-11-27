@@ -207,16 +207,16 @@ fn system_rows_do_not_outrank_strong_file_and_app_matches() {
         Some("dark mode.txt"),
         "{t:?}"
     );
-    // A prefix match on an app or file is not pushed below a system row.
+    // A whole Settings word ranks above names that only begin with it.
     let t = titles(&app.ask("display"));
     let file = t.iter().position(|t| t == "display-driver.txt").unwrap();
     let app_pos = t.iter().position(|t| t == "Display Settings Tool").unwrap();
     let sys = t.iter().position(|t| t == "Open Display settings").unwrap();
-    assert!(file < sys && app_pos < sys, "{t:?}");
+    assert!(sys < file && sys < app_pos, "{t:?}");
     let t = titles(&app.ask("wifi"));
     let file = t.iter().position(|t| t == "wifi-notes.txt").unwrap();
     let sys = t.iter().position(|t| t == "Open Wi-Fi settings").unwrap();
-    assert!(file < sys, "{t:?}");
+    assert!(sys < file, "{t:?}");
 }
 
 #[test]

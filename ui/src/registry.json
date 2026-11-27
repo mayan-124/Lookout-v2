@@ -54,6 +54,19 @@
     "try": "\\\\"
   },
   {
+    "id": "websearch",
+    "name": "Web search",
+    "category": "Find",
+    "icon": "Search",
+    "mode": "standard",
+    "synonyms": ["web search", "search the web", "search online", "google search", "search engine", "look up online"],
+    "example": "g weather today",
+    "description": "Type g and words; choose an engine in Settings",
+    "run": "fill",
+    "stem": "g ",
+    "tip": false
+  },
+  {
     "id": "op_ext",
     "name": "Search by extension",
     "category": "Find",
@@ -166,6 +179,20 @@
     "run": "fill",
     "stem": "notepad",
     "covered": "quickkey"
+  },
+  {
+    "id": "queryshortcut",
+    "name": "Query shortcuts",
+    "category": "Find",
+    "icon": "Quick keys",
+    "feature": "quick_keys",
+    "mode": "standard",
+    "advanced": true,
+    "synonyms": ["query shortcut", "search shortcut", "text shortcut", "expand shortcut", "saved search"],
+    "example": "pdf last week",
+    "description": "A word that fills in a search: set it in Settings",
+    "run": "settings",
+    "tip": false
   },
   {
     "id": "screenshot",
@@ -406,7 +433,7 @@
   },
   {
     "id": "winsettings",
-    "name": "Windows settings pages",
+    "name": "Settings and Control Panel",
     "category": "This PC",
     "icon": "System",
     "mode": "simple",
@@ -414,10 +441,40 @@
     "advanced": true,
     "synonyms": ["windows settings", "wi-fi", "wireless", "bluetooth", "sound settings", "display settings", "control panel", "blutooth"],
     "example": "wifi",
-    "description": "Open a Windows settings page",
+    "description": "Open a Settings or Control Panel page",
     "run": "show",
     "stem": "wifi",
     "covered": "system"
+  },
+  {
+    "id": "lock",
+    "name": "Lock this PC",
+    "category": "This PC",
+    "icon": "System",
+    "mode": "simple",
+    "synonyms": ["lock pc", "lock computer", "lock my pc", "lock windows", "lock workstation"],
+    "commands": ["lock"],
+    "example": "lock",
+    "description": "Type lock, then press Enter",
+    "run": "show",
+    "stem": "lock",
+    "covered": "system:lock",
+    "tip": false
+  },
+  {
+    "id": "emptybin",
+    "name": "Empty Recycle Bin",
+    "category": "This PC",
+    "icon": "System",
+    "mode": "simple",
+    "synonyms": ["empty bin", "empty trash", "empty the recycle bin", "clear recycle bin", "delete trash"],
+    "commands": ["empty recycle bin"],
+    "example": "empty recycle bin",
+    "description": "Asks first; this cannot be undone",
+    "run": "show",
+    "stem": "empty recycle bin",
+    "covered": "system:empty_bin",
+    "tip": false
   },
   {
     "id": "darkmode",

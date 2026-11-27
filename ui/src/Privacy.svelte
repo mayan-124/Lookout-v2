@@ -31,6 +31,7 @@
     start_with_windows: boolean;
     remember_searches: boolean;
     remember_last_search: boolean;
+    web_search: "off" | "duckduckgo" | "google" | "bing";
   }
 
   // Manual update check: nothing runs until the user clicks; nothing downloads until the second click.
@@ -76,6 +77,8 @@
   let qkeys: QuickKey[] = $state([]);
   let qkAlias = $state("");
   let qkTarget = $state("");
+  // What the new alias does: open something, or fill the box with a search.
+  let qkKind: "open" | "search" = $state("open");
   let qkError = $state("");
   let qkEditing: string | null = $state(null);
   let qkEditAlias = $state("");
@@ -89,7 +92,8 @@
   async function addKey() {
     qkError = "";
     try {
-      await invoke("quickkey_add", { alias: qkAlias, target: qkTarget });
+      if (qkKind === "search") await invoke("quickkey_add_text", { alias: qkAlias, text: qkTarget });
+      else await invoke("quickkey_add", { alias: qkAlias, target: qkTarget });
       qkAlias = "";
       qkTarget = "";
       await loadKeys();
@@ -375,6 +379,18 @@
     }
   }
 
+  let webMessage = $state("");
+  async function setWebSearch(el: HTMLSelectElement) {
+    webMessage = "";
+    try {
+      const s = await invoke<PrivacyState>("set_web_search", { engine: el.value });
+      if (info) info.web_search = s.web_search;
+    } catch (e) {
+      el.value = info?.web_search ?? "off";
+      webMessage = errorText(e);
+    }
+  }
+
   let historyMessage = $state("");
   // "Keep copied images" is a setting of the Clipboard add-on.
   type Addon = { id: string; config: Record<string, unknown> };
@@ -643,6 +659,19 @@
             {#if info?.pause_hotkey}<kbd>{info.pause_hotkey}</kbd>{/if}
           </div>
         </div>
+        <div class="scard">
+          <h3 class="stitle">Web search</h3>
+          <label class="field">
+            {@render field("Search engine", "Type g and your words. Nothing is sent until you press Enter.")}
+            <select value={info?.web_search ?? "off"} disabled={!info} onchange={(e) => setWebSearch(e.currentTarget)}>
+              <option value="off">Off</option>
+              <option value="duckduckgo">DuckDuckGo</option>
+              <option value="google">Google</option>
+              <option value="bing">Bing</option>
+            </select>
+          </label>
+          {#if webMessage}<p class="hint" role="alert">{webMessage}</p>{/if}
+        </div>
         <div class="scard" bind:this={appearanceCard}>
           <h3 class="stitle">Appearance</h3>
           <ThemePicker part="theme" />
@@ -853,8 +882,8 @@
       {:else if section === "quickkeys"}
         <h2 id="priv-title">Quick keys</h2>
         <p class="hint">
-          A short word for anything you open often. Type it and a space to put it on top. For apps and system actions,
-          select the result and click Set quick key.
+          A short word for anything you open often. Type it and a space to put it on top. A search text instead fills the
+          box and runs nothing. For apps and system actions, select the result and click Set quick key.
         </p>
         {#each qkeys as k (k.alias)}
           <div class="field">
@@ -888,7 +917,11 @@
         {/each}
         <div class="field">
           <input type="text" class="code" maxlength="8" placeholder="Quick key" bind:value={qkAlias} aria-label="Quick key" />
-          <input type="text" placeholder="Folder, file path or web address" bind:value={qkTarget} aria-label="Target" onkeydown={(e) => e.key === "Enter" && addKey()} />
+          <select bind:value={qkKind} aria-label="What it does">
+            <option value="open">Opens</option>
+            <option value="search">Search text</option>
+          </select>
+          <input type="text" placeholder={qkKind === "open" ? "Folder, file path or web address" : "For example: pdf last week"} bind:value={qkTarget} aria-label={qkKind === "open" ? "Target" : "Search text"} onkeydown={(e) => e.key === "Enter" && addKey()} />
           <button class="btn small primary" onclick={addKey}>Add</button>
         </div>
         {#if qkError}<p class="danger-text" role="alert">{qkError}</p>{/if}

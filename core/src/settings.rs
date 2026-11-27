@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::autostart::RunEntry;
 use crate::ranking::RankingWeights;
 use crate::uimode::Ui;
+use crate::websearch::SearchEngine;
 
 pub const DEFAULT_HOTKEY: &str = "Alt+Space";
 
@@ -154,6 +155,8 @@ pub struct Settings {
     pub window_positions: std::collections::BTreeMap<String, (i32, i32)>,
     /// What the window shows: mode, visibility switches and tips.
     pub ui: Ui,
+    /// The engine web searches open in; off until one is chosen.
+    pub web_search: SearchEngine,
 }
 
 /// Identifies a monitor by name, size and place, so a saved position is only
@@ -228,6 +231,7 @@ impl Default for Settings {
             pinned: false,
             window_positions: std::collections::BTreeMap::new(),
             ui: Ui::default(),
+            web_search: SearchEngine::Off,
         }
     }
 }
@@ -237,6 +241,16 @@ impl Settings {
     pub fn set_remember_searches(&mut self, on: bool, path: &Path) -> Result<(), String> {
         let mut next = self.clone();
         next.remember_searches = on;
+        next.save(path)
+            .map_err(|e| format!("Could not save settings: {e}"))?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Saves the web search engine; on any error nothing changes.
+    pub fn set_web_search(&mut self, engine: SearchEngine, path: &Path) -> Result<(), String> {
+        let mut next = self.clone();
+        next.web_search = engine;
         next.save(path)
             .map_err(|e| format!("Could not save settings: {e}"))?;
         *self = next;
@@ -841,6 +855,7 @@ mod tests {
                 hide_tips: true,
                 ..Ui::default()
             },
+            web_search: SearchEngine::Bing,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

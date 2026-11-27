@@ -519,6 +519,11 @@ fn folders_item(
     })
 }
 
+/// What the Recycle Bin holds now, as a removal list; `None` when it is empty.
+pub fn recycle_bin_batch() -> Option<Batch> {
+    recycle_bin_item().map(|i| i.batch)
+}
+
 fn recycle_bin_item() -> Option<Item> {
     use windows_sys::Win32::UI::Shell::{SHQueryRecycleBinW, SHQUERYRBINFO};
     // SAFETY: a zeroed SHQUERYRBINFO with cbSize set, and a null root (all drives).

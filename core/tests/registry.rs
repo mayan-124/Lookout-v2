@@ -83,7 +83,10 @@ fn every_example_is_understood() {
                 assert!(q.ops.is_empty() && !q.understood.invalid_operator);
             }
             "notes" => assert_eq!(notes::command(typed), Some(notes::Command::List)),
-            "darkmode" | "winsettings" => assert!(!quick::match_entries(typed).is_empty()),
+            "darkmode" | "winsettings" | "lock" | "emptybin" => {
+                assert!(!quick::match_entries(typed).is_empty());
+            }
+            "websearch" => assert!(lookout_core::websearch::command(typed).is_some()),
             "killport" => assert_eq!(kill_port::parse_kill_request(typed), Some(3000)),
             "clipboard" => assert!(clip.contains(&first)),
             "screenshot" | "scrolling" | "record" | "extracttext" => {
@@ -112,7 +115,7 @@ fn every_example_is_understood() {
             // The window itself answers these.
             "disk" => assert_eq!(typed, "disk usage"),
             "help" => assert_eq!(typed, "help"),
-            "settings" | "appearance" | "privacy" | "setup" => {}
+            "settings" | "appearance" | "privacy" | "setup" | "queryshortcut" => {}
             // Plain name searches.
             "find" | "quickkey" => assert!(q.time.is_none()),
             other => panic!("no check for {other}"),

@@ -71,6 +71,8 @@ export const PASTE_FAILED = "Copied. Press Ctrl+V";
 export function hidesBar(action: string, message: string, hideAfterCopy: boolean): boolean {
   const verb = verbOf(action);
   if (verb === "paste_clip" || verb === "paste_plain") return message !== PASTE_FAILED;
+  // Locked: the next show starts clean.
+  if (verb === "system_lock") return true;
   const done = ["copy_path", "copy_file", "copy_clip", "copy_pretty", "answer_copy", "note_copy", "note_save"];
   return hideAfterCopy && done.includes(verb);
 }

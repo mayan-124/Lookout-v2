@@ -376,6 +376,7 @@
     semantic: "By meaning",
     ports: "Ports",
     system: "System",
+    websearch: "Web search",
     link: "Link",
     timer: "Timer",
     quickkey: "Quick key",
@@ -695,6 +696,19 @@
     }
   }
 
+  /** A query shortcut and a space: the longer text takes the box. Nothing is run. */
+  async function expandShortcut(typed: string) {
+    if (composing || !/^[a-z0-9]{2,8}\s+$/i.test(typed)) return;
+    const text = await invoke<string | null>("quickkey_expand", { typed }).catch(() => null);
+    if (typeof text !== "string" || query !== typed) return;
+    query = text;
+    skip = [];
+    run(text);
+    await tick();
+    input?.setSelectionRange(text.length, text.length);
+    trackCaret();
+  }
+
   function run(text: string) {
     cleared = false;
     quiet = false;
@@ -762,7 +776,7 @@
     // One block per group, in the order each group first appears; similar-meaning matches go last.
     const rest = u.items.filter((i) => i.source !== "semantic");
     const order = [...new Set(rest.map(groupOf))];
-    const results = [
+    let results = [
       ...order.flatMap((g) => rest.filter((i) => groupOf(i) === g)),
       ...u.items.filter((i) => i.source === "semantic"),
     ];
@@ -772,6 +786,8 @@
     badOperator = !!u.filters?.invalid_operator;
     // Suggestions wait for something to sit among, unless the word is a command.
     const found = quiet ? [] : suggest(query, ACTIONS, ui.mode, ui.show);
+    // A suggested action counts as a match: no web search beside it.
+    if (found.length > 0) results = results.filter((i) => !i.metadata?.fallback);
     const intent = found.some((s) => s.exact);
     const ready = u.done || results.length > 0 || intent;
     all = ready ? placeSuggestions(results, found, query, actionItem) : results;
@@ -1396,6 +1412,8 @@
     open_url: "Open",
     system_page: "Open",
     system_theme: "Switch",
+    system_lock: "Lock",
+    system_empty_bin: "Empty…",
     system_radio: "Turn…",
     timer_start: "Start",
     timer_cancel: "Cancel timer",
@@ -1413,6 +1431,7 @@
   const canKey = (i: Item | undefined) =>
     !!i &&
     !i.source.startsWith("plugin:") &&
+    i.source !== "websearch" &&
     !!i.uri &&
     ["file", "folder", "app", "url", "system"].includes(kindName(i.kind));
   function startKey(i: Item | undefined) {
@@ -1807,6 +1826,7 @@
           earlier = null;
           trackCaret();
           run(query);
+          expandShortcut(query);
         }}
         onkeyup={trackCaret}
         onclick={trackCaret}

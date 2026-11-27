@@ -158,6 +158,12 @@ pub enum What {
     Theme,
     /// Open this fixed Settings page.
     Page(&'static str),
+    /// Open this fixed Control Panel page (`control.exe /name`).
+    Control(&'static str),
+    /// Lock this PC.
+    Lock,
+    /// Empty the Recycle Bin, behind a confirmation.
+    EmptyBin,
 }
 
 pub struct Entry {
@@ -275,15 +281,455 @@ pub const ENTRIES: &[Entry] = &[
         keywords: &["settings", "windows settings", "system settings"],
         what: What::Page("ms-settings:"),
     },
+    Entry {
+        id: "printers",
+        title: "Open Printers settings",
+        subtitle: "Bluetooth & devices",
+        keywords: &["printers", "printer", "scanners", "printers and scanners"],
+        what: What::Page("ms-settings:printers"),
+    },
+    Entry {
+        id: "mouse_page",
+        title: "Open Mouse settings",
+        subtitle: "Bluetooth & devices",
+        keywords: &["mouse"],
+        what: What::Page("ms-settings:mousetouchpad"),
+    },
+    Entry {
+        id: "touchpad",
+        title: "Open Touchpad settings",
+        subtitle: "Bluetooth & devices",
+        keywords: &["touchpad", "trackpad"],
+        what: What::Page("ms-settings:devices-touchpad"),
+    },
+    Entry {
+        id: "typing",
+        title: "Open Typing settings",
+        subtitle: "Time & language",
+        keywords: &["typing", "autocorrect", "spell check"],
+        what: What::Page("ms-settings:typing"),
+    },
+    Entry {
+        id: "privacy_page",
+        title: "Open Privacy & security settings",
+        subtitle: "Privacy & security",
+        keywords: &["privacy", "privacy and security", "app permissions"],
+        what: What::Page("ms-settings:privacy"),
+    },
+    Entry {
+        id: "microphone",
+        title: "Open Microphone privacy settings",
+        subtitle: "Privacy & security",
+        keywords: &["microphone", "mic", "microphone privacy"],
+        what: What::Page("ms-settings:privacy-microphone"),
+    },
+    Entry {
+        id: "camera",
+        title: "Open Camera privacy settings",
+        subtitle: "Privacy & security",
+        keywords: &["camera", "webcam", "camera privacy"],
+        what: What::Page("ms-settings:privacy-webcam"),
+    },
+    Entry {
+        id: "location",
+        title: "Open Location settings",
+        subtitle: "Privacy & security",
+        keywords: &["location", "location services"],
+        what: What::Page("ms-settings:privacy-location"),
+    },
+    Entry {
+        id: "personalization",
+        title: "Open Personalization settings",
+        subtitle: "Personalization",
+        keywords: &["personalization", "personalisation", "personalize"],
+        what: What::Page("ms-settings:personalization"),
+    },
+    Entry {
+        id: "wallpaper",
+        title: "Open Background settings",
+        subtitle: "Personalization",
+        keywords: &["wallpaper", "background", "desktop background"],
+        what: What::Page("ms-settings:personalization-background"),
+    },
+    Entry {
+        id: "colors_page",
+        title: "Open Colors settings",
+        subtitle: "Personalization",
+        keywords: &["colors", "colours"],
+        what: What::Page("ms-settings:personalization-colors"),
+    },
+    Entry {
+        id: "lockscreen",
+        title: "Open Lock screen settings",
+        subtitle: "Personalization",
+        keywords: &["lock screen", "lockscreen"],
+        what: What::Page("ms-settings:lockscreen"),
+    },
+    Entry {
+        id: "taskbar",
+        title: "Open Taskbar settings",
+        subtitle: "Personalization",
+        keywords: &["taskbar"],
+        what: What::Page("ms-settings:taskbar"),
+    },
+    Entry {
+        id: "default_apps",
+        title: "Open Default apps settings",
+        subtitle: "Apps",
+        keywords: &["default apps", "default browser", "file associations"],
+        what: What::Page("ms-settings:defaultapps"),
+    },
+    Entry {
+        id: "startup_apps",
+        title: "Open Startup apps settings",
+        subtitle: "Apps",
+        keywords: &["startup apps", "startup programs"],
+        what: What::Page("ms-settings:startupapps"),
+    },
+    Entry {
+        id: "date_time",
+        title: "Open Date & time settings",
+        subtitle: "Time & language",
+        keywords: &["date and time", "time and date", "clock"],
+        what: What::Page("ms-settings:dateandtime"),
+    },
+    Entry {
+        id: "language",
+        title: "Open Language & region settings",
+        subtitle: "Time & language",
+        keywords: &[
+            "language",
+            "region",
+            "language and region",
+            "keyboard layout",
+        ],
+        what: What::Page("ms-settings:regionlanguage"),
+    },
+    Entry {
+        id: "network_page",
+        title: "Open Network status settings",
+        subtitle: "Network & internet",
+        keywords: &["network", "internet", "network status"],
+        what: What::Page("ms-settings:network-status"),
+    },
+    Entry {
+        id: "vpn",
+        title: "Open VPN settings",
+        subtitle: "Network & internet",
+        keywords: &["vpn"],
+        what: What::Page("ms-settings:network-vpn"),
+    },
+    Entry {
+        id: "proxy",
+        title: "Open Proxy settings",
+        subtitle: "Network & internet",
+        keywords: &["proxy"],
+        what: What::Page("ms-settings:network-proxy"),
+    },
+    Entry {
+        id: "hotspot",
+        title: "Open Mobile hotspot settings",
+        subtitle: "Network & internet",
+        keywords: &["hotspot", "mobile hotspot"],
+        what: What::Page("ms-settings:network-mobilehotspot"),
+    },
+    Entry {
+        id: "ethernet",
+        title: "Open Ethernet settings",
+        subtitle: "Network & internet",
+        keywords: &["ethernet"],
+        what: What::Page("ms-settings:network-ethernet"),
+    },
+    Entry {
+        id: "power_sleep",
+        title: "Open Power & sleep settings",
+        subtitle: "System > Power & battery",
+        keywords: &["sleep", "power and sleep", "screen timeout"],
+        what: What::Page("ms-settings:powersleep"),
+    },
+    Entry {
+        id: "multitasking",
+        title: "Open Multitasking settings",
+        subtitle: "System",
+        keywords: &["multitasking", "snap windows"],
+        what: What::Page("ms-settings:multitasking"),
+    },
+    Entry {
+        id: "about",
+        title: "Open About this PC settings",
+        subtitle: "System > About",
+        keywords: &["about this pc", "pc info", "device name", "system info"],
+        what: What::Page("ms-settings:about"),
+    },
+    Entry {
+        id: "your_info",
+        title: "Open Your account info settings",
+        subtitle: "Accounts",
+        keywords: &["account", "accounts", "your info"],
+        what: What::Page("ms-settings:yourinfo"),
+    },
+    Entry {
+        id: "signin",
+        title: "Open Sign-in options settings",
+        subtitle: "Accounts",
+        keywords: &[
+            "sign-in options",
+            "sign in options",
+            "windows hello",
+            "change password",
+        ],
+        what: What::Page("ms-settings:signinoptions"),
+    },
+    Entry {
+        id: "text_size",
+        title: "Open Text size settings",
+        subtitle: "Accessibility",
+        keywords: &["text size", "accessibility"],
+        what: What::Page("ms-settings:easeofaccess-display"),
+    },
+    Entry {
+        id: "win_security",
+        title: "Open Windows Security settings",
+        subtitle: "Privacy & security",
+        keywords: &["windows security", "defender", "antivirus"],
+        what: What::Page("ms-settings:windowsdefender"),
+    },
+    Entry {
+        id: "troubleshoot",
+        title: "Open Troubleshoot settings",
+        subtitle: "System",
+        keywords: &["troubleshoot", "troubleshooter"],
+        what: What::Page("ms-settings:troubleshoot"),
+    },
+    Entry {
+        id: "recovery_page",
+        title: "Open Recovery settings",
+        subtitle: "System",
+        keywords: &["recovery", "reset this pc"],
+        what: What::Page("ms-settings:recovery"),
+    },
+    Entry {
+        id: "activation",
+        title: "Open Activation settings",
+        subtitle: "System",
+        keywords: &["activation", "product key"],
+        what: What::Page("ms-settings:activation"),
+    },
+    Entry {
+        id: "backup",
+        title: "Open Windows backup settings",
+        subtitle: "Accounts",
+        keywords: &["windows backup"],
+        what: What::Page("ms-settings:backup"),
+    },
+    Entry {
+        id: "cp_programs",
+        title: "Open Programs and Features",
+        subtitle: "Control Panel",
+        keywords: &[
+            "programs and features",
+            "uninstall a program",
+            "uninstall programs",
+        ],
+        what: What::Control("Microsoft.ProgramsAndFeatures"),
+    },
+    Entry {
+        id: "cp_power",
+        title: "Open Power Options",
+        subtitle: "Control Panel",
+        keywords: &["power options", "power plan"],
+        what: What::Control("Microsoft.PowerOptions"),
+    },
+    Entry {
+        id: "cp_network",
+        title: "Open Network and Sharing Center",
+        subtitle: "Control Panel",
+        keywords: &[
+            "network and sharing center",
+            "network and sharing",
+            "sharing center",
+        ],
+        what: What::Control("Microsoft.NetworkAndSharingCenter"),
+    },
+    Entry {
+        id: "cp_sound",
+        title: "Open Sound devices",
+        subtitle: "Control Panel",
+        keywords: &[
+            "sound control panel",
+            "playback devices",
+            "recording devices",
+        ],
+        what: What::Control("Microsoft.Sound"),
+    },
+    Entry {
+        id: "cp_mouse",
+        title: "Open Mouse Properties",
+        subtitle: "Control Panel",
+        keywords: &["mouse", "mouse properties", "pointer speed"],
+        what: What::Control("Microsoft.Mouse"),
+    },
+    Entry {
+        id: "cp_keyboard",
+        title: "Open Keyboard Properties",
+        subtitle: "Control Panel",
+        keywords: &["keyboard", "keyboard properties"],
+        what: What::Control("Microsoft.Keyboard"),
+    },
+    Entry {
+        id: "cp_devices",
+        title: "Open Device Manager",
+        subtitle: "Control Panel",
+        keywords: &["device manager", "drivers"],
+        what: What::Control("Microsoft.DeviceManager"),
+    },
+    Entry {
+        id: "cp_printers",
+        title: "Open Devices and Printers",
+        subtitle: "Control Panel",
+        keywords: &["devices and printers"],
+        what: What::Control("Microsoft.DevicesAndPrinters"),
+    },
+    Entry {
+        id: "cp_system",
+        title: "Open System Properties",
+        subtitle: "Control Panel",
+        keywords: &["system properties"],
+        what: What::Control("Microsoft.System"),
+    },
+    Entry {
+        id: "cp_users",
+        title: "Open User Accounts",
+        subtitle: "Control Panel",
+        keywords: &["user accounts"],
+        what: What::Control("Microsoft.UserAccounts"),
+    },
+    Entry {
+        id: "cp_firewall",
+        title: "Open Windows Defender Firewall",
+        subtitle: "Control Panel",
+        keywords: &["firewall", "windows firewall", "windows defender firewall"],
+        what: What::Control("Microsoft.WindowsFirewall"),
+    },
+    Entry {
+        id: "cp_region",
+        title: "Open Region formats",
+        subtitle: "Control Panel",
+        keywords: &["region format", "date format", "number format"],
+        what: What::Control("Microsoft.RegionAndLanguage"),
+    },
+    Entry {
+        id: "cp_history",
+        title: "Open File History",
+        subtitle: "Control Panel",
+        keywords: &["file history"],
+        what: What::Control("Microsoft.FileHistory"),
+    },
+    Entry {
+        id: "cp_indexing",
+        title: "Open Indexing Options",
+        subtitle: "Control Panel",
+        keywords: &["indexing options"],
+        what: What::Control("Microsoft.IndexingOptions"),
+    },
+    Entry {
+        id: "cp_folders",
+        title: "Open File Explorer Options",
+        subtitle: "Control Panel",
+        keywords: &[
+            "folder options",
+            "file explorer options",
+            "show hidden files",
+        ],
+        what: What::Control("Microsoft.FolderOptions"),
+    },
+    Entry {
+        id: "cp_internet",
+        title: "Open Internet Options",
+        subtitle: "Control Panel",
+        keywords: &["internet options"],
+        what: What::Control("Microsoft.InternetOptions"),
+    },
+    Entry {
+        id: "cp_tools",
+        title: "Open Windows Tools",
+        subtitle: "Control Panel",
+        keywords: &["windows tools", "administrative tools", "admin tools"],
+        what: What::Control("Microsoft.AdministrativeTools"),
+    },
+    Entry {
+        id: "cp_credentials",
+        title: "Open Credential Manager",
+        subtitle: "Control Panel",
+        keywords: &["credential manager", "saved passwords"],
+        what: What::Control("Microsoft.CredentialManager"),
+    },
+    Entry {
+        id: "cp_access",
+        title: "Open Ease of Access Center",
+        subtitle: "Control Panel",
+        keywords: &["ease of access"],
+        what: What::Control("Microsoft.EaseOfAccessCenter"),
+    },
+    Entry {
+        id: "cp_fonts",
+        title: "Open Fonts",
+        subtitle: "Control Panel",
+        keywords: &["fonts"],
+        what: What::Control("Microsoft.Fonts"),
+    },
+    Entry {
+        id: "cp_color",
+        title: "Open Color Management",
+        subtitle: "Control Panel",
+        keywords: &["color management", "colour management"],
+        what: What::Control("Microsoft.ColorManagement"),
+    },
+    Entry {
+        id: "cp_recovery",
+        title: "Open Recovery tools",
+        subtitle: "Control Panel",
+        keywords: &["system restore", "recovery drive"],
+        what: What::Control("Microsoft.Recovery"),
+    },
+    Entry {
+        id: "cp_security",
+        title: "Open Security and Maintenance",
+        subtitle: "Control Panel",
+        keywords: &["security and maintenance", "action center"],
+        what: What::Control("Microsoft.ActionCenter"),
+    },
+    Entry {
+        id: "lock",
+        title: "Lock this PC",
+        subtitle: "Shows the Windows lock screen",
+        keywords: &["lock", "lock pc", "lock computer"],
+        what: What::Lock,
+    },
+    Entry {
+        id: "empty_bin",
+        title: "Empty the Recycle Bin\u{2026}",
+        subtitle: "Asks first; this cannot be undone",
+        keywords: &[
+            "empty recycle bin",
+            "empty the recycle bin",
+            "empty bin",
+            "empty trash",
+        ],
+        what: What::EmptyBin,
+    },
 ];
 
 pub fn entry(id: &str) -> Option<&'static Entry> {
     ENTRIES.iter().find(|e| e.id == id)
 }
 
-/// Scores for a match: a whole keyword, or the start of one. Both sit below a
-/// file or app whose name starts with the typed word (about 0.8 and up), so a
-/// Settings row never pushes a real match down.
+/// Scores for a match. A whole keyword of a Settings or Control Panel page or a
+/// system command ranks above weak file and app matches (a name that only
+/// begins with or contains the word, about 1.1 at most when never opened), and
+/// below an exact name and anything opened often. The theme switch and the start
+/// of a keyword stay below those weak matches.
+pub const EXACT_PAGE: f32 = 1.35;
 pub const EXACT: f32 = 0.7;
 pub const PREFIX: f32 = 0.35;
 /// Most system results one query returns, so they never crowd out files and apps.
@@ -304,7 +750,8 @@ const LEADING: &[&str] = &[
 /// Entries that a typed word or phrase refers to, best first, at most [`MAX_SYSTEM`].
 pub fn match_entries(typed: &str) -> Vec<(&'static Entry, f32)> {
     let lower = strip_controls(typed).to_lowercase();
-    let mut q = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+    let whole = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut q = whole.clone();
     for p in LEADING {
         if let Some(r) = q.strip_prefix(p) {
             if !r.is_empty() {
@@ -327,12 +774,24 @@ pub fn match_entries(typed: &str) -> Vec<(&'static Entry, f32)> {
     let mut out: Vec<(&'static Entry, f32)> = ENTRIES
         .iter()
         .filter_map(|e| {
+            // A command needs its whole words exactly as typed: "lock" runs on
+            // Enter, so neither a beginning nor "turn off lock" may offer it.
+            if matches!(e.what, What::Lock | What::EmptyBin) {
+                return e
+                    .keywords
+                    .contains(&whole.as_str())
+                    .then_some((e, EXACT_PAGE));
+            }
+            let exact = match e.what {
+                What::Theme => EXACT,
+                _ => EXACT_PAGE,
+            };
             let best = e
                 .keywords
                 .iter()
                 .map(|k| {
                     if *k == q {
-                        EXACT
+                        exact
                     } else if k.starts_with(q.as_str()) {
                         PREFIX
                     } else {
@@ -503,17 +962,58 @@ mod tests {
     fn a_whole_keyword_outranks_a_prefix_and_the_count_is_capped() {
         let m = match_entries("dark");
         assert_eq!(m[0].1, EXACT);
+        assert_eq!(match_entries("wifi")[0].1, EXACT_PAGE);
         assert!(match_entries("wifi").len() <= MAX_SYSTEM);
         assert!(match_entries("blue")[0].1 < EXACT);
     }
 
     #[test]
     fn every_settings_page_is_a_fixed_ms_settings_address() {
+        let mut seen = std::collections::HashSet::new();
         for e in ENTRIES {
-            if let What::Page(p) = e.what {
-                assert!(p.starts_with("ms-settings:"), "{p}");
-                assert!(!p.contains(['/', '\\', ' ']), "{p}");
+            assert!(seen.insert(e.id), "{} twice", e.id);
+            match e.what {
+                What::Page(p) => {
+                    assert!(p.starts_with("ms-settings:"), "{p}");
+                    assert!(!p.contains(['/', '\\', ' ']), "{p}");
+                }
+                What::Control(n) => {
+                    let name = n.strip_prefix("Microsoft.").unwrap();
+                    assert!(name.chars().all(|c| c.is_ascii_alphabetic()), "{n}");
+                }
+                _ => {}
             }
+        }
+    }
+
+    #[test]
+    fn control_panel_pages_are_found_by_name() {
+        assert_eq!(ids("device manager"), ["cp_devices"]);
+        assert_eq!(ids("Programs and Features"), ["cp_programs"]);
+        assert_eq!(ids("mouse"), ["mouse_page", "cp_mouse"]);
+        assert_eq!(ids("lock screen"), ["lockscreen"]);
+    }
+
+    #[test]
+    fn commands_need_their_whole_words() {
+        assert_eq!(ids("lock")[0], "lock");
+        assert_eq!(ids("Empty  Recycle Bin"), ["empty_bin"]);
+        for no in [
+            "loc",
+            "lock settings",
+            "turn off lock",
+            "open lock",
+            "lock now",
+            "empty",
+            "empty recycle",
+            "recycle bin",
+            "empty bin now",
+        ] {
+            let found = ids(no);
+            assert!(
+                !found.contains(&"lock") && !found.contains(&"empty_bin"),
+                "{no}: {found:?}"
+            );
         }
     }
 }

@@ -61,6 +61,10 @@ pub trait Source: Send + Sync {
     /// source's earlier results for this query, so a source can refine its
     /// answer progressively by emitting a longer list.
     fn query(&self, q: &ParsedQuery, ctx: &QueryContext, emit: &mut dyn FnMut(Vec<Item>));
+    /// A row to show only if no source found anything. Must be cheap.
+    fn fallback(&self, _q: &ParsedQuery) -> Option<Item> {
+        None
+    }
 }
 
 pub struct CalculatorSource;

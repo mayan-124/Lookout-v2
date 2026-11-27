@@ -46,6 +46,20 @@ const EXECUTABLE: &[&str] = &[
 /// tests supply one that only records.
 pub trait Launcher: Send + Sync {
     fn open(&self, path: &Path) -> std::io::Result<()>;
+    /// Opens a Control Panel page by its canonical name.
+    fn control_panel(&self, _name: &str) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+
+/// `control.exe /name <name>`, from the Windows folder so that no other
+/// program of that name can be picked up.
+pub fn start_control_panel(name: &str) -> std::io::Result<()> {
+    let root = std::env::var_os("SystemRoot").ok_or(std::io::ErrorKind::NotFound)?;
+    std::process::Command::new(Path::new(&root).join(r"System32\control.exe"))
+        .args(["/name", name])
+        .spawn()
+        .map(drop)
 }
 
 /// The only file types that open without confirmation: documents, text,

@@ -16,4 +16,6 @@ Notes you save with `note:` (at most 500 of 2,000 characters each) are kept in t
 
 Dragging an image out writes an **unencrypted** copy to `Lookout-drag` in your Windows temp folder, so the other program can read it. It is removed after an hour, when the image or the history is deleted, and when Lookout closes (after a crash, at the next start). Copies other programs made are theirs.
 
+**Web search (off until you choose an engine).** When you press Enter on a web search result, the words you typed go to that engine (DuckDuckGo, Google or Bing) through your default browser; Lookout sends nothing while you type, and text that looks like a secret is never offered for search.
+
 Nothing is indexed until you pick folders. "Delete my data" and "Delete meaning data" in Settings delete what Lookout built, and the uninstaller can remove all application data.

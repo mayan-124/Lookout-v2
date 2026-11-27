@@ -14,7 +14,8 @@ use crate::actions::disk::{
 use crate::actions::kill_port::{self, KillPort, PortSource};
 use crate::actions::open::{self, Launcher, OpenAction};
 use crate::actions::quick::{
-    self as quick_actions, OpenUrlAction, PageAction, QuickSource, ThemeAction, WindowsTheme,
+    self as quick_actions, EmptyBinAction, LockAction, OpenUrlAction, PageAction, QuickSource,
+    ThemeAction, WindowsLock, WindowsTheme,
 };
 use crate::actions::system::ProcessBackend;
 use crate::actions::undo_log::{Entry, UndoLog};
@@ -223,6 +224,7 @@ pub struct Lookout {
     /// Clean up list and duplicate finder (on demand).
     tidy: crate::cleanup::Tidy,
     quick_keys: Arc<crate::quickkeys::QuickKeys>,
+    web_search: Arc<crate::websearch::Choice>,
     history: crate::history::SearchHistory,
     notes: Arc<NoteStore>,
     timers: Arc<crate::timers::TimerService>,
@@ -583,6 +585,8 @@ impl Lookout {
             .map_err(StartError::Engine)?,
         );
         let files_source = Arc::new(FilesSource::new(index.clone(), weights));
+        let web_search = Arc::new(crate::websearch::Choice::default());
+        web_search.set(opts.settings.web_search);
         // Nothing is read or written until a note is asked for.
         let notes = Arc::new(NoteStore::new(storage.db.clone()));
         let sources: Vec<Arc<dyn Source>> = vec![
@@ -594,6 +598,10 @@ impl Lookout {
             Arc::new(UnitsSource),
             Arc::new(crate::pathquery::PathSource),
             Arc::new(QuickSource::new(theme.clone())),
+            Arc::new(crate::websearch::WebSearchSource::new(
+                web_search.clone(),
+                claimed_words(plugin_host.clone()),
+            )),
             Arc::new(PortSource::new(system.clone())),
             apps_source,
             files_source.clone(),
@@ -677,6 +685,12 @@ impl Lookout {
             Arc::new(OpenUrlAction::new(opts.launcher.clone())),
             Arc::new(PageAction::new(opts.launcher.clone())),
             Arc::new(ThemeAction::new(theme)),
+            Arc::new(LockAction(Arc::new(WindowsLock))),
+            Arc::new(EmptyBinAction::new(
+                Box::new(crate::cleanup::recycle_bin_batch),
+                tidy_store.clone(),
+                Arc::new(ShellRecycler),
+            )),
             Arc::new(crate::timers::StartAction::new(timers.clone())),
             Arc::new(crate::timers::CancelAction::new(timers.clone())),
             Arc::new(RevealAction(Arc::new(ExplorerReveal))),
@@ -721,10 +735,10 @@ impl Lookout {
             *map.lock().unwrap_or_else(PoisonError::into_inner) = known;
             inner(update);
         });
-        // Notes are never handed to the command line.
+        // Notes are never handed to the command line, and it opens no web pages.
         let cli_sources = sources
             .iter()
-            .filter(|s| s.id() != "notes")
+            .filter(|s| !["notes", crate::websearch::SOURCE].contains(&s.id()))
             .cloned()
             .collect();
         let home_roots = roots.clone();
@@ -761,6 +775,7 @@ impl Lookout {
             ),
             tidy,
             quick_keys,
+            web_search,
             history,
             notes,
             timers,
@@ -1477,6 +1492,11 @@ impl Lookout {
         &self.quick_keys
     }
 
+    /// Applies the engine chosen in Settings at once.
+    pub fn set_web_search(&self, engine: crate::websearch::SearchEngine) {
+        self.web_search.set(engine);
+    }
+
     /// Recent searches (the typed text only).
     pub fn history(&self) -> &crate::history::SearchHistory {
         &self.history
@@ -1733,6 +1753,17 @@ fn target_of(item: &crate::item::Item) -> Option<Target> {
         }
         _ => None,
     }
+}
+
+/// First words an add-on in use answers, so no web search is offered for them.
+fn claimed_words(host: Option<Arc<PluginHost>>) -> crate::websearch::Claimed {
+    Box::new(move |word| {
+        host.as_ref().is_some_and(|h| {
+            h.manifests().any(|m| {
+                h.is_usable(&m.id) && m.triggers.iter().any(|t| t.eq_ignore_ascii_case(word))
+            })
+        })
+    })
 }
 
 fn default_system() -> Arc<dyn ProcessBackend> {

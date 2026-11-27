@@ -882,6 +882,10 @@ impl Launcher for ShellLauncher {
         }
         open::that_detached(path)
     }
+
+    fn control_panel(&self, name: &str) -> std::io::Result<()> {
+        lookout_core::actions::open::start_control_panel(name)
+    }
 }
 
 fn services_of(services: &State<'_, Services>) -> Result<Arc<Lookout>, String> {
@@ -978,6 +982,25 @@ async fn quickkey_add(
         .quick_keys()
         .add_typed(&alias, &target)
         .map_err(|e| e.to_string())
+}
+
+/// A query shortcut: an alias for a longer search text.
+#[tauri::command]
+async fn quickkey_add_text(
+    alias: String,
+    text: String,
+    services: State<'_, Services>,
+) -> Result<String, String> {
+    services_of(&services)?
+        .quick_keys()
+        .add_text(&alias, &text)
+        .map_err(|e| e.to_string())
+}
+
+/// The text a typed query shortcut stands for. Reads memory only.
+#[tauri::command]
+fn quickkey_expand(typed: String, services: State<Services>) -> Option<String> {
+    services.current()?.quick_keys().expand(&typed)
 }
 
 #[tauri::command]
@@ -1079,6 +1102,20 @@ fn set_remember_searches(
     shared: State<Shared>,
 ) -> Result<PrivacyState, String> {
     lock(&services.settings).set_remember_searches(on, &services.paths.settings())?;
+    Ok(privacy_of(&services, &shared))
+}
+
+/// The web search engine; applied at once, without restarting search.
+#[tauri::command]
+fn set_web_search(
+    engine: lookout_core::websearch::SearchEngine,
+    services: State<Services>,
+    shared: State<Shared>,
+) -> Result<PrivacyState, String> {
+    lock(&services.settings).set_web_search(engine, &services.paths.settings())?;
+    if let Some(l) = services.current() {
+        l.set_web_search(engine);
+    }
     Ok(privacy_of(&services, &shared))
 }
 
@@ -1734,6 +1771,7 @@ struct PrivacyState {
     remember_searches: bool,
     remember_last_search: bool,
     start_with_windows: bool,
+    web_search: lookout_core::websearch::SearchEngine,
     /// What the setup shows that switch as.
     setup_start_with_windows: bool,
 }
@@ -1763,6 +1801,7 @@ fn privacy_of(services: &Services, shared: &Shared) -> PrivacyState {
         remember_searches: s.remember_searches,
         remember_last_search: s.remember_last_search,
         start_with_windows: s.starts_with_windows(),
+        web_search: s.web_search,
         setup_start_with_windows: s.setup_offers_start_with_windows(),
     }
 }
@@ -2749,6 +2788,8 @@ pub fn run() {
             quickkey_list,
             quickkey_set,
             quickkey_add,
+            quickkey_add_text,
+            quickkey_expand,
             quickkey_rename,
             quickkey_delete,
             index_status,
@@ -2771,6 +2812,7 @@ pub fn run() {
             clear_search_history,
             clear_notes,
             set_remember_searches,
+            set_web_search,
             setup_folders,
             setup_start,
             setup_finish,

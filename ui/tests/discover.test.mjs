@@ -62,6 +62,13 @@ test("synonyms, beginnings and typos find the action, whatever the case or accen
   }
 });
 
+test("a suggested action never pushes a command or page row aside", () => {
+  const row = (id) => ({ id, kind: { custom: "system" }, title: id, source: "system" });
+  assert.equal(place("lock", [file("lock.txt"), row("system:lock")])[0], "system:lock");
+  assert.equal(place("lock screen", [row("system:lockscreen")])[0], "system:lockscreen");
+  assert.equal(place("empty recycle bin", [row("system:empty_bin")])[0], "system:empty_bin");
+});
+
 test("words under five letters are not matched by typo", () => {
   assert.ok(within1("hlep", "help") && within1("snp", "snip"));
   for (const q of ["snop", "clpi", "wbe", "mtah"]) assert.deepEqual(ids(q), [], q);

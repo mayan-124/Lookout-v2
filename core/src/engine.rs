@@ -54,6 +54,7 @@ enum Msg {
         sources: usize,
         understood: Understood,
         exts: &'static [&'static str],
+        fallback: Vec<Item>,
     },
     Batch {
         generation: u64,
@@ -119,6 +120,7 @@ impl Engine {
             .filter(|s| !parsed.is_empty() && (!private || s.id() == "notes"))
             .collect();
         let runnable = wanted.len();
+        let fallback = wanted.iter().filter_map(|s| s.fallback(&parsed)).collect();
         // Sent before any source starts, so the merger always sees `New` first.
         if self
             .tx
@@ -127,6 +129,7 @@ impl Engine {
                 sources: runnable,
                 understood: parsed.understood.clone(),
                 exts: parsed.exts,
+                fallback,
             })
             .is_err()
         {
@@ -184,6 +187,8 @@ struct MergeState {
     remaining: usize,
     understood: Understood,
     exts: &'static [&'static str],
+    /// Shown only if every source finished and nothing matched.
+    fallback: Vec<Item>,
     dirty: bool,
     last_flush: Option<Instant>,
 }
@@ -216,6 +221,9 @@ fn flush(state: &mut MergeState, sink: &Sink, live: &AtomicU64, max_results: usi
         });
     }
     items.truncate(max_results);
+    if done && items.is_empty() {
+        items.clone_from(&state.fallback);
+    }
     sink(Update {
         generation: state.generation,
         items,
@@ -231,6 +239,7 @@ fn merge_loop(rx: &Receiver<Msg>, sink: &Sink, live: &AtomicU64, cfg: EngineConf
         remaining: 0,
         understood: Understood::default(),
         exts: &[],
+        fallback: Vec::new(),
         dirty: false,
         last_flush: None,
     };
@@ -245,6 +254,7 @@ fn merge_loop(rx: &Receiver<Msg>, sink: &Sink, live: &AtomicU64, cfg: EngineConf
                 sources,
                 understood,
                 exts,
+                fallback,
             }) => {
                 if generation < state.generation {
                     continue;
@@ -254,6 +264,7 @@ fn merge_loop(rx: &Receiver<Msg>, sink: &Sink, live: &AtomicU64, cfg: EngineConf
                 state.remaining = sources;
                 state.understood = understood;
                 state.exts = exts;
+                state.fallback = fallback;
                 state.dirty = false;
                 state.last_flush = None;
                 if sources == 0 {
@@ -394,6 +405,42 @@ mod tests {
                 pair[0].generation,
                 pair[1].generation
             );
+        }
+    }
+
+    #[test]
+    fn a_fallback_row_shows_only_when_nothing_matched() {
+        struct Fallback;
+        impl Source for Fallback {
+            fn id(&self) -> &'static str {
+                "fallback"
+            }
+            fn tier(&self) -> Tier {
+                Tier::Instant
+            }
+            fn query(&self, _: &ParsedQuery, _: &QueryContext, _: &mut dyn FnMut(Vec<Item>)) {}
+            fn fallback(&self, _: &ParsedQuery) -> Option<Item> {
+                Some(item("web", 0.0))
+            }
+        }
+        let (rec, rx, sink) = recorder();
+        let some = source("some", |q, _, emit| {
+            if q.raw == "found" {
+                emit(vec![item("file", 1.0)]);
+            }
+        });
+        let engine = Engine::new(
+            vec![some, Arc::new(Fallback)],
+            sink,
+            EngineConfig::default(),
+        )
+        .unwrap();
+        for (generation, text, expected) in [(1, "found", "file"), (2, "nothing", "web")] {
+            engine.submit(generation, text);
+            wait_done(&rec, &rx, generation);
+            let last = rec.all().pop().unwrap();
+            let titles: Vec<_> = last.items.iter().map(|i| i.title.as_str()).collect();
+            assert_eq!(titles, [expected], "{text}");
         }
     }
 

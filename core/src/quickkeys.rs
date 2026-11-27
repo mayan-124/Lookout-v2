@@ -1,7 +1,9 @@
-//! Quick keys: a short alias (2 to 8 letters or digits) for one result.
-//! Typing the alias and a space puts that result on top; Enter then goes
-//! through the same action engine as for any result, so previews and
-//! confirmations are never skipped. Aliases live in the encrypted `meta.db`.
+//! Quick keys: a short alias (2 to 8 letters or digits) for one result, or for
+//! a longer search. For a result, typing the alias and a space puts it on top;
+//! Enter then goes through the same action engine as for any result, so
+//! previews and confirmations are never skipped. A query shortcut instead
+//! replaces the text in the box: nothing is run. Both live in the encrypted
+//! `meta.db`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -20,6 +22,10 @@ pub const MIN_LEN: usize = 2;
 pub const MAX_LEN: usize = 8;
 pub const MAX_KEYS: usize = 50;
 pub const KIND_MISSING: &str = "quickkey_missing";
+/// A stored query shortcut; never a search result.
+const KIND_QUERY: &str = "query_shortcut";
+/// Longest text a query shortcut holds.
+const MAX_TEXT: usize = 200;
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeyError {
@@ -39,6 +45,8 @@ pub enum KeyError {
     NotSupported,
     #[error("Enter the path of an existing file or folder, or a web address (apps and system actions are set from search results).")]
     BadTarget,
+    #[error("Type the search this shortcut stands for, at most {MAX_TEXT} characters.")]
+    BadText,
     #[error("There is no quick key \"{0}\".")]
     Unknown(String),
     #[error("{0}")]
@@ -49,15 +57,13 @@ pub enum KeyError {
 /// their keywords, and the built-in commands.
 fn is_reserved(alias: &str) -> bool {
     const FIXED: &[&str] = &[
-        "timer", "timers", "settings", "setting", "help", "kill", "port",
+        "timer", "timers", "settings", "setting", "help", "kill", "port", "night",
     ];
+    // Whole keywords only: a word out of a longer one ("a", "pc") stays free.
     FIXED.contains(&alias)
-        || quick::ENTRIES.iter().any(|e| {
-            e.id == alias
-                || e.keywords
-                    .iter()
-                    .any(|k| *k == alias || k.split_whitespace().any(|w| w == alias))
-        })
+        || quick::ENTRIES
+            .iter()
+            .any(|e| e.id == alias || e.keywords.contains(&alias))
 }
 
 /// Checks the form of an alias and returns it in lower case. Does not look at
@@ -86,6 +92,8 @@ pub fn validate_alias(typed: &str) -> Result<String, KeyError> {
 /// and the system entries, never a plugin's items.
 pub fn eligible(item: &Item) -> bool {
     !item.source.starts_with("plugin:")
+        // A web search row holds the typed words, which are not kept.
+        && item.source != crate::websearch::SOURCE
         && item.uri.is_some()
         && match &item.kind {
             Kind::File | Kind::Folder | Kind::App => true,
@@ -159,6 +167,7 @@ impl QuickKeys {
                 subtitle: i.subtitle.clone(),
                 kind: match &i.kind {
                     Kind::Custom(n) if n == KIND_URL => "web address".to_owned(),
+                    Kind::Custom(n) if n == KIND_QUERY => "search text".to_owned(),
                     Kind::Custom(_) => "system".to_owned(),
                     Kind::Folder => "folder".to_owned(),
                     Kind::App => "app".to_owned(),
@@ -182,8 +191,29 @@ impl QuickKeys {
         if !eligible(item) {
             return Err(KeyError::NotSupported);
         }
+        self.insert(validate_alias(typed)?, stored_form(item))
+    }
+
+    /// Assigns `typed` to a longer search text.
+    pub fn add_text(&self, typed: &str, text: &str) -> Result<String, KeyError> {
+        let text = quick::strip_controls(text);
+        // A trailing space is kept: "g " leaves the cursor ready for the words.
+        let text = text.trim_start();
+        if text.is_empty() || text.chars().count() > MAX_TEXT {
+            return Err(KeyError::BadText);
+        }
         let alias = validate_alias(typed)?;
-        let stored = stored_form(item);
+        let mut item = Item::new(
+            format!("shortcut:{alias}"),
+            Kind::Custom(KIND_QUERY.into()),
+            text,
+            "quickkey",
+        );
+        item.uri = Some(text.to_owned());
+        self.insert(alias, item)
+    }
+
+    fn insert(&self, alias: String, stored: Item) -> Result<String, KeyError> {
         let json = serde_json::to_string(&stored).map_err(|_| KeyError::NotSupported)?;
         let mut map = self.lock();
         if let Some(other) = map.get(&alias) {
@@ -284,11 +314,29 @@ impl QuickKeys {
         Ok(())
     }
 
+    /// The text that replaces the box when `typed` is exactly a query
+    /// shortcut's alias followed by a space. Only reads.
+    pub fn expand(&self, typed: &str) -> Option<String> {
+        let alias = typed.trim_end();
+        if alias.len() == typed.len() {
+            return None;
+        }
+        let map = self.lock();
+        let item = map.get(&alias.to_lowercase())?;
+        match &item.kind {
+            Kind::Custom(n) if n == KIND_QUERY => item.uri.clone(),
+            _ => None,
+        }
+    }
+
     /// The result an alias stands for, as shown on top of the list. A file,
     /// folder or app that is gone becomes a "target missing" result that
     /// cannot be run.
     pub fn resolve(&self, alias: &str) -> Option<Item> {
         let stored = self.lock().get(&alias.to_lowercase())?.clone();
+        if matches!(&stored.kind, Kind::Custom(n) if n == KIND_QUERY) {
+            return None;
+        }
         Some(resolved(&alias.to_lowercase(), stored))
     }
 }
@@ -612,6 +660,42 @@ mod tests {
         assert_eq!(hit[0].kind, Kind::Custom(KIND_MISSING.into()));
         assert!(!hit[0].metadata.contains_key("default_action"));
         assert!(hit[0].uri.is_none());
+    }
+
+    #[test]
+    fn a_query_shortcut_only_gives_back_its_text() {
+        let k = Arc::new(keys());
+        assert_eq!(k.add_text("PW", "  pdf last week").unwrap(), "pw");
+        k.add_text("gg", "g ").unwrap();
+        assert_eq!(k.expand("pw ").as_deref(), Some("pdf last week"));
+        assert_eq!(k.expand("Pw  ").as_deref(), Some("pdf last week"));
+        assert_eq!(k.expand("gg ").as_deref(), Some("g "));
+        for no in ["pw", " pw ", "pw x", "pwx ", "zz ", ""] {
+            assert_eq!(k.expand(no), None, "{no:?}");
+        }
+        // Never a result, so there is nothing to run.
+        assert!(ask(&QuickKeySource::new(k.clone()), "pw ").is_empty());
+        assert_eq!(k.list()[1].kind, "search text");
+        // One list of aliases for both kinds, with the same rules.
+        assert!(matches!(
+            k.add("pw", &file("C:\\a")),
+            Err(KeyError::Taken { .. })
+        ));
+        assert!(matches!(
+            k.add_text("lock", "x"),
+            Err(KeyError::Reserved(_))
+        ));
+        assert!(matches!(k.add_text("ab", "  "), Err(KeyError::BadText)));
+        assert!(matches!(
+            k.add_text("ab", &"a".repeat(201)),
+            Err(KeyError::BadText)
+        ));
+        k.add("res", &file("C:\\a")).unwrap();
+        assert_eq!(k.expand("res "), None);
+        k.rename("pw", "pw2").unwrap();
+        assert!(k.expand("pw2 ").is_some());
+        k.remove("pw2").unwrap();
+        assert!(k.expand("pw2 ").is_none());
     }
 
     #[test]

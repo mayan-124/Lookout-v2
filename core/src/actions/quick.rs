@@ -10,8 +10,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
+use super::disk::{BatchRemoveAction, Recycler};
 use super::open::Launcher;
 use super::{Action, ActionError, Authorized, Executed, Plan, Preview, Risk, Target, UndoPlan};
+use crate::cleanup::{Batch, BatchStore};
 use crate::item::{Item, Kind};
 use crate::query::ParsedQuery;
 use crate::quick::{self, What};
@@ -20,6 +22,8 @@ use crate::sources::{QueryContext, Source, Tier, ANSWER_SCORE};
 pub const OPEN_URL: &str = "open_url";
 pub const SYSTEM_PAGE: &str = "system_page";
 pub const SYSTEM_THEME: &str = "system_theme";
+pub const SYSTEM_LOCK: &str = "system_lock";
+pub const SYSTEM_EMPTY_BIN: &str = "system_empty_bin";
 
 /// `Kind::Custom` names used by the results of this module.
 pub const KIND_URL: &str = "url";
@@ -180,8 +184,8 @@ impl Action for ThemeAction {
 
 // ---------------------------------------------------------- open things
 
-/// Opens one of the fixed Settings pages. The address comes from the fixed
-/// table in [`quick::ENTRIES`], never from the result's text.
+/// Opens one of the fixed Settings or Control Panel pages. The address comes
+/// from the fixed table in [`quick::ENTRIES`], never from the result's text.
 pub struct PageAction {
     launcher: Arc<dyn Launcher>,
 }
@@ -211,7 +215,7 @@ impl Action for PageAction {
             .as_deref()
             .and_then(quick::entry)
             .and_then(|e| match e.what {
-                What::Page(p) => Some((e, p)),
+                What::Page(p) | What::Control(p) => Some((e, p)),
                 _ => None,
             })
             .ok_or_else(|| ActionError::NotApplicable {
@@ -229,24 +233,141 @@ impl Action for PageAction {
     }
 
     fn execute(&self, plan: &Plan, _proof: &Authorized) -> Result<Executed, ActionError> {
-        let page = plan
-            .snapshot
-            .get("page")
-            .and_then(|p| p.as_str())
-            // Only a page from the fixed table is ever launched.
-            .filter(|p| {
-                quick::ENTRIES
-                    .iter()
-                    .any(|e| matches!(e.what, What::Page(q) if q == *p))
-            })
-            .ok_or_else(|| ActionError::Failed("bad plan".into()))?;
-        self.launcher
-            .open(Path::new(page))
-            .map_err(|e| ActionError::Failed(format!("could not open Settings: {e}")))?;
+        let page = plan.snapshot.get("page").and_then(|p| p.as_str());
+        // Only a page from the fixed table is ever launched.
+        let what = quick::ENTRIES
+            .iter()
+            .map(|e| e.what)
+            .find(|w| matches!(w, What::Page(q) | What::Control(q) if Some(*q) == page));
+        let (name, opened) = match what {
+            Some(What::Page(p)) => ("Settings", self.launcher.open(Path::new(p))),
+            Some(What::Control(n)) => ("Control Panel", self.launcher.control_panel(n)),
+            _ => return Err(ActionError::Failed("bad plan".into())),
+        };
+        opened.map_err(|e| ActionError::Failed(format!("could not open {name}: {e}")))?;
         Ok(Executed {
-            message: "Opened Settings".into(),
+            message: format!("Opened {name}"),
             undo_token: None,
         })
+    }
+}
+
+// ------------------------------------------------------- system commands
+
+/// Locks the Windows session.
+pub trait SessionLock: Send + Sync {
+    fn lock(&self) -> Result<(), String>;
+}
+
+/// The target must be the built-in entry `id`, never an add-on's result.
+fn expect_entry(target: &Target, id: &str, action: &str) -> Result<(), ActionError> {
+    if target.origin.is_some() || target.uri.as_deref() != Some(id) {
+        return Err(ActionError::NotApplicable {
+            action: action.into(),
+        });
+    }
+    Ok(())
+}
+
+pub struct LockAction(pub Arc<dyn SessionLock>);
+
+impl Action for LockAction {
+    fn id(&self) -> &str {
+        SYSTEM_LOCK
+    }
+
+    fn label(&self) -> &str {
+        "Lock this PC"
+    }
+
+    fn applies_to(&self, kind: &Kind) -> bool {
+        is_custom(kind, KIND_SYSTEM)
+    }
+
+    fn plan(&self, target: &Target) -> Result<Plan, ActionError> {
+        expect_entry(target, "lock", SYSTEM_LOCK)?;
+        Ok(simple_plan(
+            Risk::Safe,
+            "Lock this PC".into(),
+            vec!["Programs keep running. Sign in again to return.".into()],
+            Vec::new(),
+            false,
+            serde_json::json!({}),
+            "lock".into(),
+        ))
+    }
+
+    fn execute(&self, _plan: &Plan, _proof: &Authorized) -> Result<Executed, ActionError> {
+        self.0.lock().map_err(ActionError::Failed)?;
+        Ok(Executed {
+            message: "Locked".into(),
+            undo_token: None,
+        })
+    }
+}
+
+/// What is in the Recycle Bin now, as a removal list; `None` when it is empty.
+pub type BinContents = Box<dyn Fn() -> Option<Batch> + Send + Sync>;
+
+/// "empty recycle bin" from the search box: the same plan, warning and removal
+/// as the Recycle Bin row of Clean up.
+pub struct EmptyBinAction {
+    contents: BinContents,
+    store: Arc<BatchStore>,
+    clean: BatchRemoveAction,
+    /// The list made by the previous plan, forgotten when the next one is made.
+    last: Mutex<Option<String>>,
+}
+
+impl EmptyBinAction {
+    pub fn new(contents: BinContents, store: Arc<BatchStore>, recycler: Arc<dyn Recycler>) -> Self {
+        Self {
+            contents,
+            clean: BatchRemoveAction::new(store.clone(), recycler),
+            store,
+            last: Mutex::new(None),
+        }
+    }
+}
+
+impl Action for EmptyBinAction {
+    fn id(&self) -> &str {
+        SYSTEM_EMPTY_BIN
+    }
+
+    fn label(&self) -> &str {
+        "Empty the Recycle Bin"
+    }
+
+    fn applies_to(&self, kind: &Kind) -> bool {
+        is_custom(kind, KIND_SYSTEM)
+    }
+
+    fn plan(&self, target: &Target) -> Result<Plan, ActionError> {
+        expect_entry(target, "empty_bin", SYSTEM_EMPTY_BIN)?;
+        let batch = (self.contents)()
+            .ok_or_else(|| ActionError::NothingToDo("the Recycle Bin is already empty".into()))?;
+        let (items, bytes) = (batch.bin_items, batch.bin_bytes);
+        let id = self.store.put(batch);
+        let old = self
+            .last
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(id.clone());
+        if let Some(old) = old {
+            self.store.forget(&old);
+        }
+        let mut plan = self.clean.plan(&Target {
+            uri: Some(format!("batch:{id}")),
+            ..target.clone()
+        })?;
+        // Stale if the bin changed since the preview; the list's id is new each time.
+        plan.fingerprint = format!("empty_bin|{items}|{bytes}");
+        Ok(plan)
+    }
+
+    fn execute(&self, plan: &Plan, proof: &Authorized) -> Result<Executed, ActionError> {
+        self.clean.execute(plan, proof)
     }
 }
 
@@ -400,7 +521,9 @@ impl Source for QuickSource {
                     },
                     SYSTEM_THEME,
                 ),
-                What::Page(_) => (entry.title.to_owned(), SYSTEM_PAGE),
+                What::Page(_) | What::Control(_) => (entry.title.to_owned(), SYSTEM_PAGE),
+                What::Lock => (entry.title.to_owned(), SYSTEM_LOCK),
+                What::EmptyBin => (entry.title.to_owned(), SYSTEM_EMPTY_BIN),
             };
             let mut item = Item::new(
                 format!("system:{}", entry.id),
@@ -424,7 +547,7 @@ impl Source for QuickSource {
 // ------------------------------------------------------ real Windows parts
 
 #[cfg(windows)]
-pub use real::WindowsTheme;
+pub use real::{WindowsLock, WindowsTheme};
 
 #[cfg(windows)]
 mod real {
@@ -432,11 +555,12 @@ mod real {
         RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
         HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_DWORD,
     };
+    use windows_sys::Win32::System::Shutdown::LockWorkStation;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
     };
 
-    use super::{ThemeBackend, ThemeValues};
+    use super::{SessionLock, ThemeBackend, ThemeValues};
 
     const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
     const APPS: &str = "AppsUseLightTheme";
@@ -447,6 +571,18 @@ mod real {
     }
 
     pub struct WindowsTheme;
+
+    pub struct WindowsLock;
+
+    impl SessionLock for WindowsLock {
+        fn lock(&self) -> Result<(), String> {
+            // SAFETY: no arguments; zero means Windows refused.
+            if unsafe { LockWorkStation() } == 0 {
+                return Err("Windows could not lock this PC".to_owned());
+            }
+            Ok(())
+        }
+    }
 
     struct Key(HKEY);
 
@@ -585,6 +721,11 @@ mod tests {
                 .push(path.to_string_lossy().into_owned());
             Ok(())
         }
+
+        fn control_panel(&self, name: &str) -> std::io::Result<()> {
+            self.0.lock().unwrap().push(format!("control {name}"));
+            Ok(())
+        }
     }
 
     fn target(kind: &str, uri: &str) -> Target {
@@ -658,6 +799,87 @@ mod tests {
         forged.snapshot = serde_json::json!({ "page": "calc.exe" });
         assert!(act.execute(&forged, &Authorized::for_tests()).is_err());
         assert_eq!(rec.0.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn control_panel_pages_open_only_from_the_fixed_table() {
+        let rec = Arc::new(Recorder(Mutex::new(Vec::new())));
+        let act = PageAction::new(rec.clone());
+        let plan = act.plan(&target(KIND_SYSTEM, "cp_devices")).unwrap();
+        act.execute(&plan, &Authorized::for_tests()).unwrap();
+        assert_eq!(
+            rec.0.lock().unwrap().as_slice(),
+            ["control Microsoft.DeviceManager"]
+        );
+        let mut forged = plan.clone();
+        forged.snapshot = serde_json::json!({ "page": "Microsoft.Anything" });
+        assert!(act.execute(&forged, &Authorized::for_tests()).is_err());
+        assert!(act.plan(&target(KIND_SYSTEM, "lock")).is_err());
+        assert_eq!(rec.0.lock().unwrap().len(), 1);
+    }
+
+    #[derive(Default)]
+    struct Count(Mutex<u32>);
+
+    impl SessionLock for Count {
+        fn lock(&self) -> Result<(), String> {
+            *self.0.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    impl Recycler for Count {
+        fn recycle(&self, _: &Path) -> Result<(), String> {
+            Err("not used".into())
+        }
+        fn empty_bin(&self) -> Result<(), String> {
+            *self.0.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn lock_is_safe_and_refuses_other_targets() {
+        let count = Arc::new(Count::default());
+        let act = LockAction(count.clone());
+        let plan = act.plan(&target(KIND_SYSTEM, "lock")).unwrap();
+        assert_eq!(plan.risk, Risk::Safe);
+        act.execute(&plan, &Authorized::for_tests()).unwrap();
+        assert_eq!(*count.0.lock().unwrap(), 1);
+        assert!(act.plan(&target(KIND_SYSTEM, "display")).is_err());
+    }
+
+    #[test]
+    fn emptying_the_bin_is_dangerous_says_so_and_goes_stale_if_the_bin_changes() {
+        let count = Arc::new(Count::default());
+        let items = Arc::new(Mutex::new(3u64));
+        let now = items.clone();
+        let contents: BinContents = Box::new(move || {
+            let n = *now.lock().unwrap();
+            (n > 0).then(|| Batch {
+                label: "Recycle Bin".into(),
+                mode: crate::cleanup::Mode::EmptyBin,
+                entries: Vec::new(),
+                keepers: Vec::new(),
+                bin_items: n,
+                bin_bytes: 10,
+            })
+        });
+        let store = Arc::new(BatchStore::new(crate::cleanup::Env::current()));
+        let act = EmptyBinAction::new(contents, store, count.clone());
+        let t = target(KIND_SYSTEM, "empty_bin");
+        let first = act.plan(&t).unwrap();
+        assert_eq!(first.risk, Risk::Dangerous);
+        assert!(first.preview.warnings[0].contains("cannot be undone"));
+        // The gate plans again before running: same fingerprint, runnable list.
+        let again = act.plan(&t).unwrap();
+        assert_eq!(first.fingerprint, again.fingerprint);
+        act.execute(&again, &Authorized::for_tests()).unwrap();
+        assert_eq!(*count.0.lock().unwrap(), 1);
+        *items.lock().unwrap() = 4;
+        assert_ne!(act.plan(&t).unwrap().fingerprint, first.fingerprint);
+        *items.lock().unwrap() = 0;
+        assert!(act.plan(&t).is_err());
     }
 
     #[test]
