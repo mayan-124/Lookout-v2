@@ -1476,13 +1476,16 @@ This product includes software developed at
 The Apache Software Foundation (http://www.apache.org/).
 ````
 
+## Application icon
+
+The application icon in `ui/src-tauri/icons/` is the Lookout project's own design. It is not third-party material.
+
 ## To verify before release
 
 These items are not Rust crates or npm packages. License not verified for any of them; no license is stated here because none was checked in a file.
 
 - bge-small-en-v1.5 model (int8 `model.onnx` export) and its `tokenizer.json` — not part of the installer; downloaded by the user on request from huggingface.co/Xenova/bge-small-en-v1.5 (see PRIVACY.md). The base model, <https://huggingface.co/BAAI/bge-small-en-v1.5>, states MIT. The Xenova repository the files come from states no license, so the license of that export is not verified.
 - onnxruntime.dll 1.32.0 (from the `onnxruntime-1.32.0-cp312-cp312-win_amd64` wheel) — not part of the installer; downloaded by the user on request from files.pythonhosted.org. <https://pypi.org/project/onnxruntime/1.32.0/> states MIT; the license file itself was not read.
-- Application icons in `ui/src-tauri/icons/` — license not verified (origin of the artwork not recorded in the repository): `128x128.png`, `128x128@2x.png`, `32x32.png`, `64x64.png`, `Square107x107Logo.png`, `Square142x142Logo.png`, `Square150x150Logo.png`, `Square284x284Logo.png`, `Square30x30Logo.png`, `Square310x310Logo.png`, `Square44x44Logo.png`, `Square71x71Logo.png`, `Square89x89Logo.png`, `StoreLogo.png`, `icon.icns`, `icon.ico`, `icon.png`.
 - Fonts — none are bundled. The interface uses system font stacks (`Segoe UI Variable`, `Segoe UI`, `Cascadia Code`, `Cascadia Mono`, `Consolas`) from `ui/src/app.css`. No font files were found in the repository.
 - Interface icons — drawn as inline SVG paths in `ui/src`; no icon package or icon font is used. Origin of the paths not recorded in the repository, so not verified.
 

@@ -148,5 +148,7 @@ jobs:
             }
           }
           $latest | ConvertTo-Json -Depth 5 | Set-Content latest.json -Encoding utf8
-          gh release upload $TAG $exe.FullName $sigFile latest.json
+          # same installer under a fixed name, for the releases/latest/download link
+          Copy-Item $exe.FullName Lookout-setup.exe
+          gh release upload $TAG $exe.FullName $sigFile latest.json Lookout-setup.exe
           if ($LASTEXITCODE -ne 0) { throw "Upload to $TAG failed" }
