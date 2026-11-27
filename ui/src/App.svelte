@@ -264,7 +264,7 @@
   // Window drag from any non-interactive area. Interactive controls, lists, charts,
   // previews and scrollbars (data-no-drag, or the selector below) stay clickable.
   const NO_DRAG =
-    'button, input, select, textarea, a, label, canvas, svg, li, [role="option"], [role="listbox"], [role="tree"], [role="treeitem"], [role="tab"], [role="menu"], [role="separator"], .rows, .chartbox, .grip, .menu, .prevcard, .results, [data-no-drag]';
+    'button, input, select, textarea, a, label, canvas, svg, li, [role="option"], [role="listbox"], [role="tree"], [role="treeitem"], [role="tab"], [role="menu"], [role="separator"], .rows, .chartbox, .grip, .ctxmenu, .prevcard, .results, [data-no-drag]';
   const DRAG_TEXT = "h1, h2, h3, h4, header, footer, .label-caps, .hint, .keys, .status, kbd, .total, .crumbs";
   function dragFrom(e: MouseEvent) {
     if (e.button !== 0) return;
@@ -1624,7 +1624,7 @@
   onkeydown={onKeydown}
   onresize={fitScreen}
   onpointerdown={(e) => {
-    if (menu && !(e.target as Element).closest(".menu")) menu = null;
+    if (menu && !(e.target as Element).closest(".ctxmenu")) menu = null;
   }}
   onblur={() => !pinned && (visible = false)}
   onfocus={() => (visible = true)}
@@ -2244,7 +2244,7 @@
     </div>
   </div>
   {#if menu}
-    <div class="menu" role="menu" tabindex="-1" bind:this={menuEl} style:left={`${menu.x}px`} style:top={`${menu.y}px`}>
+    <div class="ctxmenu" role="menu" tabindex="-1" bind:this={menuEl} style:left={`${menu.x}px`} style:top={`${menu.y}px`}>
       {#each menu.entries as entry (entry.label)}
         <button
           type="button"

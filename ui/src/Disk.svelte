@@ -1020,7 +1020,7 @@
 
   {#if menu}
     {@const target = menu.target}
-    <div class="menu" role="menu" tabindex="-1" bind:this={menuEl} onkeydown={menuKey} style:left={`${menu.x}px`} style:top={`${menu.y}px`}>
+    <div class="ctxmenu" role="menu" tabindex="-1" bind:this={menuEl} onkeydown={menuKey} style:left={`${menu.x}px`} style:top={`${menu.y}px`}>
       <button role="menuitem" onclick={() => act("open", target)}>Open</button>
       <button role="menuitem" onclick={() => act("copy_path", target)}>Copy path</button>
       <button role="menuitem" onclick={() => act("copy_file", target)}>Copy file</button>
