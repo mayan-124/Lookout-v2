@@ -121,7 +121,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          $version = $TAG.TrimStart("v")
+          # an env: entry is not a PowerShell variable (names ignore case, so $TAG below is this one)
+          $tag = $env:TAG
+          $version = $tag.TrimStart("v")
           $exe = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           $sigFile = "$($exe.FullName).sig"
           if (-not (Test-Path $sigFile)) { throw "Missing signature $sigFile" }
