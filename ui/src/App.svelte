@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -152,7 +152,8 @@
       .catch(() => {});
   }
   // A clip says when it was copied, and whether it is code.
-  const clipParams = (i: Item) => (i.metadata?.plugin_params ?? {}) as { ts?: number; code?: boolean };
+  const clipParams = (i: Item) =>
+    (i.metadata?.plugin_params ?? {}) as { ts?: number; code?: boolean; image?: boolean };
   const clipTime = (i: Item) => clipParams(i).ts ?? 0;
   const isCode = (i: Item) => kindName(i.kind) === "clipboard" && !!clipParams(i).code;
   // A clip of a temp-folder path is noise in the recent list.
@@ -1310,6 +1311,31 @@
     return t && t.path === pathOf(thumbItem) ? t.src : null;
   });
 
+  // Image clips show a small picture, asked for one at a time while their rows
+  // are on screen and forgotten when the bar hides.
+  const clipImageKey = (i: Item) => (clipParams(i).image ? `${i.id}@${clipTime(i)}` : "");
+  let clipThumbs = $state<Record<string, string>>({});
+  $effect(() => {
+    if (!visible) {
+      clipThumbs = {};
+      return;
+    }
+    const wanted = [...items, ...recent.map((r) => r.item)].filter((i) => clipImageKey(i));
+    let dead = false;
+    void (async () => {
+      for (const i of wanted) {
+        const key = clipImageKey(i);
+        if (dead) return;
+        if (untrack(() => clipThumbs[key])) continue;
+        const src = await invoke<string | null>("clip_thumbnail", { id: i.id }).catch(() => null);
+        if (src && !dead) clipThumbs[key] = src;
+      }
+    })();
+    return () => {
+      dead = true;
+    };
+  });
+
   // Keyed by the verb, so an add-on's action reads like Lookout's own.
   const ACTION_LABEL: Record<string, string> = {
     open: "Open",
@@ -1671,7 +1697,12 @@
 {#snippet tile(it: Item)}
   {@const k = iconKind(it)}
   {@const act = actionOf(it)}
-  {#if act}
+  {@const picture = clipThumbs[clipImageKey(it)]}
+  {#if picture}
+    <img class="thumb" src={picture} alt="" />
+  {:else if clipParams(it).image}
+    <span class="icon" aria-hidden="true"><Icon name="image" /></span>
+  {:else if act}
     <span class="icon" aria-hidden="true">{@render glyph(act.icon ?? act.category)}</span>
   {:else if isRunning(it)}
     <span class="icon ring" aria-hidden="true">

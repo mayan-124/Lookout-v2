@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
 use std::time::{Duration, Instant};
 
@@ -148,7 +148,24 @@ struct Plugin {
     user: Mutex<UserState>,
     run: Mutex<Runtime>,
     labels: Mutex<HashMap<String, String>>,
+    /// Calls under way that a search should wait for.
+    brief: AtomicUsize,
 }
+
+/// What a stored clip is dragged as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DragData {
+    /// Secrets in it were masked, so it is not dragged.
+    Masked,
+    Text(String),
+    /// A picture, not written out (a check).
+    Picture,
+    /// A picture, written to Lookout's temp folder.
+    File(PathBuf),
+}
+
+/// Longest thumbnail accepted, in base64 characters.
+const MAX_THUMBNAIL: usize = 64 * 1024;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -309,6 +326,7 @@ impl PluginHost {
                         sent_paused: false,
                     }),
                     labels: Mutex::new(HashMap::new()),
+                    brief: AtomicUsize::new(0),
                 }));
             }
         }
@@ -702,7 +720,17 @@ impl PluginHost {
                 .map(|c| json!({"path": c.path, "kind": if c.is_folder {"folder"} else {"file"}}))
                 .collect();
             let params = json!({"raw": raw, "verb": verb, "rest": rest, "candidates": cands});
-            reply = self.call(p, "query", params, timeout, false)?;
+            let started = Instant::now();
+            reply = loop {
+                match self.call(p, "query", params.clone(), timeout, false) {
+                    Err(HostError::Busy)
+                        if p.brief.load(Ordering::Acquire) > 0 && started.elapsed() < timeout =>
+                    {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    other => break other?,
+                }
+            };
             let wants = reply
                 .get("select")
                 .and_then(|s| s.get("text"))
@@ -796,25 +824,78 @@ impl PluginHost {
 
     // ------------------------------------------------------------- actions
 
-    /// The text of one stored clip, to be dragged out. `None`: the plugin says
-    /// secrets in it were masked, so it is not dragged. Changes nothing.
-    pub fn drag_text(&self, id: &str, params: &Value) -> Result<Option<String>, HostError> {
-        let p = self.find(id)?;
-        let reply = self.call(
-            p,
-            "drag_data",
-            json!({"params": params}),
-            self.cfg.timeouts.preview,
-            true,
-        )?;
-        if reply.get("masked").and_then(Value::as_bool) == Some(true) {
-            return Ok(None);
+    /// What one stored clip is dragged out as. With `check` nothing is written:
+    /// a picture then answers [`DragData::Picture`] instead of a file.
+    pub fn drag_data(&self, id: &str, params: &Value, check: bool) -> Result<DragData, HostError> {
+        let reply = self.brief_call(id, "drag_data", json!({"params": params, "check": check}))?;
+        let flag = |k: &str| reply.get(k).and_then(Value::as_bool) == Some(true);
+        let text = |k: &str| reply.get(k).and_then(Value::as_str);
+        if flag("masked") {
+            Ok(DragData::Masked)
+        } else if flag("image") {
+            Ok(DragData::Picture)
+        } else if let Some(file) = text("file") {
+            // Only a file in Lookout's own temp folder is ever handed out.
+            let file = PathBuf::from(file);
+            crate::dragtemp::contains(&crate::dragtemp::dir(), &file)
+                .then_some(DragData::File(file))
+                .ok_or_else(|| HostError::BadReply("not a temp file".into()))
+        } else {
+            text("text")
+                .map(|t| DragData::Text(t.to_owned()))
+                .ok_or_else(|| HostError::BadReply("no text".into()))
         }
+    }
+
+    /// The small picture of one stored image clip, as a `data:` URL. Made by
+    /// the plugin when asked; nothing keeps it here.
+    pub fn thumbnail(&self, id: &str, params: &Value) -> Result<String, HostError> {
+        let reply = self.brief_call(id, "thumbnail", json!({"params": params}))?;
         reply
-            .get("text")
+            .get("png")
             .and_then(Value::as_str)
-            .map(|t| Some(t.to_owned()))
-            .ok_or_else(|| HostError::BadReply("no text".into()))
+            .filter(|b| {
+                b.len() <= MAX_THUMBNAIL
+                    && b.bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'='))
+            })
+            .map(|b| format!("data:image/png;base64,{b}"))
+            .ok_or_else(|| HostError::BadReply("no thumbnail".into()))
+    }
+
+    /// A short call about one row already on screen. A search that arrives
+    /// meanwhile waits for it instead of losing this add-on's rows.
+    fn brief_call(&self, id: &str, method: &str, params: Value) -> Result<Value, HostError> {
+        let p = self.find(id)?;
+        p.brief.fetch_add(1, Ordering::AcqRel);
+        let reply = self.call(p, method, params, self.cfg.timeouts.preview, true);
+        p.brief.fetch_sub(1, Ordering::AcqRel);
+        reply
+    }
+
+    /// Changes one setting of a plugin, keeping the others.
+    fn set_config_value(&self, id: &str, key: &str, value: Value) -> Result<(), HostError> {
+        let p = self.find(id)?;
+        let mut config = effective_config(&p.manifest.config_defaults, &lock(&p.user).config);
+        config[key] = value;
+        self.set_config(id, config)
+    }
+
+    /// "Keep copied images". Turning it off deletes the kept ones here and now,
+    /// whether or not the plugin is running.
+    pub fn set_keep_images(&self, id: &str, on: bool) -> Result<(), HostError> {
+        self.set_config_value(id, "keep_images", json!(if on { "on" } else { "off" }))?;
+        if !on {
+            let own = self.cfg.data_dir.join("plugins").join(id);
+            match std::fs::remove_dir_all(own.join("images")) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(HostError::Save(e.to_string()))
+                }
+                _ => {}
+            }
+            crate::dragtemp::clear(&crate::dragtemp::dir());
+        }
+        Ok(())
     }
 
     /// Preview of an action on one item, with the risk raised to the floor.

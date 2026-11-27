@@ -8,6 +8,6 @@ pub mod manifest;
 pub mod sdk;
 pub mod wire;
 
-pub use host::{Candidate, HostConfig, HostError, PluginHost, PluginInfo, Timeouts};
+pub use host::{Candidate, DragData, HostConfig, HostError, PluginHost, PluginInfo, Timeouts};
 pub use integration::{PluginActions, PluginSource};
 pub use manifest::{Manifest, ManifestError};

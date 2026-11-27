@@ -551,12 +551,37 @@ fn set_remember_last_search(
 #[tauri::command]
 async fn drag_check(id: String, services: State<'_, Services>) -> Result<Option<String>, String> {
     let lookout = services_of(&services)?;
-    tauri::async_runtime::spawn_blocking(move || match lookout.drag_payload(&id) {
-        Err(why @ (Refusal::OnlineOnly | Refusal::MaskedClip)) => Some(why.to_string()),
+    tauri::async_runtime::spawn_blocking(move || match lookout.drag_refusal(&id) {
+        Some(why @ (Refusal::OnlineOnly | Refusal::MaskedClip)) => Some(why.to_string()),
         _ => None,
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// The small picture of an image clip, made when a row asks for it.
+#[tauri::command]
+async fn clip_thumbnail(
+    id: String,
+    services: State<'_, Services>,
+) -> Result<Option<String>, String> {
+    let lookout = services_of(&services)?;
+    tauri::async_runtime::spawn_blocking(move || lookout.clip_thumbnail(&id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// "Keep copied images" in Settings > Privacy.
+#[tauri::command]
+async fn set_keep_images(
+    on: bool,
+    services: State<'_, Services>,
+) -> Result<Vec<lookout_core::plugins::PluginInfo>, String> {
+    let lookout = services_of(&services)?;
+    let host = lookout.plugins().ok_or("add-ons are not available")?;
+    host.set_keep_images("com.lookout.clipboard", on)
+        .map_err(|e| e.to_string())?;
+    Ok(host.list())
 }
 
 /// Drags the file or clip behind a result into other programs (copy or link).
@@ -2123,7 +2148,15 @@ async fn delete_index(
 ) -> Result<PrivacyState, String> {
     let wiped = match services.replace(None) {
         Some(old) => old.wipe_index().map_err(|e| e.to_string()),
-        None => services.paths.wipe().map_err(|e| e.to_string()),
+        None => {
+            // Search is not running: what add-ons stored (clipboard history,
+            // images) still goes.
+            lookout_core::dragtemp::clear(&lookout_core::dragtemp::dir());
+            match std::fs::remove_dir_all(services.paths.root().join("plugins")) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+                _ => services.paths.wipe().map_err(|e| e.to_string()),
+            }
+        }
     };
     {
         let mut s = lock(&services.settings);
@@ -2390,6 +2423,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     };
     log::init(log::folder(&data_dir));
     if !measuring {
+        // Dragged-out pictures left behind by a crash.
+        lookout_core::dragtemp::clear(&lookout_core::dragtemp::dir());
         let starts = Arc::new(guard::Starts::begin(&data_dir));
         let shared = handle.state::<Shared>();
         shared
@@ -2777,6 +2812,8 @@ pub fn run() {
             reset_window_position,
             set_remember_last_search,
             drag_check,
+            clip_thumbnail,
+            set_keep_images,
             start_drag
         ]))
         .setup(setup)
@@ -2786,6 +2823,7 @@ pub fn run() {
                 // Closing on purpose is not a crash.
                 if let RunEvent::Exit = event {
                     if let Some(s) = lock(&app.state::<Shared>().starts).as_ref() {
+                        lookout_core::dragtemp::clear(&lookout_core::dragtemp::dir());
                         s.healthy();
                     }
                 }

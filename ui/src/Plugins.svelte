@@ -251,7 +251,8 @@
         {/if}
         {#if p.enabled && Object.keys(p.config).length > 0}
           <div class="config">
-            {#each Object.keys(p.config) as key (key)}
+            <!-- "Keep copied images" has its own switch in Privacy. -->
+            {#each Object.keys(p.config).filter((k) => k !== "keep_images") as key (key)}
               <label class="field">
                 <span class="ft cap">{label(key)}</span>
                 <input

@@ -1,13 +1,16 @@
 //! The JSON-RPC side of the clipboard plugin.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use lookout_core::crypto::Key;
+use lookout_core::dragtemp;
 use lookout_core::plugins::sdk::{items_changed, Handler};
+use lookout_core::preview::base64;
 use serde_json::{json, Value};
 
+use crate::image;
 use crate::monitor::{app_key, lock, now_secs, run, ClipboardIo, Read, Shared};
 use crate::smart::{self, Kind};
 use crate::store::{Clip, Limits, Store};
@@ -57,6 +60,16 @@ fn limits_from(config: &Value) -> Limits {
         retention_secs: i64::try_from(num("retention_hours", DEFAULT_RETENTION_HOURS, 8760) * 3600)
             .unwrap_or(i64::MAX),
     }
+}
+
+const IMAGE_TOO_LARGE: &str = "Images over 5 MB are not kept";
+
+/// `keep_images` from the config: only "on" (or true) turns it on.
+fn keep_images_from(config: &Value) -> bool {
+    let v = &config["keep_images"];
+    v.as_bool() == Some(true)
+        || v.as_str()
+            .is_some_and(|s| s.trim().eq_ignore_ascii_case("on"))
 }
 
 /// `exclude_apps` from the config: a list, or one text split at commas/semicolons/lines.
@@ -122,6 +135,27 @@ fn grouped(n: usize) -> String {
 
 /// One clip as the row in place `rank`. Lookout shows its age, from `params.ts`.
 fn item_for(clip: &Clip, paste: bool, rank: usize) -> Value {
+    let (enter, other) = if paste {
+        ("paste_clip", "copy_clip")
+    } else {
+        ("copy_clip", "paste_clip")
+    };
+    if let Some(image) = &clip.image {
+        let mut parts = vec![format!("{} KB", grouped(image.bytes.div_ceil(1024)))];
+        if let Some(app) = clip.source.as_deref().filter(|a| !a.contains("lookout")) {
+            parts.push(display_app(app));
+        }
+        return json!({
+            "id": clip.id.to_string(),
+            "title": clip.text,
+            "subtitle": parts.join(" · "),
+            "kind": "clipboard",
+            "action": enter,
+            "also": [other, "delete_clip"],
+            "params": {"clip_id": clip.id, "ts": clip.ts, "image": true},
+            "score": 5.0 - rank as f64 * 0.01,
+        });
+    }
     let kind = smart::detect(&clip.text);
     let mut parts: Vec<String> = Vec::new();
     if clip.pinned {
@@ -145,11 +179,6 @@ fn item_for(clip: &Clip, paste: bool, rank: usize) -> Value {
     }
     // "Code" the kind and "Code" the program are said once.
     parts.dedup();
-    let (enter, other) = if paste {
-        ("paste_clip", "copy_clip")
-    } else {
-        ("copy_clip", "paste_clip")
-    };
     json!({
         "id": clip.id.to_string(),
         "title": one_line(&clip.text, TITLE_CHARS),
@@ -208,6 +237,10 @@ fn clip_actions(clip: &Clip, paste: bool) -> Vec<Value> {
     } else {
         vec![action("copy_clip", "Copy"), action("paste_clip", "Paste")]
     };
+    if clip.image.is_some() {
+        a.push(action("delete_clip", "Delete"));
+        return a;
+    }
     a.push(action("paste_plain", "Paste as plain text"));
     match smart::detect(&clip.text) {
         Kind::Url => a.push(action("open_link", "Open link")),
@@ -241,6 +274,9 @@ impl Clipboard {
                 exclude: Mutex::new(Vec::new()),
                 ignore_next: std::sync::atomic::AtomicBool::new(false),
                 last_seq: Mutex::new(0),
+                keep_images: std::sync::atomic::AtomicBool::new(false),
+                image_refused: std::sync::atomic::AtomicBool::new(false),
+                drag_dir: Mutex::new(dragtemp::dir()),
             }),
             io,
             watch: std::env::var_os("LOOKOUT_CLIPBOARD_NO_WATCH").is_none(),
@@ -278,13 +314,19 @@ impl Clipboard {
             .as_str()
             .ok_or("Lookout gave no data folder")?;
         *lock(&self.shared.store) = Store::open(&Path::new(data_dir).join("clips.bin"), key);
+        let keep_images = keep_images_from(&params["config"]);
+        self.shared
+            .keep_images
+            .store(keep_images, Ordering::Release);
         {
             let limits = *lock(&self.shared.limits);
             let mut store = lock(&self.shared.store);
-            if store.prune(now_secs(), limits) {
+            let dropped = !keep_images && store.drop_images();
+            if store.prune(now_secs(), limits) || dropped {
                 let _ = store.save();
             }
         }
+        dragtemp::sweep(&lock(&self.shared.drag_dir), dragtemp::MAX_AGE);
         if self.watch {
             let (io, shared) = (self.io.clone(), self.shared.clone());
             std::thread::Builder::new()
@@ -300,7 +342,12 @@ impl Clipboard {
         if self.watch {
             crate::monitor::catch_up(self.io.as_ref(), &self.shared);
         }
-        let store = lock(&self.shared.store);
+        let limits = *lock(&self.shared.limits);
+        let mut store = lock(&self.shared.store);
+        // Nothing expired is ever listed.
+        if store.prune(now_secs(), limits) {
+            let _ = store.save();
+        }
         if rest == "clear" {
             return json!({"items": [{
                 "id": "clear",
@@ -316,10 +363,22 @@ impl Clipboard {
             items.push(json!({
                 "id": "ignore_next",
                 "title": "Ignore next copy",
-                "subtitle": "The next text you copy is not recorded",
+                "subtitle": "The next text or image you copy is not recorded",
                 "kind": "clipboard_action",
                 "action": "ignore_next",
                 "score": 6.0,
+            }));
+        }
+        if self.shared.image_refused.load(Ordering::Acquire)
+            && (rest.is_empty() || "image".contains(&rest))
+        {
+            items.push(json!({
+                "id": "image_refused",
+                "title": "Last image was not kept",
+                "subtitle": IMAGE_TOO_LARGE,
+                "kind": "clipboard_action",
+                "action": "image_refused",
+                "score": 5.5,
             }));
         }
         items.extend(
@@ -378,6 +437,42 @@ impl Clipboard {
             .cloned()
             .ok_or_else(|| "that clip is no longer in the history".to_owned())
     }
+
+    /// Puts a clip back on the clipboard.
+    fn put_back(&self, clip: &Clip, as_plain: bool) -> Result<(), String> {
+        if clip.image.is_none() {
+            return if as_plain {
+                self.io.write_text(&plain(&clip.text))
+            } else {
+                self.io.write_text(&clip.text)
+            };
+        }
+        if as_plain {
+            return Err("A picture has no text".to_owned());
+        }
+        let png = lock(&self.shared.store)
+            .image_png(clip.id)
+            .ok_or("that picture can no longer be read")?;
+        self.io.write_image(&png)
+    }
+
+    fn drag_path(&self, id: u64) -> PathBuf {
+        lock(&self.shared.drag_dir).join(format!("Lookout image {id}.png"))
+    }
+
+    /// Writes a picture to the temp folder, for another program to take.
+    fn drag_file(&self, id: u64) -> Result<PathBuf, String> {
+        let png = lock(&self.shared.store)
+            .image_png(id)
+            .ok_or("that clip has no picture")?;
+        let path = self.drag_path(id);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        // Written afresh each time, so its hour starts now.
+        std::fs::write(&path, png).map_err(|e| e.to_string())?;
+        Ok(path)
+    }
 }
 
 impl Handler for Clipboard {
@@ -395,17 +490,36 @@ impl Handler for Clipboard {
             "initialize" => self.initialize(&params),
             "query" => Ok(self.query(&params)),
             // A masked clip is never handed out for a drag.
+            // With "check" nothing is written: only whether a drag would work.
             "drag_data" => {
                 let clip = self.clip_of(&params)?;
+                if clip.image.is_some() {
+                    return Ok(if params["check"].as_bool() == Some(true) {
+                        json!({"image": true})
+                    } else {
+                        json!({"file": self.drag_file(clip.id)?})
+                    });
+                }
                 Ok(if clip.masked {
                     json!({"masked": true})
                 } else {
                     json!({"text": clip.text})
                 })
             }
+            // Made when asked, and not kept.
+            "thumbnail" => {
+                let clip = self.clip_of(&params)?;
+                let png = lock(&self.shared.store)
+                    .image_png(clip.id)
+                    .ok_or("that clip has no picture")?;
+                let small = image::thumbnail(&png).ok_or("that picture cannot be read")?;
+                Ok(json!({"png": base64(&small)}))
+            }
             "get_actions" => {
                 let id = params["items"][0]["id"].as_str().unwrap_or("");
-                if id.ends_with(":ignore_next") {
+                if id.ends_with(":image_refused") {
+                    Ok(json!({"actions": [action("image_refused", "Why?")]}))
+                } else if id.ends_with(":ignore_next") {
                     Ok(json!({"actions": [action("ignore_next", "Ignore next copy")]}))
                 } else if let Some(a) = text_actions::ACTIONS
                     .iter()
@@ -427,12 +541,16 @@ impl Handler for Clipboard {
             }
             "preview" => match params["action_id"].as_str() {
                 Some("delete_clip") => {
-                    self.clip_of(&params)?;
+                    let clip = self.clip_of(&params)?;
                     Ok(
                         json!({"title": "Delete this clip", "lines": [], "warnings": [],
-                              "undoable": true, "risk": "safe"}),
+                              "undoable": clip.image.is_none(), "risk": "safe"}),
                     )
                 }
+                Some("image_refused") => Ok(
+                    json!({"title": "Last image was not kept", "lines": [IMAGE_TOO_LARGE],
+                           "warnings": [], "undoable": false, "risk": "safe"}),
+                ),
                 Some(
                     a @ ("copy_clip" | "paste_clip" | "paste_plain" | "open_link" | "open_email"
                     | "preview_color" | "copy_pretty" | "pin_clip" | "unpin_clip"),
@@ -469,7 +587,7 @@ impl Handler for Clipboard {
                            "warnings": [], "undoable": false, "risk": "safe"}))
                 }
                 Some("ignore_next") => Ok(
-                    json!({"title": "Ignore the next copy", "lines": ["The next text you copy is not recorded."],
+                    json!({"title": "Ignore the next copy", "lines": ["The next text or image you copy is not recorded."],
                            "warnings": [], "undoable": false, "risk": "safe"}),
                 ),
                 Some("clear_history") => {
@@ -490,6 +608,12 @@ impl Handler for Clipboard {
                         .remove(id)
                         .ok_or("that clip is no longer in the history")?;
                     store.save().map_err(|e| e.to_string())?;
+                    // A deleted picture is gone at once: no undo.
+                    if clip.image.is_some() {
+                        store.drop_image(id);
+                        let _ = std::fs::remove_file(self.drag_path(id));
+                        return Ok(json!({"message": "Image deleted"}));
+                    }
                     drop(store);
                     self.deleted.push(clip);
                     let extra = self.deleted.len().saturating_sub(KEEP_DELETED);
@@ -498,17 +622,12 @@ impl Handler for Clipboard {
                 }
                 Some("copy_clip") => {
                     let clip = self.clip_of(&params)?;
-                    self.io.write_text(&clip.text)?;
+                    self.put_back(&clip, false)?;
                     Ok(json!({"message": "Copied to the clipboard"}))
                 }
                 Some(a @ ("paste_clip" | "paste_plain")) => {
                     let clip = self.clip_of(&params)?;
-                    let text = if a == "paste_plain" {
-                        plain(&clip.text)
-                    } else {
-                        clip.text
-                    };
-                    self.io.write_text(&text)?;
+                    self.put_back(&clip, a == "paste_plain")?;
                     Ok(match self.io.paste() {
                         Ok(()) => json!({"message": "Pasted"}),
                         Err(_) => json!({"message": "Copied (nothing to paste into)"}),
@@ -552,6 +671,7 @@ impl Handler for Clipboard {
                     store.save().map_err(|e| e.to_string())?;
                     Ok(json!({"message": if a == "pin_clip" { "Pinned" } else { "Unpinned" }}))
                 }
+                Some("image_refused") => Ok(json!({"message": IMAGE_TOO_LARGE})),
                 Some("ignore_next") => {
                     self.shared.ignore_next.store(true, Ordering::Release);
                     Ok(json!({"message": "The next copy will not be recorded"}))
@@ -571,6 +691,8 @@ impl Handler for Clipboard {
                         .clear()
                         .map_err(|e| e.to_string())?;
                     self.deleted.clear();
+                    self.shared.image_refused.store(false, Ordering::Release);
+                    dragtemp::clear(&lock(&self.shared.drag_dir));
                     Ok(json!({"message": format!("Deleted {n} clipboard history items")}))
                 }
                 _ => Err("unknown action".into()),
@@ -695,6 +817,62 @@ mod tests {
         assert_eq!((l.max_clips, l.retention_secs), (5, 7200));
         let l = limits_from(&json!({"max_clips": 0, "retention_hours": 99999999}));
         assert_eq!((l.max_clips, l.retention_secs), (1, 8760 * 3600));
+    }
+
+    #[test]
+    fn pictures_are_off_by_default() {
+        assert!(!keep_images_from(&Value::Null));
+        assert!(!keep_images_from(&json!({"keep_images": "off"})));
+        assert!(keep_images_from(&json!({"keep_images": "on"})));
+        let (c, _) = setup();
+        assert!(!c.shared.keep_images.load(Ordering::Acquire));
+        let manifest: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
+        assert!(!keep_images_from(&manifest["config_defaults"]));
+    }
+
+    #[test]
+    fn a_picture_row_copies_drags_as_a_temp_file_and_deletes_everything() {
+        let (mut c, _) = setup();
+        let dir = tempfile::tempdir().unwrap();
+        let drag = dir.path().join("drag");
+        *lock(&c.shared.drag_dir) = drag.clone();
+        let png = image::encode_png(200, 100, false, &vec![9; 200 * 100 * 3]).unwrap();
+        let id = {
+            let mut store = lock(&c.shared.store);
+            store
+                .add_image(&png, (200, 100), Some("paint"), now_secs(), L)
+                .unwrap();
+            let id = store.recent().next().unwrap().id;
+            id
+        };
+        let q = c.handle("query", json!({"rest": "image"})).unwrap();
+        assert_eq!(q["items"][0]["title"], "Image 200 × 100");
+        assert_eq!(q["items"][0]["action"], "copy_clip");
+        assert_eq!(q["items"][0]["params"]["image"], true);
+        assert_eq!(
+            action_ids(&mut c, id),
+            ["copy_clip", "paste_clip", "delete_clip"]
+        );
+        assert!(run(&mut c, "thumbnail", "", id).unwrap()["png"].is_string());
+
+        let p = json!({"params": {"clip_id": id}, "check": true});
+        assert_eq!(c.handle("drag_data", p).unwrap(), json!({"image": true}));
+        assert!(!drag.exists(), "a check writes nothing");
+        let p = json!({"params": {"clip_id": id}});
+        let reply = c.handle("drag_data", p.clone()).unwrap();
+        let file = PathBuf::from(reply["file"].as_str().unwrap());
+        assert!(dragtemp::contains(&drag, &file));
+        assert_eq!(std::fs::read(&file).unwrap(), png);
+
+        let r = run(&mut c, "execute", "delete_clip", id).unwrap();
+        assert!(r.get("undo_token").is_none());
+        assert!(!file.exists());
+        assert!(lock(&c.shared.store).image_png(id).is_none());
+        assert!(c.handle("drag_data", p).is_err());
+
+        std::fs::write(drag.join("left.png"), "x").unwrap();
+        run(&mut c, "execute", "clear_history", 0).unwrap();
+        assert!(!drag.exists());
     }
 
     #[test]

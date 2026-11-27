@@ -26,6 +26,7 @@ pub mod dates;
 pub mod diagnostics;
 #[cfg(windows)]
 pub mod diskusage;
+pub mod dragtemp;
 pub mod dupes;
 pub mod engine;
 pub mod exclude;

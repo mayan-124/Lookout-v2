@@ -20,6 +20,10 @@ use std::sync::{Condvar, Mutex, Once, PoisonError};
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{CloseHandle, GlobalFree, HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{
+    GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    DIB_RGB_COLORS,
+};
 use windows_sys::Win32::System::DataExchange::{
     AddClipboardFormatListener, CloseClipboard, EmptyClipboard, GetClipboardData,
     GetClipboardOwner, GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard,
@@ -44,8 +48,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_CLIPBOARDUPDATE, WNDCLASSW,
 };
 
-use crate::monitor::{ClipboardIo, Read};
+use crate::image;
+use crate::monitor::{ClipboardIo, ImageRead, Read};
+use crate::store::MAX_IMAGE_BYTES;
 
+/// Width, height and RGB rows, top down.
+type Pixels = (u32, u32, Vec<u8>);
+
+const CF_BITMAP: u32 = 2;
+const CF_DIB: u32 = 8;
 const CF_UNICODETEXT: u32 = 13;
 
 /// Present means "do not record".
@@ -65,6 +76,7 @@ fn register(name: &str) -> u32 {
 pub struct WindowsClipboard {
     if_present: Vec<u32>,
     if_zero: Vec<u32>,
+    png: u32,
 }
 
 /// Set by the listener window on every clipboard change.
@@ -209,6 +221,7 @@ impl WindowsClipboard {
         Self {
             if_present: EXCLUDE_IF_PRESENT.iter().map(|n| register(n)).collect(),
             if_zero: EXCLUDE_IF_ZERO.iter().map(|n| register(n)).collect(),
+            png: register("PNG"),
         }
     }
 
@@ -278,28 +291,136 @@ impl WindowsClipboard {
         }
     }
 
-    /// With the clipboard open: replace its content with `wide` (NUL-terminated).
-    fn set_text(wide: &[u16], bytes: usize) -> Result<(), String> {
+    /// With the clipboard open: add `bytes` as `format`.
+    fn put(format: u32, bytes: &[u8]) -> Result<(), String> {
         // SAFETY: the block is allocated, filled while locked and handed to the
         // clipboard, which then owns it; on failure it is freed here.
         unsafe {
-            EmptyClipboard();
-            let h = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            let h = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
             if h.is_null() {
                 return Err("out of memory".to_owned());
             }
-            let p = GlobalLock(h).cast::<u16>();
+            let p = GlobalLock(h).cast::<u8>();
             if p.is_null() {
                 GlobalFree(h);
                 return Err("could not lock memory".to_owned());
             }
-            std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
             GlobalUnlock(h);
-            if SetClipboardData(CF_UNICODETEXT, h).is_null() {
+            if SetClipboardData(format, h).is_null() {
                 GlobalFree(h);
-                return Err("the clipboard refused the text".to_owned());
+                return Err("the clipboard refused it".to_owned());
             }
             Ok(())
+        }
+    }
+
+    /// Replaces the clipboard's content, retrying while another program has it.
+    fn replace(formats: &[(u32, &[u8])]) -> Result<(), String> {
+        const BUSY: &str = "the clipboard is in use by another program";
+        let mut last = Err(BUSY.to_owned());
+        for attempt in 0..5 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            let owner = LISTENER_WINDOW.load(Ordering::Acquire) as HWND;
+            last = Self::with_open_as(owner, || {
+                // SAFETY: the clipboard is open.
+                unsafe { EmptyClipboard() };
+                formats.iter().try_for_each(|(f, b)| Self::put(*f, b))
+            })
+            .unwrap_or_else(|| Err(BUSY.to_owned()));
+            if last.is_ok() {
+                break;
+            }
+        }
+        last
+    }
+
+    /// With the clipboard open: the `PNG` format, as programs that keep
+    /// transparency offer it.
+    fn png_block(format: u32) -> Option<ImageRead> {
+        // SAFETY: as in `dword`; the slice is bounded by the block's real size.
+        unsafe {
+            let h = GetClipboardData(format);
+            if h.is_null() {
+                return None;
+            }
+            let size = GlobalSize(h);
+            // A block can be a little longer than the picture in it.
+            if size > MAX_IMAGE_BYTES + 4096 {
+                return Some(ImageRead::TooLarge);
+            }
+            let p = GlobalLock(h).cast::<u8>();
+            if p.is_null() {
+                return None;
+            }
+            let all = std::slice::from_raw_parts(p, size);
+            let out = image::trim_png(all).and_then(|png| {
+                if png.len() > MAX_IMAGE_BYTES {
+                    return Some(ImageRead::TooLarge);
+                }
+                image::dimensions(png).map(|size| ImageRead::Png(png.to_vec(), size))
+            });
+            GlobalUnlock(h);
+            out
+        }
+    }
+
+    /// With the clipboard open: the bitmap's pixels as RGB, rows top down.
+    /// Windows offers a bitmap for every kind of picture format.
+    fn bitmap() -> Option<Result<Pixels, ImageRead>> {
+        // SAFETY: the bitmap belongs to the clipboard, which is open; the
+        // buffers are as large as the sizes passed; the screen DC is released.
+        unsafe {
+            let h = GetClipboardData(CF_BITMAP);
+            if h.is_null() {
+                return None;
+            }
+            let mut bm: BITMAP = std::mem::zeroed();
+            let size = i32::try_from(std::mem::size_of::<BITMAP>()).ok()?;
+            if GetObjectW(h, size, std::ptr::addr_of_mut!(bm).cast()) == 0 {
+                return None;
+            }
+            let (w, h_px) = (bm.bmWidth.unsigned_abs(), bm.bmHeight.unsigned_abs());
+            let pixels = u64::from(w) * u64::from(h_px);
+            if pixels == 0 {
+                return None;
+            }
+            if pixels > image::MAX_PIXELS {
+                return Some(Err(ImageRead::TooLarge));
+            }
+            let mut info: BITMAPINFO = std::mem::zeroed();
+            info.bmiHeader.biSize = u32::try_from(std::mem::size_of::<BITMAPINFOHEADER>()).ok()?;
+            info.bmiHeader.biWidth = i32::try_from(w).ok()?;
+            // Negative: top down.
+            info.bmiHeader.biHeight = -i32::try_from(h_px).ok()?;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            let mut bgrx = vec![0u8; usize::try_from(pixels * 4).ok()?];
+            let dc = GetDC(null_mut());
+            let lines = GetDIBits(
+                dc,
+                h,
+                0,
+                h_px,
+                bgrx.as_mut_ptr().cast(),
+                &mut info,
+                DIB_RGB_COLORS,
+            );
+            ReleaseDC(null_mut(), dc);
+            if u32::try_from(lines).ok()? != h_px {
+                return None;
+            }
+            // The fourth byte is not reliable alpha, so it is dropped.
+            let rgb = bgrx
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| [p[2], p[1], p[0]])
+                .collect();
+            Some(Ok((w, h_px, rgb)))
         }
     }
 }
@@ -339,21 +460,62 @@ impl ClipboardIo for WindowsClipboard {
     }
 
     fn write_text(&self, text: &str) -> Result<(), String> {
-        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-        let bytes = wide.len() * 2;
-        let mut last = Err("the clipboard is in use by another program".to_owned());
-        for attempt in 0..5 {
-            if attempt > 0 {
-                std::thread::sleep(Duration::from_millis(40));
-            }
-            let owner = LISTENER_WINDOW.load(Ordering::Acquire) as HWND;
-            last = Self::with_open_as(owner, || Self::set_text(&wide, bytes))
-                .unwrap_or_else(|| Err("the clipboard is in use by another program".to_owned()));
-            if last.is_ok() {
+        let bytes: Vec<u8> = text
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        Self::replace(&[(CF_UNICODETEXT, &bytes)])
+    }
+
+    fn read_image(&self) -> ImageRead {
+        // Pixels are copied while the clipboard is open and encoded after.
+        let look = || {
+            Self::with_open(|| {
+                Self::png_block(self.png)
+                    .map(Err)
+                    .or_else(Self::bitmap)
+                    .unwrap_or_else(|| {
+                        // SAFETY: reads which formats are offered.
+                        let offered = unsafe { IsClipboardFormatAvailable(CF_BITMAP) } != 0;
+                        Err(if offered {
+                            ImageRead::Busy
+                        } else {
+                            ImageRead::None
+                        })
+                    })
+            })
+        };
+        // A bitmap Windows makes from another format is not always ready on
+        // the first request: ask again before giving up on it.
+        let mut found = look();
+        for _ in 0..5 {
+            if !matches!(found, Some(Err(ImageRead::Busy))) {
                 break;
             }
+            std::thread::sleep(Duration::from_millis(30));
+            found = look();
         }
-        last
+        if matches!(found, Some(Err(ImageRead::Busy))) {
+            found = Some(Err(ImageRead::None));
+        }
+        match found {
+            None => ImageRead::Busy,
+            Some(Err(read)) => read,
+            Some(Ok((w, h, rgb))) => match image::encode_png(w, h, false, &rgb) {
+                Some(png) if png.len() > MAX_IMAGE_BYTES => ImageRead::TooLarge,
+                Some(png) => ImageRead::Png(png, (w, h)),
+                None => ImageRead::None,
+            },
+        }
+    }
+
+    /// Both the PNG and a plain bitmap, so old and new programs can paste it.
+    fn write_image(&self, png: &[u8]) -> Result<(), String> {
+        let picture = image::decode(png).ok_or("that picture cannot be read")?;
+        let dib = image::dib(&picture);
+        drop(picture);
+        Self::replace(&[(self.png, png), (CF_DIB, &dib)])
     }
 
     /// The program that owns the clipboard, and nothing else: if the owner window

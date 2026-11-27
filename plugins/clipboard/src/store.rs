@@ -1,6 +1,7 @@
 //! The stored clips: masked before they are kept, encrypted on disk, pruned by
 //! count and age.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use lookout_core::content::secrets;
@@ -24,6 +25,33 @@ pub struct Clip {
     /// Program that copied it (best effort), e.g. `chrome`.
     #[serde(default)]
     pub source: Option<String>,
+    /// Set for a copied picture. Its bytes are in a sealed file of their own,
+    /// so they are never held in memory; `text` is only its label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageInfo {
+    pub width: u32,
+    pub height: u32,
+    /// Size of the PNG.
+    pub bytes: usize,
+    /// Of the PNG, to notice the same picture being copied again.
+    pub hash: u64,
+}
+
+/// Largest picture kept (PNG bytes). Larger ones are refused.
+pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+/// Most pictures kept; the oldest goes first.
+pub const MAX_IMAGES: usize = 20;
+/// Pictures expire after this long (sooner if text is kept for less).
+pub const IMAGE_TTL_SECS: i64 = 24 * 60 * 60;
+
+fn fingerprint(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -38,6 +66,8 @@ pub enum Added {
     /// Same text as an existing clip: that one moved to the top.
     Moved,
     Ignored,
+    /// A picture over [`MAX_IMAGE_BYTES`].
+    TooLarge,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +87,8 @@ pub struct Store {
     next_id: u64,
     path: Option<PathBuf>,
     key: Option<Key>,
+    /// Picture bytes of a store with no file (tests).
+    memory_images: HashMap<u64, Vec<u8>>,
 }
 
 impl Store {
@@ -67,6 +99,7 @@ impl Store {
             next_id: 1,
             path: None,
             key: None,
+            memory_images: HashMap::new(),
         }
     }
 
@@ -85,13 +118,124 @@ impl Store {
             let _ = std::fs::rename(path, PathBuf::from(aside));
         }
         let disk = disk.unwrap_or_default();
-        Self {
+        let store = Self {
             next_id: disk
                 .next_id
                 .max(disk.clips.iter().map(|c| c.id + 1).max().unwrap_or(1)),
             clips: disk.clips,
             path: Some(path.to_owned()),
             key: Some(key),
+            memory_images: HashMap::new(),
+        };
+        store.remove_orphans();
+        store
+    }
+
+    fn image_dir(&self) -> Option<PathBuf> {
+        Some(self.path.as_ref()?.parent()?.join("images"))
+    }
+
+    fn image_file(&self, id: u64) -> Option<PathBuf> {
+        Some(self.image_dir()?.join(format!("{id}.bin")))
+    }
+
+    /// Deletes picture files that no clip names.
+    fn remove_orphans(&self) {
+        let Some(Ok(entries)) = self.image_dir().map(std::fs::read_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let named = self.clips.iter().any(|c| {
+                c.image.is_some() && entry.file_name() == *format!("{}.bin", c.id).as_str()
+            });
+            if !named {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// Deletes one picture's bytes.
+    pub fn drop_image(&mut self, id: u64) {
+        self.memory_images.remove(&id);
+        if let Some(file) = self.image_file(id) {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+
+    /// Deletes every picture (the setting is off). Returns true if any was listed.
+    pub fn drop_images(&mut self) -> bool {
+        let before = self.clips.len();
+        self.clips.retain(|c| c.image.is_none());
+        self.memory_images.clear();
+        if let Some(dir) = self.image_dir() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        self.clips.len() != before
+    }
+
+    /// Keeps a PNG, sealed in its own file.
+    pub fn add_image(
+        &mut self,
+        png: &[u8],
+        (width, height): (u32, u32),
+        source: Option<&str>,
+        now: i64,
+        limits: Limits,
+    ) -> Result<Added, StoreError> {
+        if png.len() > MAX_IMAGE_BYTES {
+            return Ok(Added::TooLarge);
+        }
+        let info = ImageInfo {
+            width,
+            height,
+            bytes: png.len(),
+            hash: fingerprint(png),
+        };
+        if let Some(pos) = self
+            .clips
+            .iter()
+            .position(|c| c.image.as_ref() == Some(&info))
+        {
+            let mut clip = self.clips.remove(pos);
+            clip.ts = now;
+            self.clips.push(clip);
+            self.prune(now, limits);
+            return Ok(Added::Moved);
+        }
+        let id = self.next_id;
+        match (self.image_file(id), &self.key) {
+            (Some(file), Some(key)) => {
+                let write = |e: String| StoreError::Write(e);
+                let sealed = crypto::seal(key, png).map_err(|e| write(e.to_string()))?;
+                if let Some(dir) = file.parent() {
+                    std::fs::create_dir_all(dir).map_err(|e| write(e.to_string()))?;
+                }
+                crypto::write_atomic(&file, &sealed).map_err(|e| write(e.to_string()))?;
+            }
+            _ => {
+                self.memory_images.insert(id, png.to_vec());
+            }
+        }
+        self.clips.push(Clip {
+            id,
+            ts: now,
+            text: format!("Image {width} × {height}"),
+            masked: false,
+            pinned: false,
+            source: source.map(str::to_owned),
+            image: Some(info),
+        });
+        self.next_id += 1;
+        self.prune(now, limits);
+        Ok(Added::Stored)
+    }
+
+    /// The PNG of a picture clip, read and decrypted now.
+    pub fn image_png(&self, id: u64) -> Option<Vec<u8>> {
+        self.get(id)?.image.as_ref()?;
+        match (self.image_file(id), &self.key) {
+            (Some(file), Some(key)) => crypto::open(key, &std::fs::read(file).ok()?).ok(),
+            _ => self.memory_images.get(&id).cloned(),
         }
     }
 
@@ -113,7 +257,11 @@ impl Store {
         }
         let (masked_text, hits) = secrets::mask(text);
         let masked_text = masked_text.into_owned();
-        if let Some(pos) = self.clips.iter().position(|c| c.text == masked_text) {
+        if let Some(pos) = self
+            .clips
+            .iter()
+            .position(|c| c.image.is_none() && c.text == masked_text)
+        {
             let mut clip = self.clips.remove(pos);
             clip.ts = now;
             if clip.source.is_none() {
@@ -130,6 +278,7 @@ impl Store {
             masked: hits > 0,
             pinned: false,
             source: source.map(str::to_owned),
+            image: None,
         });
         self.next_id += 1;
         self.prune(now, limits);
@@ -140,20 +289,43 @@ impl Store {
     /// Returns true if anything was removed.
     pub fn prune(&mut self, now: i64, limits: Limits) -> bool {
         let before = self.clips.len();
-        self.clips
-            .retain(|c| c.pinned || now - c.ts <= limits.retention_secs);
-        let unpinned = self.clips.iter().filter(|c| !c.pinned).count();
-        if unpinned > limits.max_clips {
-            let mut extra = unpinned - limits.max_clips;
-            // Oldest first, so the oldest unpinned clips go.
+        let image_ttl = limits.retention_secs.min(IMAGE_TTL_SECS);
+        let mut gone = Vec::new();
+        self.clips.retain(|c| {
+            let keep = if c.image.is_some() {
+                now - c.ts < image_ttl
+            } else {
+                c.pinned || now - c.ts <= limits.retention_secs
+            };
+            if !keep && c.image.is_some() {
+                gone.push(c.id);
+            }
+            keep
+        });
+        // Text and pictures have a count limit each. Oldest first, so the
+        // oldest unpinned ones go.
+        for (images, max) in [(false, limits.max_clips), (true, MAX_IMAGES)] {
+            let counted = |c: &Clip| !c.pinned && c.image.is_some() == images;
+            let mut extra = self
+                .clips
+                .iter()
+                .filter(|c| counted(c))
+                .count()
+                .saturating_sub(max);
             self.clips.retain(|c| {
-                if c.pinned || extra == 0 {
+                if extra == 0 || !counted(c) {
                     true
                 } else {
                     extra -= 1;
+                    if images {
+                        gone.push(c.id);
+                    }
                     false
                 }
             });
+        }
+        for id in gone {
+            self.drop_image(id);
         }
         self.clips.len() != before
     }
@@ -162,6 +334,15 @@ impl Store {
     pub fn clear(&mut self) -> Result<usize, StoreError> {
         let n = self.clips.len();
         self.clips.clear();
+        self.memory_images.clear();
+        if let Some(dir) = self.image_dir() {
+            match std::fs::remove_dir_all(dir) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(StoreError::Write(e.to_string()))
+                }
+                _ => {}
+            }
+        }
         if let Some(path) = &self.path {
             match std::fs::remove_file(path) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -200,11 +381,11 @@ impl Store {
         self.clips.insert(at, clip);
     }
 
-    /// Returns false if the clip is gone.
+    /// Returns false if the clip is gone. Pictures cannot be pinned: they expire.
     pub fn set_pinned(&mut self, id: u64, pinned: bool) -> bool {
         self.clips
             .iter_mut()
-            .find(|c| c.id == id)
+            .find(|c| c.id == id && c.image.is_none())
             .map(|c| c.pinned = pinned)
             .is_some()
     }
@@ -342,6 +523,88 @@ mod tests {
             again.recent().next().unwrap().source.as_deref(),
             Some("chrome")
         );
+    }
+
+    fn files(dir: &Path) -> usize {
+        std::fs::read_dir(dir.join("images")).map_or(0, |d| d.count())
+    }
+
+    const DAY: Limits = Limits {
+        max_clips: 3,
+        retention_secs: 1_000_000,
+    };
+
+    #[test]
+    fn pictures_are_limited_in_size_and_number_apart_from_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("clips.bin"), key());
+        let big = vec![1u8; MAX_IMAGE_BYTES + 1];
+        assert_eq!(
+            s.add_image(&big, (1, 1), None, 1, DAY).unwrap(),
+            Added::TooLarge
+        );
+        assert!(s.is_empty() && files(dir.path()) == 0);
+        assert_eq!(
+            s.add_image(&big[1..], (1, 1), None, 1, DAY).unwrap(),
+            Added::Stored
+        );
+        s.add("text one", 1, DAY);
+        for i in 0..MAX_IMAGES as u8 + 4 {
+            s.add_image(&[2, i], (1, 1), None, 2, DAY).unwrap();
+        }
+        assert_eq!(s.recent().filter(|c| c.image.is_some()).count(), MAX_IMAGES);
+        assert_eq!(files(dir.path()), MAX_IMAGES);
+        assert!(s.recent().any(|c| c.text == "text one"));
+        // The same picture again moves up instead of being kept twice.
+        assert_eq!(
+            s.add_image(&[2, 10], (1, 1), None, 3, DAY).unwrap(),
+            Added::Moved
+        );
+        assert_eq!(files(dir.path()), MAX_IMAGES);
+    }
+
+    #[test]
+    fn pictures_expire_after_a_day_even_if_text_is_kept_longer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("clips.bin"), key());
+        s.add("stays", 1, DAY);
+        s.add_image(b"picture", (2, 2), None, 1, DAY).unwrap();
+        let id = s.recent().next().unwrap().id;
+        assert!(!s.set_pinned(id, true));
+        assert!(!s.prune(IMAGE_TTL_SECS, DAY));
+        assert!(s.prune(1 + IMAGE_TTL_SECS, DAY));
+        assert_eq!(s.len(), 1);
+        assert_eq!(files(dir.path()), 0);
+        assert!(s.image_png(id).is_none());
+    }
+
+    #[test]
+    fn pictures_are_sealed_on_disk_and_deleting_removes_their_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clips.bin");
+        let mut s = Store::open(&path, key());
+        let secret = b"\x89PNG readable picture bytes";
+        s.add_image(secret, (2, 2), Some("paint"), 1, DAY).unwrap();
+        s.add_image(b"another", (2, 2), None, 1, DAY).unwrap();
+        s.save().unwrap();
+        let id = s.listing().find(|c| c.source.is_some()).unwrap().id;
+        let on_disk = std::fs::read(dir.path().join(format!("images/{id}.bin"))).unwrap();
+        assert!(!String::from_utf8_lossy(&on_disk).contains("readable picture"));
+        let mut s = Store::open(&path, key());
+        assert_eq!(s.image_png(id).as_deref(), Some(secret.as_slice()));
+        s.remove(id).unwrap();
+        s.drop_image(id);
+        assert_eq!(files(dir.path()), 1);
+        // A file no clip names is swept away on the next start.
+        std::fs::write(dir.path().join("images/99.bin"), "left over").unwrap();
+        s.save().unwrap();
+        let mut s = Store::open(&path, key());
+        assert_eq!(files(dir.path()), 1);
+        assert!(s.drop_images());
+        assert!(s.is_empty() && !dir.path().join("images").exists());
+        s.add_image(b"third", (2, 2), None, 1, DAY).unwrap();
+        assert_eq!(s.clear().unwrap(), 1);
+        assert!(!dir.path().join("images").exists());
     }
 
     #[test]

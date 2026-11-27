@@ -375,6 +375,23 @@
   }
 
   let historyMessage = $state("");
+  // "Keep copied images" is a setting of the Clipboard add-on.
+  type Addon = { id: string; config: Record<string, unknown> };
+  let keepImages = $state(false);
+  let imagesMessage = $state("");
+  const showImages = (list: Addon[]) =>
+    (keepImages = list.find((p) => p.id === "com.lookout.clipboard")?.config.keep_images === "on");
+  invoke<Addon[]>("plugins_list").then(showImages).catch(() => {});
+  async function setKeepImages(el: HTMLInputElement) {
+    imagesMessage = "";
+    try {
+      showImages(await invoke<Addon[]>("set_keep_images", { on: el.checked }));
+    } catch (e) {
+      imagesMessage = errorText(e);
+    }
+    el.checked = keepImages;
+  }
+
   // Asked once each time remembering is switched off.
   let askClear = $state(false);
   async function setRememberSearches(el: HTMLInputElement) {
@@ -751,6 +768,14 @@
           (el) => setContentOption("ocr", el),
         )}
         {#if contentMessage}<p class="hint" role="alert">{contentMessage}</p>{/if}
+        <h3 class="label-caps">Clipboard</h3>
+        {@render toggle(
+          "Keep copied images",
+          "The last 20 images, 5 MB each at most, for 24 hours. Needs the Clipboard add-on. They are not checked for secrets; turning this off deletes them.",
+          keepImages,
+          setKeepImages,
+        )}
+        {#if imagesMessage}<p class="hint" role="alert">{imagesMessage}</p>{/if}
         <h3 class="label-caps">Search history</h3>
         {@render toggle(
           "Remember my searches",

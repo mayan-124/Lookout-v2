@@ -1,6 +1,7 @@
 //! Watches the clipboard and records text clips (opt-in: this runs only while
 //! the plugin is turned on). Nothing is read while Lookout is paused.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -19,11 +20,32 @@ pub enum Read {
     Busy,
 }
 
+/// What looking for a picture gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImageRead {
+    /// A PNG and its width and height.
+    Png(Vec<u8>, (u32, u32)),
+    /// A picture over the size limit.
+    TooLarge,
+    /// No picture, or one that cannot be read.
+    None,
+    Busy,
+}
+
 pub trait ClipboardIo: Send + Sync {
     /// Changes whenever the clipboard content changes.
     fn sequence(&self) -> u32;
     fn read(&self) -> Read;
     fn write_text(&self, text: &str) -> Result<(), String>;
+    /// The picture on the clipboard, as a PNG. Only asked for when pictures
+    /// are kept and the copy may be recorded.
+    fn read_image(&self) -> ImageRead {
+        ImageRead::None
+    }
+    /// Puts a PNG back on the clipboard.
+    fn write_image(&self, _png: &[u8]) -> Result<(), String> {
+        Err("copying pictures is not supported here".to_owned())
+    }
     /// Program that owns the clipboard now (e.g. `chrome`); `None` if it cannot
     /// be determined. Never guessed from the foreground window.
     fn source_app(&self) -> Option<String> {
@@ -66,6 +88,12 @@ pub struct Shared {
     pub ignore_next: AtomicBool,
     /// Clipboard sequence number already looked at.
     pub last_seq: Mutex<u32>,
+    /// "Keep copied images" (off unless the user turned it on).
+    pub keep_images: AtomicBool,
+    /// The newest copy was a picture too large to keep.
+    pub image_refused: AtomicBool,
+    /// Where dragged-out pictures are written.
+    pub drag_dir: Mutex<PathBuf>,
 }
 
 pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -91,6 +119,9 @@ pub fn tick(io: &dyn ClipboardIo, shared: &Shared, last_seq: &mut u32) -> bool {
     }
     match io.read() {
         Read::Busy => false,
+        Read::NoText if shared.keep_images.load(Ordering::Acquire) => {
+            tick_image(io, shared, seq, last_seq)
+        }
         Read::Excluded | Read::NoText => {
             *last_seq = seq;
             false
@@ -101,12 +132,10 @@ pub fn tick(io: &dyn ClipboardIo, shared: &Shared, last_seq: &mut u32) -> bool {
                 return false;
             }
             let source = io.source_app();
-            if source
-                .as_deref()
-                .is_some_and(|a| is_excluded(&lock(&shared.exclude), a))
-            {
+            if excluded(shared, source.as_deref()) {
                 return false;
             }
+            shared.image_refused.store(false, Ordering::Release);
             let limits = *lock(&shared.limits);
             let mut store = lock(&shared.store);
             let added = store.add_from(&text, source.as_deref(), now_secs(), limits);
@@ -119,6 +148,48 @@ pub fn tick(io: &dyn ClipboardIo, shared: &Shared, last_seq: &mut u32) -> bool {
             added == Added::Stored
         }
     }
+}
+
+fn excluded(shared: &Shared, source: Option<&str>) -> bool {
+    source.is_some_and(|a| is_excluded(&lock(&shared.exclude), a))
+}
+
+/// The clipboard holds no text: keep its picture, if it has one. An ignored
+/// program's picture is not even read.
+fn tick_image(io: &dyn ClipboardIo, shared: &Shared, seq: u32, last_seq: &mut u32) -> bool {
+    let source = io.source_app();
+    if excluded(shared, source.as_deref()) {
+        *last_seq = seq;
+        return false;
+    }
+    let picture = io.read_image();
+    if picture == ImageRead::Busy {
+        return false;
+    }
+    *last_seq = seq;
+    if picture == ImageRead::None || shared.ignore_next.swap(false, Ordering::AcqRel) {
+        return false;
+    }
+    let added = match picture {
+        ImageRead::Png(png, size) => {
+            let limits = *lock(&shared.limits);
+            let mut store = lock(&shared.store);
+            let added = store.add_image(&png, size, source.as_deref(), now_secs(), limits);
+            match added.and_then(|a| store.save().map(|()| a)) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("clipboard: {e}");
+                    return false;
+                }
+            }
+        }
+        _ => Added::TooLarge,
+    };
+    shared
+        .image_refused
+        .store(added == Added::TooLarge, Ordering::Release);
+    // A refusal changes the list too: it says why.
+    added != Added::Moved
 }
 
 /// Looks at the clipboard now if it changed since the last look (shared by the
@@ -146,6 +217,7 @@ pub fn run(io: Arc<dyn ClipboardIo>, shared: Arc<Shared>, on_new: impl Fn()) {
             if store.prune(now_secs(), limits) {
                 let _ = store.save();
             }
+            lookout_core::dragtemp::sweep(&lock(&shared.drag_dir), lookout_core::dragtemp::MAX_AGE);
         }
     }
 }
@@ -159,6 +231,8 @@ mod tests {
         seq: AtomicU32,
         next: Mutex<Read>,
         app: Mutex<Option<String>>,
+        image: Mutex<ImageRead>,
+        image_reads: AtomicU32,
     }
 
     impl Fake {
@@ -181,6 +255,10 @@ mod tests {
         fn source_app(&self) -> Option<String> {
             lock(&self.app).clone()
         }
+        fn read_image(&self) -> ImageRead {
+            self.image_reads.fetch_add(1, Ordering::SeqCst);
+            lock(&self.image).clone()
+        }
     }
 
     fn setup() -> (Fake, Shared) {
@@ -189,6 +267,8 @@ mod tests {
                 seq: AtomicU32::new(1),
                 next: Mutex::new(Read::NoText),
                 app: Mutex::new(None),
+                image: Mutex::new(ImageRead::Png(b"picture".to_vec(), (4, 4))),
+                image_reads: AtomicU32::new(0),
             },
             Shared {
                 store: Mutex::new(Store::in_memory()),
@@ -201,8 +281,66 @@ mod tests {
                 exclude: Mutex::new(Vec::new()),
                 ignore_next: AtomicBool::new(false),
                 last_seq: Mutex::new(1),
+                keep_images: AtomicBool::new(false),
+                image_refused: AtomicBool::new(false),
+                drag_dir: Mutex::new(PathBuf::new()),
             },
         )
+    }
+
+    #[test]
+    fn pictures_are_not_read_unless_turned_on() {
+        let (io, shared) = setup();
+        let mut seq = io.sequence();
+        io.copy(Read::NoText);
+        assert!(!tick(&io, &shared, &mut seq));
+        assert_eq!(io.image_reads.load(Ordering::SeqCst), 0);
+        assert!(lock(&shared.store).is_empty());
+        shared.keep_images.store(true, Ordering::Release);
+        io.copy(Read::NoText);
+        assert!(tick(&io, &shared, &mut seq));
+        assert_eq!(lock(&shared.store).len(), 1);
+    }
+
+    #[test]
+    fn pause_ignored_programs_and_ignore_next_cover_pictures() {
+        let (io, shared) = setup();
+        shared.keep_images.store(true, Ordering::Release);
+        let mut seq = io.sequence();
+        shared.paused.store(true, Ordering::Release);
+        io.copy(Read::NoText);
+        assert!(!tick(&io, &shared, &mut seq));
+        shared.paused.store(false, Ordering::Release);
+        *lock(&shared.exclude) = vec![app_key("KeePass.exe")];
+        *lock(&io.app) = Some("keepass".into());
+        io.copy(Read::NoText);
+        assert!(!tick(&io, &shared, &mut seq));
+        io.copy(Read::Excluded);
+        assert!(!tick(&io, &shared, &mut seq));
+        assert_eq!(io.image_reads.load(Ordering::SeqCst), 0);
+        *lock(&io.app) = None;
+        shared.ignore_next.store(true, Ordering::Release);
+        io.copy(Read::NoText);
+        assert!(!tick(&io, &shared, &mut seq));
+        assert!(lock(&shared.store).is_empty());
+    }
+
+    #[test]
+    fn a_too_large_picture_is_noted_and_a_busy_clipboard_retried() {
+        let (io, shared) = setup();
+        shared.keep_images.store(true, Ordering::Release);
+        let mut seq = io.sequence();
+        *lock(&io.image) = ImageRead::TooLarge;
+        io.copy(Read::NoText);
+        assert!(tick(&io, &shared, &mut seq));
+        assert!(shared.image_refused.load(Ordering::Acquire));
+        assert!(lock(&shared.store).is_empty());
+        *lock(&io.image) = ImageRead::Busy;
+        io.copy(Read::NoText);
+        assert!(!tick(&io, &shared, &mut seq));
+        *lock(&io.image) = ImageRead::Png(b"later".to_vec(), (1, 1));
+        assert!(tick(&io, &shared, &mut seq));
+        assert!(!shared.image_refused.load(Ordering::Acquire));
     }
 
     #[test]

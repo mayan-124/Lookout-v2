@@ -36,6 +36,9 @@ pub enum Payload {
     File(PathBuf),
     /// A stored clip, links included.
     Text(String),
+    /// A stored picture, written to the temp folder: copied only, never linked
+    /// to, since the file does not last.
+    TempFile(PathBuf),
 }
 
 /// `CF_UNICODETEXT`: UTF-16 with its NUL.
@@ -383,6 +386,11 @@ mod native {
                     let (item, data) = shell_data(path)?;
                     let _ = set_image(&item, &data);
                     (data, DROPEFFECT_COPY | DROPEFFECT_LINK)
+                }
+                Payload::TempFile(path) => {
+                    let (item, data) = shell_data(path)?;
+                    let _ = set_image(&item, &data);
+                    (data, DROPEFFECT_COPY)
                 }
                 Payload::Text(text) => (
                     IDataObject::from(TextData(super::unicode_text(text))),

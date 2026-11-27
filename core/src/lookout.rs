@@ -40,7 +40,7 @@ use crate::item::{Item, Kind};
 use crate::names_store::{self, Persister};
 use crate::notes::{CopyNote, DeleteNote, NoteSource, NoteStore, SaveNote};
 use crate::pause::PauseState;
-use crate::plugins::{HostConfig, PluginActions, PluginHost, PluginSource};
+use crate::plugins::{DragData, HostConfig, PluginActions, PluginHost, PluginSource};
 use crate::ranking;
 use crate::semantic::{
     SemanticClient, SemanticConfig, SemanticIndexer, SemanticProgress, SemanticSource,
@@ -1219,6 +1219,8 @@ impl Lookout {
             crate::log::warn("could not forget the notes");
         }
         *write(&self.index) = crate::name_index::NameIndex::new();
+        // Pictures dragged out of the clipboard history.
+        crate::dragtemp::clear(&crate::dragtemp::dir());
         if let Some(paths) = &self.storage.paths {
             paths.wipe()?;
             // What plugins stored (clipboard history) was encrypted with the key just deleted.
@@ -1430,13 +1432,45 @@ impl Lookout {
         if target.kind != Kind::Clipboard {
             return self.shareable_path(item_id).map(Payload::File);
         }
+        match self.clip_drag(&target, false)? {
+            DragData::Text(text) => Ok(Payload::Text(text)),
+            DragData::File(file) => Ok(Payload::TempFile(file)),
+            DragData::Masked => Err(Refusal::MaskedClip),
+            DragData::Picture => Err(Refusal::ClipGone),
+        }
+    }
+
+    /// Why a result would not drag, found without writing anything.
+    pub fn drag_refusal(&self, item_id: &str) -> Option<Refusal> {
+        let target = self.target(item_id)?;
+        if target.kind != Kind::Clipboard {
+            return self.shareable_path(item_id).err();
+        }
+        match self.clip_drag(&target, true) {
+            Ok(DragData::Masked) => Some(Refusal::MaskedClip),
+            Ok(_) => None,
+            Err(why) => Some(why),
+        }
+    }
+
+    fn clip_drag(&self, target: &Target, check: bool) -> Result<DragData, Refusal> {
         let origin = target.origin.as_ref().ok_or(Refusal::NotAFile)?;
         let host = self.plugins.as_ref().ok_or(Refusal::ClipGone)?;
-        match host.drag_text(&origin.plugin_id, &origin.params) {
-            Ok(Some(text)) => Ok(Payload::Text(text)),
-            Ok(None) => Err(Refusal::MaskedClip),
-            Err(_) => Err(Refusal::ClipGone),
+        host.drag_data(&origin.plugin_id, &origin.params, check)
+            .map_err(|_| Refusal::ClipGone)
+    }
+
+    /// The small picture of an image clip on screen, as a `data:` URL.
+    pub fn clip_thumbnail(&self, item_id: &str) -> Option<String> {
+        let target = self.target(item_id)?;
+        if target.kind != Kind::Clipboard {
+            return None;
         }
+        let origin = target.origin.as_ref()?;
+        self.plugins
+            .as_ref()?
+            .thumbnail(&origin.plugin_id, &origin.params)
+            .ok()
     }
 
     pub fn quick_keys(&self) -> &crate::quickkeys::QuickKeys {

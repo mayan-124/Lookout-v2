@@ -1,6 +1,7 @@
 //! Clipboard history as a Lookout plugin (see `docs/plugins.md`).
 
 pub mod handler;
+pub mod image;
 pub mod monitor;
 pub mod smart;
 pub mod store;

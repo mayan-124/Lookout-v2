@@ -2424,6 +2424,7 @@ name = "lookout-clipboard"
 version = "0.0.1"
 dependencies = [
  "lookout-core",
+ "png",
  "serde",
  "serde_json",
  "tempfile",
