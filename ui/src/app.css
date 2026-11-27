@@ -322,6 +322,11 @@ button.result:focus-visible {
   font-size: 11px;
   overflow: hidden;
 }
+.result .icon .appicon {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
 .result .icon.ring {
   color: var(--accent-text);
 }

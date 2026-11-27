@@ -16,6 +16,7 @@
   import Icon, { type Ico } from "./Icon.svelte";
   import { ageLabel, changesList, rowKeys, verbOf } from "./rows";
   import { isClipRow, isFileRow, movedEnough } from "./dragout";
+  import { iconLoader, iconTarget, rowWatcher } from "./appicons";
   import { keepsPage, keepsSearch } from "./lastsearch";
   import { FOLDER_STEP, chooseFoldersTarget, isHelpQuery, stepOnShow } from "./setupflow";
   import { dockItems, footerHints, helpEntries, isDiskCommand, tipsFor, typedSection, type Action, type View } from "./modes";
@@ -1311,6 +1312,22 @@
     return t && t.path === pathOf(thumbItem) ? t.src : null;
   });
 
+  // Apps show their own icon over the generic one, asked for only while a row
+  // is on screen and forgotten when the bar hides.
+  let appIcons = $state<Record<string, string>>({});
+  const icons = iconLoader(
+    (path) => invoke<string | null>("app_icon", { path }),
+    (path, src) => {
+      if (src) appIcons[path] = src;
+      else delete appIcons[path];
+    },
+  );
+  const watchIcon = rowWatcher(icons, (changed) => new IntersectionObserver(changed));
+  $effect(() => {
+    const on = visible;
+    untrack(() => icons.setActive(on));
+  });
+
   // Image clips show a small picture, asked for one at a time while their rows
   // are on screen and forgotten when the bar hides.
   const clipImageKey = (i: Item) => (clipParams(i).image ? `${i.id}@${clipTime(i)}` : "");
@@ -1698,6 +1715,7 @@
   {@const k = iconKind(it)}
   {@const act = actionOf(it)}
   {@const picture = clipThumbs[clipImageKey(it)]}
+  {@const appPath = iconTarget(kindName(it.kind), it.uri)}
   {#if picture}
     <img class="thumb" src={picture} alt="" />
   {:else if clipParams(it).image}
@@ -1710,6 +1728,10 @@
         <circle cx="12" cy="12" r="9" stroke="var(--hairline)" />
         <circle cx="12" cy="12" r="9" stroke="currentColor" transform="rotate(-90 12 12)" stroke-dasharray={RING} stroke-dashoffset={ringOffset(it)} />
       </svg>
+    </span>
+  {:else if appPath}
+    <span class="icon" aria-hidden="true" use:watchIcon={appPath}>
+      {#if appIcons[appPath]}<img class="appicon" src={appIcons[appPath]} alt="" />{:else}<Icon name="app" />{/if}
     </span>
   {:else if k}
     <span class="icon" aria-hidden="true"><Icon name={k} /></span>

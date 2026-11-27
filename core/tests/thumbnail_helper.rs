@@ -10,7 +10,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use lookout_core::share::Rules;
-use lookout_core::thumbnail::{Shot, Thumbnails, MAX_CRASHES, TIMEOUT};
+use lookout_core::thumbnail::{AppIcons, Shot, Thumbnails, APP_ICON_ITEMS, MAX_CRASHES, TIMEOUT};
 
 /// Long enough for a loaded machine to start a process.
 const PATIENT: Duration = Duration::from_secs(30);
@@ -191,6 +191,72 @@ fn the_helper_checks_the_skip_rules_itself() {
     file.set_len(lookout_core::preview::MAX_FILE + 1).unwrap();
     assert_eq!(f.thumbnails.get(&big, 256, 101, &f.rules()), None);
     assert_eq!(f.starts(), 4, "the helper was asked, and said no");
+}
+
+/// App icons from the made-up helper, counting how many were started.
+fn app_icons(timeout: Duration) -> (AppIcons, Arc<AtomicUsize>) {
+    let exe = helper_exe();
+    let started = Arc::new(AtomicUsize::new(0));
+    let count = started.clone();
+    let launch = move || {
+        count.fetch_add(1, Ordering::SeqCst);
+        Ok(Command::new(exe))
+    };
+    (AppIcons::new(Arc::new(launch), timeout), started)
+}
+
+#[cfg(windows)]
+#[test]
+fn an_app_icon_that_fails_or_times_out_gives_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = |name: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, "x").unwrap();
+        path
+    };
+    let (icons, started) = app_icons(PATIENT);
+    // The temp folder lies in AppData, as the user's Start Menu does.
+    let good = icons.get(&file("a.lnk")).expect("an icon");
+    assert!(good.ends_with("aWNvbg=="));
+    assert_eq!(icons.get(&file("a.lnk")), Some(good));
+    assert_eq!(started.load(Ordering::SeqCst), 1, "kept in memory");
+    assert_eq!(icons.get(&file("silent.exe")), None);
+    assert_eq!(icons.get(&file("silent.exe")), None);
+    assert_eq!(started.load(Ordering::SeqCst), 2, "a failure is kept too");
+    assert_eq!(icons.get(&dir.path().join("gone.exe")), None);
+    // Not apps: no helper at all.
+    assert_eq!(icons.get(&file("a.docx")), None);
+    assert_eq!(icons.get(Path::new(r"\\server\share\a.exe")), None);
+    assert_eq!(started.load(Ordering::SeqCst), 3);
+
+    // A helper that never answers is given up on and killed.
+    let (icons, _) = app_icons(Duration::ZERO);
+    assert_eq!(icons.get(&file("b.lnk")), None);
+    let missing = dir.path().join("no-such-helper.exe");
+    let icons = AppIcons::new(Arc::new(move || Ok(Command::new(&missing))), PATIENT);
+    assert_eq!(icons.get(&file("c.lnk")), None);
+}
+
+#[test]
+fn only_the_last_app_icons_are_kept() {
+    let (icons, started) = app_icons(PATIENT);
+    // Store ids need no file; the made-up helper answers any name.
+    let app = |n: usize| PathBuf::from(format!(r"shell:AppsFolder\Vendor.App{n}_abc!App"));
+    for n in 0..=APP_ICON_ITEMS {
+        assert!(icons.get(&app(n)).is_some(), "{n}");
+    }
+    let all = APP_ICON_ITEMS + 1;
+    icons.get(&app(APP_ICON_ITEMS));
+    assert_eq!(started.load(Ordering::SeqCst), all, "the newest is kept");
+    icons.get(&app(0));
+    assert_eq!(
+        started.load(Ordering::SeqCst),
+        all + 1,
+        "the oldest was dropped"
+    );
+    icons.clear();
+    icons.get(&app(APP_ICON_ITEMS));
+    assert_eq!(started.load(Ordering::SeqCst), all + 2);
 }
 
 #[cfg(windows)]

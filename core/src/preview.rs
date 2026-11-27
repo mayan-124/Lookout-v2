@@ -219,6 +219,11 @@ pub fn is_online_only(attrs: u32) -> bool {
     attrs & (ATTR_OFFLINE | ATTR_RECALL_ON_OPEN | ATTR_RECALL_ON_DATA_ACCESS) != 0
 }
 
+/// [`is_online_only`] for a file's metadata.
+pub(crate) fn needs_download(meta: &std::fs::Metadata) -> bool {
+    is_online_only(attributes(meta))
+}
+
 #[cfg(windows)]
 fn attributes(meta: &std::fs::Metadata) -> u32 {
     use std::os::windows::fs::MetadataExt;

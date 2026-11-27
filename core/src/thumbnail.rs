@@ -1,4 +1,5 @@
-//! Thumbnails and file icons from the Windows shell, for the file preview.
+//! Thumbnails and file icons from the Windows shell, for the file preview, and
+//! the icons of apps in result rows ([`AppIcons`]).
 //!
 //! The pictures come from whatever thumbnail handler is installed for a type:
 //! third-party code. It never runs in Lookout's process. Each request starts
@@ -39,6 +40,9 @@ const POLL: Duration = Duration::from_millis(20);
 const WATCHDOG: Duration = Duration::from_secs(10);
 const MAX_REQUEST: u64 = 1024 * 1024;
 const MAX_PICTURE: usize = 8 * 1024 * 1024;
+/// App icons kept in memory, and the largest one worth keeping.
+pub const APP_ICON_ITEMS: usize = 200;
+const APP_ICON_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Shot {
@@ -58,6 +62,9 @@ struct Request {
     roots: Vec<PathBuf>,
     names: Vec<String>,
     folders: Vec<PathBuf>,
+    /// An app's icon only: [`is_app_target`] applies, not the skip rules.
+    #[serde(default)]
+    app: bool,
 }
 
 /// The command that starts a helper.
@@ -76,14 +83,18 @@ pub struct Thumbnails {
     cache: Mutex<Vec<(Key, Shot)>>,
 }
 
+/// Starts this same program as a helper.
+fn this_program() -> Launch {
+    Arc::new(|| {
+        let mut cmd = Command::new(std::env::current_exe()?);
+        cmd.arg(HELPER_ARG);
+        Ok(cmd)
+    })
+}
+
 impl Default for Thumbnails {
     fn default() -> Self {
-        let this_program = || {
-            let mut cmd = Command::new(std::env::current_exe()?);
-            cmd.arg(HELPER_ARG);
-            Ok(cmd)
-        };
-        Self::new(Arc::new(this_program), TIMEOUT)
+        Self::new(this_program(), TIMEOUT)
     }
 }
 
@@ -146,39 +157,12 @@ impl Thumbnails {
             roots: rules.roots.clone(),
             names,
             folders,
+            app: false,
         })
         .ok()?;
 
         let deadline = Instant::now() + self.timeout;
-        let mut command = (self.launch)().ok()?;
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
-        let mut helper = Helper(command.spawn().ok()?);
-        let (mut input, output) = (helper.0.stdin.take()?, helper.0.stdout.take()?);
-        let (tx, rx) = mpsc::channel::<Shot>();
-        // Writing and reading both wait on the helper, so they have their own thread.
-        std::thread::Builder::new()
-            .name("lookout-thumb".into())
-            .spawn(move || {
-                if input.write_all(&message).is_err() {
-                    return;
-                }
-                drop(input);
-                let mut output = output;
-                while let Some(shot) = read_frame(&mut output) {
-                    if tx.send(shot).is_err() {
-                        break;
-                    }
-                }
-            })
-            .ok()?;
+        let (mut helper, rx) = start(&self.launch, message)?;
 
         let mut best: Option<Shot> = None;
         let mut ended = false;
@@ -251,6 +235,145 @@ impl Thumbnails {
     }
 }
 
+/// Starts one helper with `message`; its pictures arrive on the channel, which
+/// closes when it ends.
+fn start(launch: &Launch, message: Vec<u8>) -> Option<(Helper, mpsc::Receiver<Shot>)> {
+    let mut command = launch().ok()?;
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut helper = Helper(command.spawn().ok()?);
+    let (mut input, output) = (helper.0.stdin.take()?, helper.0.stdout.take()?);
+    let (tx, rx) = mpsc::channel::<Shot>();
+    // Writing and reading both wait on the helper, so they have their own thread.
+    std::thread::Builder::new()
+        .name("lookout-thumb".into())
+        .spawn(move || {
+            if input.write_all(&message).is_err() {
+                return;
+            }
+            drop(input);
+            let mut output = output;
+            while let Some(shot) = read_frame(&mut output) {
+                if tx.send(shot).is_err() {
+                    break;
+                }
+            }
+        })
+        .ok()?;
+    Some((helper, rx))
+}
+
+/// Whether `path` is written like something with an app icon: a Store app, or a
+/// shortcut or program on a drive letter (never a network address).
+fn names_an_app(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    let on_drive =
+        matches!(text.as_bytes(), [d, b':', b'\\' | b'/', ..] if d.is_ascii_alphabetic());
+    crate::apps::is_store_uri(&text)
+        || on_drive
+            && path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("lnk") || e.eq_ignore_ascii_case("exe"))
+}
+
+/// [`names_an_app`], and a file is there that reading would not download. The
+/// helper checks this before it asks the shell.
+fn is_app_target(path: &Path) -> bool {
+    names_an_app(path)
+        && (crate::apps::is_store_uri(&path.to_string_lossy())
+            || std::fs::metadata(path).is_ok_and(|m| m.is_file() && !preview::needs_download(&m)))
+}
+
+/// One app and its icon as a `data:` URL; `None` if it has none to show.
+type Icon = (PathBuf, Option<String>);
+
+/// Icons of apps for result rows, one helper at a time, the last
+/// [`APP_ICON_ITEMS`] kept in memory.
+pub struct AppIcons {
+    launch: Launch,
+    timeout: Duration,
+    turn: Mutex<()>,
+    /// Least recently used first.
+    cache: Mutex<Vec<Icon>>,
+}
+
+impl Default for AppIcons {
+    fn default() -> Self {
+        Self::new(this_program(), TIMEOUT)
+    }
+}
+
+impl AppIcons {
+    pub fn new(launch: Launch, timeout: Duration) -> Self {
+        Self {
+            launch,
+            timeout,
+            turn: Mutex::default(),
+            cache: Mutex::default(),
+        }
+    }
+
+    /// Drops the icons kept in memory.
+    pub fn clear(&self) {
+        *self.cache.lock().unwrap_or_else(PoisonError::into_inner) = Vec::new();
+    }
+
+    /// The icon of the app at `path`, or `None`: the caller keeps its generic
+    /// one. Blocks while earlier icons are made, then at most the timeout.
+    pub fn get(&self, path: &Path) -> Option<String> {
+        if !names_an_app(path) {
+            return None;
+        }
+        if let Some(known) = self.cached(path) {
+            return known;
+        }
+        let _turn = self.turn.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(known) = self.cached(path) {
+            return known;
+        }
+        let message = serde_json::to_vec(&Request {
+            path: path.to_path_buf(),
+            side: MIN_SIDE,
+            icon_only: true,
+            roots: Vec::new(),
+            names: Vec::new(),
+            folders: Vec::new(),
+            app: true,
+        })
+        .ok()?;
+        let (_helper, rx) = start(&self.launch, message)?;
+        let image = rx
+            .recv_timeout(self.timeout)
+            .ok()
+            .map(|shot| shot.image)
+            .filter(|i| i.len() <= APP_ICON_BYTES);
+        // A failure is remembered too, so a bad handler is not started again
+        // for every key typed.
+        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+        cache.push((path.to_path_buf(), image.clone()));
+        if cache.len() > APP_ICON_ITEMS {
+            cache.remove(0);
+        }
+        image
+    }
+
+    fn cached(&self, path: &Path) -> Option<Option<String>> {
+        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+        let at = cache.iter().position(|(p, _)| p == path)?;
+        let hit = cache.remove(at);
+        let image = hit.1.clone();
+        cache.push(hit);
+        Some(image)
+    }
+}
+
 /// One picture from the helper: 1 for an icon or 0 for a thumbnail, the PNG's
 /// length, the PNG. `None` at the end, or on anything else.
 fn read_frame(from: &mut impl Read) -> Option<Shot> {
@@ -303,6 +426,16 @@ pub fn serve(make: impl FnOnce(&Path, u32, bool, &dyn Fn(bool, Vec<u8>))) {
     let Ok(r) = serde_json::from_slice::<Request>(&message) else {
         return;
     };
+    let side = r.side.clamp(MIN_SIDE, MAX_SIDE);
+    let send = |icon: bool, png: Vec<u8>| {
+        let _ = write_frame(&mut std::io::stdout().lock(), icon, &png);
+    };
+    if r.app {
+        if is_app_target(&r.path) {
+            make(&r.path, side, true, &send);
+        }
+        return;
+    }
     // Checked again here, with the built-in rules always in force.
     let rules = Rules {
         excludes: Excludes::default()
@@ -313,10 +446,7 @@ pub fn serve(make: impl FnOnce(&Path, u32, bool, &dyn Fn(bool, Vec<u8>))) {
     if !preview::may_thumbnail(&r.path, &rules) {
         return;
     }
-    let side = r.side.clamp(MIN_SIDE, MAX_SIDE);
-    make(&r.path, side, r.icon_only, &|icon, png| {
-        let _ = write_frame(&mut std::io::stdout().lock(), icon, &png);
-    });
+    make(&r.path, side, r.icon_only, &send);
 }
 
 /// A crashing handler ends the helper without a Windows error box.

@@ -27,7 +27,7 @@ use lookout_core::placement::{self, Rect, Screen};
 use lookout_core::settings::{monitor_key, Appearance, Settings, DEFAULT_HOTKEY};
 use lookout_core::share::{Payload, Refusal};
 use lookout_core::storage::{DataPaths, Storage};
-use lookout_core::thumbnail::{Shot, Thumbnails};
+use lookout_core::thumbnail::{AppIcons, Shot, Thumbnails};
 use lookout_core::uimode::{Mode, Show, Ui, UiState};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -745,6 +745,9 @@ fn trim_memory_later(app: AppHandle, hidden: Instant) {
             if let Some(thumbnails) = app.try_state::<Arc<Thumbnails>>() {
                 thumbnails.clear();
             }
+            if let Some(icons) = app.try_state::<Arc<AppIcons>>() {
+                icons.clear();
+            }
         }
     });
 }
@@ -1372,6 +1375,15 @@ async fn preview_thumbnail(
 #[tauri::command]
 fn cancel_thumbnail(request: u64, thumbnails: State<Arc<Thumbnails>>) {
     thumbnails.cancel(request);
+}
+
+/// The shell's icon of an app shown in a row; `None` keeps the generic one.
+#[tauri::command]
+async fn app_icon(path: String, icons: State<'_, Arc<AppIcons>>) -> Result<Option<String>, String> {
+    let icons = icons.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || icons.get(std::path::Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Values offered while `ext:` or `in:` is typed; kept in memory by the search.
@@ -2597,6 +2609,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // Command-line access: the marker always; the pipe and its thread only if the user turned it on.
     app.manage(CliAccess::default());
     app.manage(Arc::new(Thumbnails::default()));
+    app.manage(Arc::new(AppIcons::default()));
     *lock(&handle.state::<CliAccess>().marker) =
         lookout_cli::winpipe::mark_running(lookout_cli::winpipe::RUNNING_MARKER_NAME);
     if lock(&handle.state::<Services>().settings).cli_access
@@ -2716,6 +2729,7 @@ pub fn run() {
             preview_file,
             preview_thumbnail,
             cancel_thumbnail,
+            app_icon,
             operator_values,
             frontend_ready,
             bar_painted,
