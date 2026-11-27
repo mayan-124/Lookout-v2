@@ -100,7 +100,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash
-        run: npm run tauri build -- --config src-tauri/tauri.installer.conf.json --config src-tauri/tauri.release.conf.json -- --locked
+        # A secret piped from Windows PowerShell can start with a UTF-8 BOM, which the signer rejects.
+        run: |
+          bom=$'\xEF\xBB\xBF'
+          export TAURI_SIGNING_PRIVATE_KEY="${TAURI_SIGNING_PRIVATE_KEY#"$bom"}"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD#"$bom"}"
+          npm run tauri build -- --config src-tauri/tauri.installer.conf.json --config src-tauri/tauri.release.conf.json -- --locked
         working-directory: ui
 
       - uses: actions/upload-artifact@v5
