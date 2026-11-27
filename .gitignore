@@ -10,3 +10,6 @@ stdout.txt
 *.key
 *.key.*
 *.key.pub.bak
+
+# working rules, kept on this PC only
+/CLAUDE.md
