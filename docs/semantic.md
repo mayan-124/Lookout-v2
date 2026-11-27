@@ -26,7 +26,7 @@ The helper hashes all three at start and **refuses to load on any mismatch** (th
 
 ### Visual C++ runtime
 
-`onnxruntime.dll` is built with Visual C++ and needs the **Microsoft Visual C++ 2015-2022 Redistributable (x64)** (`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`). Most Windows 10 and 11 machines have it; Lookout does not install it. Without it the runtime cannot be loaded and the Plugins panel shows the loader's error instead of results. Not tested on a machine without it.
+`onnxruntime.dll` is built with Visual C++ and needs the **Microsoft Visual C++ 2015-2022 Redistributable (x64)** (`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`). Most Windows 10 and 11 machines have it; Lookout does not install it. Without it the runtime cannot be loaded; the Add-ons panel says "Search by meaning needs the Microsoft Visual C++ runtime. Install it from Microsoft, or turn this off." and the rest of Lookout works. Not tested on a machine without it.
 
 ## How it works
 

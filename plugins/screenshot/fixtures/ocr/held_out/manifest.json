@@ -31,9 +31,9 @@
   },
   {
     "file": "held_out_small_gray.png",
-    "ground_truth": "Copyright (c) 2026 Lookout Technologies Inc. All rights reserved.\nConfidential build 0.9.4-rc2. Not for public redistribution.\nHardware fingerprint: 4B82-99F1-0A3E. Timestamp: 2026-11-24 22:15:00 UTC.",
+    "ground_truth": "Community orchard volunteer schedule for the autumn season.\nApple picking begins on Saturday. Please bring gloves and a hat.\nMeeting point: north gate, row 14. Start time: 09:30, rain or shine.",
     "name": "held_out_small_gray",
-    "sha256": "b96b21c6d5abd3ba4a32b00806dbf59fe96549aaf25334e08edca1e3f192691d"
+    "sha256": "5decbd459a959e61ded4fac461414dfc556d7eed782b004ce7d67f972a8f68d4"
   },
   {
     "file": "held_out_numbers_table.png",

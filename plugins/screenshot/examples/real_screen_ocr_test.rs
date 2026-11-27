@@ -131,7 +131,7 @@ fn main() {
             app_type: "edge",
             file_path: pages_dir.join("small_text.html"),
             title_keyword: "Small Typography",
-            ground_truth: "Lookout Capture Agent version 2.4.0 (x86_64-pc-windows-msvc build release).\nAll telemetry endpoints are operational. Configuration loaded from C:\\ProgramData\\Lookout.\nLicense identifier: MIT-Commercial-Dual-2026. Process priority: Normal. Thread count: 8.",
+            ground_truth: "Garden notes: water the tomato beds every second morning (about 12 litres).\nThe town library opens at 09:00 and closes at 18:00 on weekdays. Bring your card.\nBread recipe: mix 500 g flour, 350 ml water and 7 g yeast. Bake for 35 minutes.",
             is_code: false,
             is_table: false,
             is_two_col: false,

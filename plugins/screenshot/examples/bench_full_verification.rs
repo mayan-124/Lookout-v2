@@ -415,17 +415,17 @@ fn main() {
         let mut img = create_solid(860, 180, [255, 255, 255, 255]);
         let lines = [
             (
-                "Copyright (c) 2026 Lookout Technologies Inc. All rights reserved.",
+                "Community orchard volunteer schedule for the autumn season.",
                 30,
                 30,
             ),
             (
-                "Confidential build 0.9.4-rc2. Not for public redistribution.",
+                "Apple picking begins on Saturday. Please bring gloves and a hat.",
                 30,
                 65,
             ),
             (
-                "Hardware fingerprint: 4B82-99F1-0A3E. Timestamp: 2026-11-24 22:15:00 UTC.",
+                "Meeting point: north gate, row 14. Start time: 09:30, rain or shine.",
                 30,
                 100,
             ),
@@ -529,7 +529,7 @@ fn main() {
         BenchmarkCase {
             name: "small_text",
             file_path: frozen_dir.join("real_ocr_small_text.png"),
-            ground_truth: "Lookout Capture Agent version 2.4.0 (x86_64-pc-windows-msvc build release).\nAll telemetry endpoints are operational. Configuration loaded from C:\\ProgramData\\Lookout.\nLicense identifier: MIT-Commercial-Dual-2026. Process priority: Normal. Thread count: 8.",
+            ground_truth: "Garden notes: water the tomato beds every second morning (about 12 litres).\nThe town library opens at 09:00 and closes at 18:00 on weekdays. Bring your card.\nBread recipe: mix 500 g flour, 350 ml water and 7 g yeast. Bake for 35 minutes.",
             before_cer: 0.1020,
             before_wer: 0.0769,
         },
@@ -581,7 +581,7 @@ fn main() {
         BenchmarkCase {
             name: "held_out_small_gray",
             file_path: gray_path,
-            ground_truth: "Copyright (c) 2026 Lookout Technologies Inc. All rights reserved.\nConfidential build 0.9.4-rc2. Not for public redistribution.\nHardware fingerprint: 4B82-99F1-0A3E. Timestamp: 2026-11-24 22:15:00 UTC.",
+            ground_truth: "Community orchard volunteer schedule for the autumn season.\nApple picking begins on Saturday. Please bring gloves and a hat.\nMeeting point: north gate, row 14. Start time: 09:30, rain or shine.",
             before_cer: 0.0,
             before_wer: 0.0,
         },

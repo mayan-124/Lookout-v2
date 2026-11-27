@@ -31,9 +31,9 @@
   },
   {
     "file": "real_ocr_small_text.png",
-    "ground_truth": "Lookout Capture Agent version 2.4.0 (x86_64-pc-windows-msvc build release).\nAll telemetry endpoints are operational. Configuration loaded from C:\\ProgramData\\Lookout.\nLicense identifier: MIT-Commercial-Dual-2026. Process priority: Normal. Thread count: 8.",
+    "ground_truth": "Garden notes: water the tomato beds every second morning (about 12 litres).\nThe town library opens at 09:00 and closes at 18:00 on weekdays. Bring your card.\nBread recipe: mix 500 g flour, 350 ml water and 7 g yeast. Bake for 35 minutes.",
     "name": "small_text",
-    "sha256": "28eb1f03a738915976c2bcbe7854873a215928651c43171db373d554426c01c8"
+    "sha256": "f68113e3ef828af0ce674256a0c5cc29ec8faad816ce7d1911386cbdf5ad8ac8"
   },
   {
     "file": "real_ocr_bullets_columns.png",

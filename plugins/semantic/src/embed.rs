@@ -6,7 +6,7 @@
 //! "Represent this sentence for searching relevant passages: " and a passage
 //! is embedded as it is; input is cut at 512 tokens.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ort::session::Session;
 use ort::value::Tensor;
@@ -17,6 +17,28 @@ use crate::tokenizer::Tokenizer;
 pub const DIM: usize = 384;
 pub const MAX_TOKENS: usize = 512;
 pub const QUERY_PREFIX: &str = "Represent this sentence for searching relevant passages: ";
+/// Shown as it is in the Add-ons panel (`ui/src/Plugins.svelte` knows its start).
+pub const NEEDS_VC_RUNTIME: &str = "Search by meaning needs the Microsoft Visual C++ runtime. Install it from Microsoft, or turn this off.";
+/// What `onnxruntime.dll` takes from the Visual C++ redistributable.
+const VC_DLLS: [&str; 4] = [
+    "msvcp140.dll",
+    "msvcp140_1.dll",
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+];
+
+/// Why the runtime did not load: the plain line if the Visual C++ runtime is
+/// not in `system_dir`, otherwise the loader's own words.
+fn load_failure(error: &str, system_dir: Option<&Path>) -> String {
+    match system_dir {
+        Some(dir) if VC_DLLS.iter().any(|dll| !dir.join(dll).is_file()) => NEEDS_VC_RUNTIME.into(),
+        _ => format!("cannot load the runtime: {error}"),
+    }
+}
+
+fn system_dir() -> Option<PathBuf> {
+    std::env::var_os("SystemRoot").map(|root| PathBuf::from(root).join("System32"))
+}
 
 pub trait Embedder: Send {
     /// A unit-length vector of [`DIM`] numbers.
@@ -63,7 +85,7 @@ impl OrtEmbedder {
         }
         let tokenizer = Tokenizer::from_json(tokenizer)?;
         let env = ort::init_from(runtime)
-            .map_err(|e| format!("cannot load the runtime: {e}"))?
+            .map_err(|e| load_failure(&e.to_string(), system_dir().as_deref()))?
             .with_telemetry(false)
             .build()
             .map_err(|e| format!("cannot start the runtime: {e}"))?;
@@ -142,5 +164,22 @@ impl Embedder for OrtEmbedder {
             return Err(format!("unexpected model output shape {shape:?}"));
         }
         unit(data[..DIM].to_vec())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_visual_cpp_runtime_is_said_in_one_plain_line() {
+        let system = tempfile::tempdir().unwrap();
+        let raw = "failed to load (os error 126)";
+        assert_eq!(load_failure(raw, Some(system.path())), NEEDS_VC_RUNTIME);
+        // With the runtime there, the cause is something else: keep it.
+        for dll in VC_DLLS {
+            std::fs::write(system.path().join(dll), b"").unwrap();
+        }
+        assert!(load_failure(raw, Some(system.path())).ends_with(raw));
     }
 }

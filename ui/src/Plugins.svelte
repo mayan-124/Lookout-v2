@@ -272,6 +272,7 @@
     {#if p.id === SEMANTIC_ID && semantic}
       <p class="note" role="status">
         {#if semantic.state === "off"}Search by meaning is off.
+        {:else if semantic.reason?.startsWith("Search by meaning needs")}{semantic.reason}
         {:else if semantic.state === "unavailable"}Search by meaning is not working. {semantic.reason ? errorText(semantic.reason) : "Turn it off and on again."}
         {:else if semantic.state === "waiting"}Waiting until you are idle.
         {:else if semantic.state === "indexing"}Looking at {semantic.done} of {semantic.total} files.

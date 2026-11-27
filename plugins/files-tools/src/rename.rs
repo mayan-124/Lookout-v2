@@ -273,15 +273,14 @@ mod tests {
     fn a_pattern_without_a_usable_number_gets_a_plain_message_with_an_example() {
         let d = folder(&["a.txt", "b.txt"]);
         let name = d.path().file_name().unwrap().to_string_lossy().into_owned();
-        let want =
-            format!("Use {{n}} for the number, for example: rename {name} to mayandata{{n}}");
-        for pattern in ["mayandata{1}", "mayandata", "mayandata{n"] {
+        let want = format!("Use {{n}} for the number, for example: rename {name} to holiday{{n}}");
+        for pattern in ["holiday{1}", "holiday", "holiday{n"] {
             assert_eq!(plan(d.path(), pattern).unwrap_err(), want, "{pattern}");
         }
-        assert!(plan(d.path(), "mayandata{n}").is_ok());
+        assert!(plan(d.path(), "holiday{n}").is_ok());
         assert!(plan(d.path(), "{name} copy").is_ok());
         // One file needs no number.
-        assert!(plan(folder(&["a.txt"]).path(), "mayandata").is_ok());
+        assert!(plan(folder(&["a.txt"]).path(), "holiday").is_ok());
     }
 
     #[test]
