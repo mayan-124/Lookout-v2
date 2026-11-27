@@ -1599,10 +1599,14 @@
     input?.focus();
   }
   // The tallest the screen allows: fixed-height panels shrink to fit at high Windows scaling.
+  // The notice above the dock takes its own height (and the gap under it) from them.
+  const showMoved = $derived(ui.disk_notice && !card && !showSetup);
+  let movedHeight = $state(0);
   function fitScreen() {
-    document.documentElement.style.setProperty("--room", `${window.screen.availHeight - 32}px`);
+    const taken = showMoved ? movedHeight + 8 : 0;
+    document.documentElement.style.setProperty("--room", `${window.screen.availHeight - 32 - taken}px`);
   }
-  onMount(fitScreen);
+  $effect(fitScreen);
 
   const hints = $derived(
     footerHints(view, {
@@ -2216,8 +2220,8 @@
     </div>
 
     <div class="foot">
-    {#if ui.disk_notice && !card && !showSetup}
-      <div class="moved glass" role="status">
+    {#if showMoved}
+      <div class="moved glass" role="status" bind:offsetHeight={movedHeight}>
         <span>Disk moved to Full mode in Settings &gt; Features</span>
         <button type="button" class="btn small primary" onclick={() => uiChange(setShow("disk", true))}>Turn Disk on</button>
         <button type="button" class="btn small" onclick={() => uiChange(dismissDiskNotice())}>Dismiss</button>
