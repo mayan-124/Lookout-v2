@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use chrono::{Local, TimeZone};
 
-use crate::actions::{Action, ActionError, Authorized, Executed, Plan, Preview, Risk, Target};
+use crate::actions::{
+    Action, ActionError, Authorized, Executed, Plan, Preview, Risk, Target, UndoPlan,
+};
 use crate::item::{Item, Kind};
 use crate::notify::Notifier;
 use crate::query::ParsedQuery;
@@ -409,6 +411,8 @@ struct Shared {
 /// look again after a timer is added or cancelled.
 pub struct TimerService {
     shared: Arc<Shared>,
+    /// The newest cancelled timers, for undo. In memory only.
+    cancelled: Mutex<Vec<Timer>>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -471,12 +475,19 @@ impl TimerService {
             .spawn(move || run(&s))?;
         Ok(Self {
             shared,
+            cancelled: Mutex::new(Vec::new()),
             thread: Mutex::new(Some(handle)),
         })
     }
 
     pub fn store(&self) -> &Arc<TimerStore> {
         &self.shared.store
+    }
+
+    fn cancelled(&self) -> std::sync::MutexGuard<'_, Vec<Timer>> {
+        self.cancelled
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Tells the thread the list changed.
@@ -671,7 +682,11 @@ impl Action for StartAction {
     }
 }
 
-/// Cancels a running timer. No confirmation: nothing is lost but a countdown.
+/// Cancelled timers kept for undo.
+const KEEP_CANCELLED: usize = 20;
+
+/// Cancels a running timer. No confirmation, and it can be undone while its
+/// end time is still ahead.
 pub struct CancelAction {
     service: Arc<TimerService>,
 }
@@ -708,7 +723,7 @@ impl Action for CancelAction {
             .store()
             .get(id)
             .ok_or_else(|| ActionError::Stale("That timer has already ended.".into()))?;
-        Ok(plan_of(
+        let mut plan = plan_of(
             format!("Cancel {} timer", adjective(t.secs)),
             vec![if t.label.is_empty() {
                 format!("Ends at {}", clock_of(t.end_ms))
@@ -717,7 +732,9 @@ impl Action for CancelAction {
             }],
             serde_json::json!({ "id": id }),
             format!("timer_cancel|{id}"),
-        ))
+        );
+        plan.undoable = true;
+        Ok(plan)
     }
 
     fn execute(&self, plan: &Plan, _proof: &Authorized) -> Result<Executed, ActionError> {
@@ -726,16 +743,58 @@ impl Action for CancelAction {
             .get("id")
             .and_then(serde_json::Value::as_i64)
             .ok_or_else(|| ActionError::Failed("bad plan".into()))?;
+        let timer = self.service.store().get(id);
         if !self.service.store().cancel(id) {
             return Err(ActionError::NothingToDo(
                 "That timer has already ended.".into(),
             ));
         }
+        if let Some(t) = timer {
+            let mut kept = self.service.cancelled();
+            kept.push(t);
+            let extra = kept.len().saturating_sub(KEEP_CANCELLED);
+            kept.drain(..extra);
+        }
         self.service.poke();
         Ok(Executed {
             message: "Timer cancelled".into(),
-            undo_token: None,
+            undo_token: Some(id.to_string()),
         })
+    }
+
+    fn plan_undo(&self, token: &str) -> Result<UndoPlan, ActionError> {
+        Ok(UndoPlan {
+            risk: Risk::Safe,
+            preview: Preview {
+                from: None,
+                title: "Undo cancelling a timer".into(),
+                lines: vec!["The timer keeps its end time".into()],
+                warnings: Vec::new(),
+            },
+            fingerprint: format!("{CANCEL}|{token}"),
+        })
+    }
+
+    /// Every outcome succeeds, so that undo can move on to what came before.
+    fn undo(&self, token: &str, _: &UndoPlan, _: &Authorized) -> Result<String, ActionError> {
+        let found = {
+            let mut kept = self.service.cancelled();
+            kept.iter()
+                .position(|t| t.id.to_string() == token)
+                .map(|at| kept.remove(at))
+        };
+        let Some(t) = found else {
+            return Ok("That timer can no longer be restored".into());
+        };
+        if t.end_ms <= now_ms() {
+            return Ok("That timer would have ended by now".into());
+        }
+        self.service
+            .store()
+            .insert_raw(&t.label, t.secs, t.end_ms)
+            .map_err(|e| ActionError::Failed(e.to_string()))?;
+        self.service.poke();
+        Ok("Timer restored".into())
     }
 }
 

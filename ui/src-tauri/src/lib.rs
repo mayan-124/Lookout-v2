@@ -1588,7 +1588,7 @@ async fn plugin_set_enabled(
     services: State<'_, Services>,
 ) -> Result<Vec<lookout_core::plugins::PluginInfo>, String> {
     let lookout = services_of(&services)?;
-    let host = lookout.plugins().ok_or("plugins are not available")?;
+    let host = lookout.plugins().ok_or("add-ons are not available")?;
     host.set_enabled(&id, enabled, accept)
         .map_err(|e| e.to_string())?;
     // Turned on: files the helper could not read before are queued now.
@@ -1605,7 +1605,7 @@ async fn plugin_set_config(
     services: State<'_, Services>,
 ) -> Result<Vec<lookout_core::plugins::PluginInfo>, String> {
     let lookout = services_of(&services)?;
-    let host = lookout.plugins().ok_or("plugins are not available")?;
+    let host = lookout.plugins().ok_or("add-ons are not available")?;
     host.set_config(&id, config).map_err(|e| e.to_string())?;
     Ok(host.list())
 }
@@ -2186,7 +2186,7 @@ fn start_lookout(app: &AppHandle, services: &Services) -> Option<Lookout> {
                  account, or the files are damaged).\n\nThe old files were set aside in \
                  Lookout's data folder as *.unreadable and Lookout started fresh. They are \
                  deleted the next time Lookout starts normally, or when you use \
-                 \"Delete my search data\" in Settings.",
+                 \"Delete my data\" in Settings.",
             )
             .title("Lookout: search data could not be unlocked")
             .kind(MessageDialogKind::Warning)
@@ -2265,7 +2265,7 @@ fn register_grab_hotkey(app: &AppHandle, wanted: &str) {
             log::warn("the grab hotkey could not be registered");
             app.dialog()
                 .message(lookout_core::screengrab::grab_hotkey_message(wanted))
-                .title("Lookout: hotkey unavailable")
+                .title("Lookout: shortcut unavailable")
                 .kind(MessageDialogKind::Warning)
                 .show(|_| {});
         }
@@ -2282,11 +2282,11 @@ fn start_grab(app: &AppHandle) {
         }
         let (app, pause) = (app.clone(), shared.pause.clone());
         std::thread::spawn(move || {
-            let outcome = contain("reading text from the screen failed", || {
+            let outcome = contain("Text from screen failed", || {
                 lookout_core::screengrab::run(&pause)
             });
             if let Some(lookout_core::screengrab::Outcome::Failed(_)) = outcome {
-                log::error("reading text from the screen failed");
+                log::error("Text from screen failed");
             }
             app.state::<Shared>()
                 .grabbing
@@ -2324,7 +2324,7 @@ fn register_hotkey(app: &AppHandle, wanted: &str) -> (String, bool) {
         }
     }
     (
-        format!("Lookout - hotkey '{wanted}' is unavailable (already used by another app?)"),
+        format!("Lookout - shortcut '{wanted}' is unavailable (already used by another app?)"),
         false,
     )
 }
@@ -2452,7 +2452,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let (tooltip, hotkey_ok) = register_hotkey(&handle, &settings.hotkey);
     if !hotkey_ok {
         let message = format!(
-            "Lookout could not register the hotkey '{}' (and the fallback '{DEFAULT_HOTKEY}'). \
+            "Lookout could not register the shortcut '{}' (and the fallback '{DEFAULT_HOTKEY}'). \
              Another app may be using it.\n\n\
              Edit \"hotkey\" in:\n{}\n\nthen restart Lookout. Lookout stays in the tray meanwhile.",
             settings.hotkey,
@@ -2461,7 +2461,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         handle
             .dialog()
             .message(message)
-            .title("Lookout: hotkey unavailable")
+            .title("Lookout: shortcut unavailable")
             .kind(MessageDialogKind::Warning)
             .show(|_| {});
     }
@@ -2585,7 +2585,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         watchdog
             .dialog()
             .message(
-                "Lookout's interface failed to load, so the hotkey will not open the bar.\n\n\
+                "Lookout's interface failed to load, so the shortcut will not open the bar.\n\n\
                  Try restarting Lookout. If it keeps happening, reinstall it or check that \
                  the WebView2 runtime is installed.",
             )

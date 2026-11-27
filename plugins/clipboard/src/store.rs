@@ -184,6 +184,22 @@ impl Store {
         pinned.chain(self.clips.iter().rev().filter(|c| !c.pinned))
     }
 
+    /// Takes one clip out; [`Store::restore`] puts it back.
+    pub fn remove(&mut self, id: u64) -> Option<Clip> {
+        let at = self.clips.iter().position(|c| c.id == id)?;
+        Some(self.clips.remove(at))
+    }
+
+    /// Puts a removed clip back where its time places it. Nothing happens if the
+    /// same text is in the history again.
+    pub fn restore(&mut self, clip: Clip) {
+        if self.clips.iter().any(|c| c.text == clip.text) {
+            return;
+        }
+        let at = self.clips.partition_point(|c| c.ts <= clip.ts);
+        self.clips.insert(at, clip);
+    }
+
     /// Returns false if the clip is gone.
     pub fn set_pinned(&mut self, id: u64, pinned: bool) -> bool {
         self.clips

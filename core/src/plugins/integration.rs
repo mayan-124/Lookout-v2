@@ -80,11 +80,14 @@ impl Action for PluginAction {
     }
 
     fn plan(&self, target: &Target) -> Result<Plan, ActionError> {
-        // Only an item this plugin itself produced, for this very action.
+        // Only an item this plugin itself produced, for an action it named.
         let origin = target
             .origin
             .as_ref()
-            .filter(|o| o.plugin_id == self.plugin && o.action_id == self.action)
+            .filter(|o| {
+                o.plugin_id == self.plugin
+                    && (o.action_id == self.action || o.also.contains(&self.action))
+            })
             .ok_or_else(|| ActionError::NotApplicable {
                 action: self.full.clone(),
             })?;

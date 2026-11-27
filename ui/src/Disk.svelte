@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onDestroy, onMount, tick } from "svelte";
   import Chart, { type ChartData, type Detail } from "./Chart.svelte";
+  import Icon from "./Icon.svelte";
   import Cleanup from "./Cleanup.svelte";
   import Duplicates from "./Duplicates.svelte";
   import Preview, { type Source } from "./Preview.svelte";
@@ -325,7 +326,7 @@
     if (!s) return "";
     const parts: string[] = [];
     if (s.unreadable) parts.push(`${s.unreadable.toLocaleString()} folder(s) can't be read without admin (Fast scan can read them)`);
-    if (s.links_skipped) parts.push(`${s.links_skipped.toLocaleString()} shortcut folder(s) not followed`);
+    if (s.links_skipped) parts.push(`${s.links_skipped.toLocaleString()} folder link(s) not followed`);
     if (s.cloud_folders) parts.push(`${s.cloud_folders.toLocaleString()} cloud-only folder(s) not opened`);
     if (s.cloud_files) parts.push(`${s.cloud_files.toLocaleString()} cloud-only file(s) take no space on this disk`);
     if (s.hard_links) parts.push(`${s.hard_links.toLocaleString()} file(s) that appear in more than one place are counted once (${human(s.hard_link_bytes)} is not counted twice)`);
@@ -421,7 +422,7 @@
     try {
       await invoke("disk_save");
       saved = await invoke("disk_saved_info");
-      notice = "Saved (encrypted). “Delete my search data” removes it.";
+      notice = "Saved (encrypted). “Delete my data” in Settings deletes it.";
     } catch (e) {
       notice = errorText(e);
     }
@@ -607,8 +608,17 @@
       return;
     }
     if (e.ctrlKey && e.key.toLowerCase() === "c") {
+      if (!e.shiftKey && String(window.getSelection())) return; // selected text is copied as text
       e.preventDefault();
-      act("copy_path");
+      act(e.shiftKey ? "copy_file" : "copy_path");
+      return;
+    }
+    if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+      e.preventDefault();
+      const at = tab === "tree" ? `[data-i="${selected}"]` : `[data-f="${fileSel}"]`;
+      const r = pageEl?.querySelector(at)?.getBoundingClientRect();
+      const target = currentTarget();
+      if (r && target) openMenuFor(target, r.left + 48, r.bottom - 8);
       return;
     }
     if (e.key === "Enter" && !e.ctrlKey) {
@@ -616,7 +626,7 @@
       if (!e.repeat) act("open");
       return;
     }
-    if (e.key === "Delete") {
+    if (e.key === "Delete" && !e.repeat) {
       e.preventDefault();
       act("recycle");
       return;
@@ -667,25 +677,28 @@
 
   function openMenuAt(e: MouseEvent) {
     e.preventDefault();
-    menu = { x: Math.min(e.clientX, window.innerWidth - 190), y: Math.min(e.clientY, window.innerHeight - 140) };
+    menu = { x: Math.min(e.clientX, window.innerWidth - 190), y: Math.min(e.clientY, window.innerHeight - 190) };
   }
 
   function openMenu(e: MouseEvent, i: number) {
     e.preventDefault();
     selectRow(i);
-    menu = { x: Math.min(e.clientX, window.innerWidth - 190), y: Math.min(e.clientY, window.innerHeight - 140) };
+    menu = { x: Math.min(e.clientX, window.innerWidth - 190), y: Math.min(e.clientY, window.innerHeight - 190) };
   }
 
-  async function openChartMenu(path: number[], x: number, y: number) {
+  /** The menu with the keyboard in it; closing it gives the focus back. */
+  async function openMenuFor(target: Target, x: number, y: number) {
     menu = {
       x: Math.min(x, window.innerWidth - 190),
-      y: Math.min(y, window.innerHeight - 160),
-      target: { node: path[path.length - 1] },
+      y: Math.min(y, window.innerHeight - 190),
+      target,
       back: document.activeElement as HTMLElement,
     };
     await tick();
     menuEl?.querySelector("button")?.focus({ preventScroll: true });
   }
+  const openChartMenu = (path: number[], x: number, y: number) =>
+    openMenuFor({ node: path[path.length - 1] }, x, y);
 
   function menuKey(e: KeyboardEvent) {
     const items = [...(menuEl?.querySelectorAll("button") ?? [])];
@@ -763,15 +776,15 @@
   </button>
 {/snippet}
 
-<section class="disk" class:covered={!!card || exp} aria-label="Disk usage" bind:this={pageEl}>
+<section class="disk" class:covered={!!card || exp} aria-label="Disk analyzer" bind:this={pageEl}>
   <header>
-    <h2>Disk usage</h2>
+    <h2>Disk analyzer</h2>
     <span class="hint">Scans only when you press Scan. Closing this view frees the data.</span>
     <button class="btn" onclick={onclose}>Close <kbd>Esc</kbd></button>
   </header>
 
   <div class="tabs pages" role="tablist" aria-label="Disk tools">
-    <button role="tab" aria-selected={page === "disk"} class:on={page === "disk"} onclick={() => (page = "disk")}>Disk usage</button>
+    <button role="tab" aria-selected={page === "disk"} class:on={page === "disk"} onclick={() => (page = "disk")}>Disk analyzer</button>
     <button role="tab" aria-selected={page === "cleanup"} class:on={page === "cleanup"} onclick={() => (page = "cleanup")}>Clean up</button>
     <button role="tab" aria-selected={page === "dupes"} class:on={page === "dupes"} onclick={() => (page = "dupes")}>Duplicates</button>
   </div>
@@ -795,7 +808,7 @@
       <button class="btn" onclick={cancel}>Cancel</button>
     {:else}
       <button class="btn primary" onclick={() => scan(chosen)} disabled={!chosen}>
-        {finished ? "Rescan" : "Scan"}{#if finished}<kbd>F5</kbd>{/if}
+        {finished ? "Scan again" : "Scan"}{#if finished}<kbd>F5</kbd>{/if}
       </button>
       <button
         class="btn"
@@ -807,7 +820,7 @@
     {#if finished && !progress?.saved_at}<button class="btn" onclick={save}>Save</button>{/if}
     {#if saved && !scanning}
       <button class="btn" onclick={loadSaved} title={saved.root}>Open saved ({when(saved.saved_at)})</button>
-      <button class="btn" onclick={forgetSaved}>Forget saved</button>
+      <button class="btn" onclick={forgetSaved}>Delete saved scan</button>
     {/if}
   </div>
 
@@ -832,7 +845,7 @@
 
   {#if finished && view}
     {#if progress?.saved_at}
-      <p class="status">Saved scan from {when(progress.saved_at)}. Rescan for current sizes.</p>
+      <p class="status">Saved scan from {when(progress.saved_at)}. Scan again for current sizes.</p>
     {/if}
     <nav class="crumbs" aria-label="Path">
       {#each view.crumbs as c, i}
@@ -885,14 +898,14 @@
           <li
             role="option"
             aria-selected={i === fileSel}
-            class="filerow"
+            class="filerow tablerow"
             class:selected={i === fileSel}
             data-f={i}
             onclick={() => (fileSel = i)}
             oncontextmenu={(e) => { fileSel = i; openMenuAt(e); }}
             onkeydown={() => {}}
           >
-            <span class="nm">{f.name}</span>
+            <span class="c-name"><span class="icon"><Icon name="file" /></span><span class="nm">{f.name}</span></span>
             <span class="nm dim" title={f.folder}>{f.folder}</span>
             <span class="c-size">{human(f.size_disk)}</span>
             <span class="c-mod">{when(f.modified)}</span>
@@ -905,7 +918,7 @@
       <div class="grip" role="separator" tabindex="0" aria-orientation="vertical" aria-label="Resize with the Left and Right keys" aria-valuenow={chartW} onpointerdown={dragSplit} onkeydown={splitKey}></div>
       <aside class="chartpane"><Preview source={previewSource} /></aside>
       </div>
-      <p class="keys"><kbd>Space</kbd> preview · <kbd>↑↓</kbd> move · <kbd>Enter</kbd> open · <kbd>Ctrl+E</kbd> show in folder · <kbd>Ctrl+C</kbd> copy path · <kbd>Del</kbd> Recycle Bin · right-click for a menu</p>
+      <p class="keys"><kbd>Space</kbd> preview · <kbd>↑↓</kbd> move · <kbd>Enter</kbd> open · <kbd>Ctrl+E</kbd> show in folder · <kbd>Ctrl+C</kbd> copy path · <kbd>Ctrl+Shift+C</kbd> copy file · <kbd>Del</kbd> Recycle Bin · right-click for a menu</p>
     {:else}
     <div class="split" style:grid-template-columns={`minmax(0, 1fr) 6px ${chartW}px`}>
     <div class="left">
@@ -920,6 +933,7 @@
       {#each flat as f, i (f.row.id)}
         <li
           role="treeitem"
+          class="tablerow"
           aria-selected={i === selected}
           aria-expanded={f.row.kind === "folder" && f.row.has_children ? expanded.has(f.row.id) : undefined}
           class:selected={i === selected}
@@ -935,8 +949,9 @@
                 {expanded.has(f.row.id) ? "▾" : "▸"}
               </button>
             {:else}<span class="chev"></span>{/if}
+            {#if f.row.kind !== "others"}<span class="icon"><Icon name={f.row.kind} /></span>{/if}
             <span class="nm" class:dim={f.row.kind === "others"}>{f.row.name}</span>
-            {#if f.row.link}<em>shortcut, not followed</em>{/if}
+            {#if f.row.link}<em>link, not followed</em>{/if}
             {#if f.row.limited}<em title="Part of what is inside is counted but not listed">partly listed</em>{/if}
           </span>
           <span class="c-bar">
@@ -975,7 +990,7 @@
     </div>
     <p class="keys">
       <kbd>Space</kbd> preview · <kbd>↑↓</kbd> move · <kbd>→←</kbd> expand · <kbd>Enter</kbd> open · <kbd>Ctrl+Enter</kbd> go into ·
-      <kbd>Backspace</kbd> up · <kbd>Ctrl+E</kbd> show in folder · <kbd>Ctrl+C</kbd> copy path ·
+      <kbd>Backspace</kbd> up · <kbd>Ctrl+E</kbd> show in folder · <kbd>Ctrl+C</kbd> copy path · <kbd>Ctrl+Shift+C</kbd> copy file ·
       <kbd>Del</kbd> Recycle Bin · right-click for a menu
     </p>
     {/if}
@@ -1007,8 +1022,9 @@
     {@const target = menu.target}
     <div class="menu" role="menu" tabindex="-1" bind:this={menuEl} onkeydown={menuKey} style:left={`${menu.x}px`} style:top={`${menu.y}px`}>
       <button role="menuitem" onclick={() => act("open", target)}>Open</button>
-      <button role="menuitem" onclick={() => act("reveal", target)}>Show in folder</button>
       <button role="menuitem" onclick={() => act("copy_path", target)}>Copy path</button>
+      <button role="menuitem" onclick={() => act("copy_file", target)}>Copy file</button>
+      <button role="menuitem" onclick={() => act("reveal", target)}>Show in folder</button>
       <button role="menuitem" onclick={() => act("recycle", target)}>Move to Recycle Bin…</button>
     </div>
   {/if}
@@ -1272,8 +1288,6 @@
   }
   li.filerow {
     padding: 4px 8px;
-    border: 1px solid transparent;
-    border-radius: 8px;
   }
   .status {
     margin: 0;
@@ -1365,16 +1379,10 @@
   }
   li[role="treeitem"] {
     padding: 4px 8px;
-    border: 1px solid transparent;
-    border-radius: 8px;
     cursor: default;
   }
   li[role="treeitem"]:hover {
     background: var(--accent-soft);
-  }
-  li.selected {
-    background: var(--accent-soft);
-    border-color: var(--accent);
   }
   .c-name {
     display: flex;
@@ -1440,30 +1448,6 @@
     margin: 0;
     color: var(--muted);
     font-size: 12px;
-  }
-  .menu {
-    position: fixed;
-    display: flex;
-    flex-direction: column;
-    background: var(--raised);
-    border: 1px solid var(--border-strong);
-    border-radius: 10px;
-    padding: 4px;
-    z-index: 25;
-    min-width: 180px;
-  }
-  .menu button {
-    all: unset;
-    padding: 7px 12px;
-    border-radius: 8px;
-    cursor: pointer;
-  }
-  .menu button:hover {
-    background: var(--accent-soft);
-  }
-  .menu button:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
   }
   .scrim {
     position: absolute;

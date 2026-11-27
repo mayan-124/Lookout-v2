@@ -55,7 +55,7 @@ impl Outcome {
             Outcome::NoText => Some("No text found there".to_owned()),
             Outcome::Cancelled => None,
             Outcome::Paused => Some("Lookout is paused".to_owned()),
-            Outcome::Failed(why) => Some(format!("Could not grab text: {why}")),
+            Outcome::Failed(why) => Some(format!("Text from screen failed: {why}")),
         }
     }
 }
@@ -120,7 +120,7 @@ fn ocr_text(result: Result<String, OcrError>) -> Result<String, Outcome> {
 /// What to tell the user when the grab hotkey cannot be registered.
 pub fn grab_hotkey_message(wanted: &str) -> String {
     format!(
-        "{wanted} is in use, so it cannot read text from the screen. Pick another in Settings > General."
+        "{wanted} is in use, so Text from screen cannot use it. Pick another in Settings > General."
     )
 }
 
@@ -592,7 +592,7 @@ pub(crate) mod tests {
         let no_language = ocr_text(Err(OcrError::Unavailable)).unwrap_err();
         assert_eq!(
             no_language.notice().as_deref(),
-            Some("Could not grab text: Windows has no text-reading language. Add one in Windows Settings > Time & language")
+            Some("Text from screen failed: Windows has no text-reading language. Add one in Windows Settings > Time & language")
         );
         assert_eq!(
             ocr_text(Ok(" \n ".to_owned()))

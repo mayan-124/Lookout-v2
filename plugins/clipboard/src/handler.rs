@@ -15,21 +15,30 @@ use crate::text_actions;
 
 const DEFAULT_MAX_CLIPS: u64 = 100;
 const DEFAULT_RETENTION_HOURS: u64 = 168;
+/// Most clips one search lists, and how many of the newest are always among them.
+const LISTED: usize = 10;
+const ALWAYS_NEWEST: usize = 3;
+/// Deleted clips kept in memory for undo.
+const KEEP_DELETED: usize = 20;
+/// A title is cut here; longer clips say how long they are.
+const TITLE_CHARS: usize = 90;
 
 pub struct Clipboard {
     shared: Arc<Shared>,
     io: Arc<dyn ClipboardIo>,
     /// Start the background watcher on `initialize` (tests turn it off).
     watch: bool,
-    /// Enter pastes (true) or only copies (false).
+    /// Enter copies (false) or, only where the config asks for it, pastes.
     paste_default: bool,
+    /// The newest deleted clips. In memory only: after a restart they are gone.
+    deleted: Vec<Clip>,
 }
 
-/// `default_action` from the config: "copy" or (anything else) "paste".
+/// `default_action` from the config: "paste" or (anything else) "copy".
 fn paste_default_from(config: &Value) -> bool {
-    !config["default_action"]
+    config["default_action"]
         .as_str()
-        .is_some_and(|s| s.trim().eq_ignore_ascii_case("copy"))
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("paste"))
 }
 
 fn limits_from(config: &Value) -> Limits {
@@ -89,17 +98,31 @@ fn one_line(text: &str, max: usize) -> String {
     flat.chars().take(max).collect()
 }
 
-fn ago(now: i64, ts: i64) -> String {
-    let s = (now - ts).max(0);
-    match s {
-        0..=59 => "just now".into(),
-        60..=3599 => format!("{} min ago", s / 60),
-        3600..=86_399 => format!("{} h ago", s / 3600),
-        _ => format!("{} days ago", s / 86_400),
-    }
+/// "https://www.example.com/a?b" -> "example.com".
+fn site(url: &str) -> Option<&str> {
+    let rest = url.trim().split_once("://")?.1;
+    let host = rest.split(['/', '?', '#']).next()?;
+    let host = host.rsplit('@').next()?;
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    (!host.is_empty()).then_some(host)
 }
 
-fn item_for(clip: &Clip, now: i64, paste: bool) -> Value {
+/// 1234567 -> "1,234,567".
+fn grouped(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// One clip as the row in place `rank`. Lookout shows its age, from `params.ts`.
+fn item_for(clip: &Clip, paste: bool, rank: usize) -> Value {
+    let kind = smart::detect(&clip.text);
     let mut parts: Vec<String> = Vec::new();
     if clip.pinned {
         parts.push("Pinned".into());
@@ -107,22 +130,71 @@ fn item_for(clip: &Clip, now: i64, paste: bool) -> Value {
     if clip.masked {
         parts.push("contains masked secrets".into());
     }
-    if let Some(l) = smart::detect(&clip.text).label() {
+    if let Some(l) = kind.label() {
         parts.push(l.into());
+    }
+    if kind == Kind::Url {
+        parts.extend(site(&clip.text).map(str::to_owned));
     }
     if let Some(app) = clip.source.as_deref().filter(|a| !a.contains("lookout")) {
         parts.push(display_app(app));
     }
-    parts.push(ago(now, clip.ts));
+    let chars = clip.text.chars().count();
+    if chars > TITLE_CHARS {
+        parts.push(format!("{} characters", grouped(chars)));
+    }
+    // "Code" the kind and "Code" the program are said once.
+    parts.dedup();
+    let (enter, other) = if paste {
+        ("paste_clip", "copy_clip")
+    } else {
+        ("copy_clip", "paste_clip")
+    };
     json!({
         "id": clip.id.to_string(),
-        "title": one_line(&clip.text, 90),
+        "title": one_line(&clip.text, TITLE_CHARS),
         "subtitle": parts.join(" · "),
         "kind": "clipboard",
-        "action": if paste { "paste_clip" } else { "copy_clip" },
-        "params": {"clip_id": clip.id},
-        "score": if clip.pinned { 5.5 } else { 5.0 },
+        "action": enter,
+        "also": [other, "delete_clip"],
+        "params": {
+            "clip_id": clip.id,
+            "ts": clip.ts,
+            "code": matches!(kind, Kind::Code | Kind::Json),
+        },
+        // Lookout orders rows by score: the list's order is kept.
+        "score": 5.0 - rank as f64 * 0.01,
     })
+}
+
+/// The clips a search lists, newest first. Pinned clips have first claim on a
+/// place, but the newest ones are listed even when pinned clips would fill it.
+fn listed(store: &Store, matches: impl Fn(&Clip) -> bool) -> Vec<&Clip> {
+    let mut shown: Vec<&Clip> = store
+        .listing()
+        .filter(|c| matches(c))
+        .take(LISTED)
+        .collect();
+    let newest: Vec<&Clip> = store
+        .recent()
+        .filter(|c| matches(c))
+        .take(ALWAYS_NEWEST)
+        .collect();
+    let is_newest = |c: &Clip| newest.iter().any(|n| n.id == c.id);
+    for clip in &newest {
+        if shown.iter().any(|c| c.id == clip.id) {
+            continue;
+        }
+        // The last pinned clip that is not itself among the newest gives way.
+        if let Some(at) = shown.iter().rposition(|c| c.pinned && !is_newest(c)) {
+            shown.remove(at);
+            shown.push(clip);
+        }
+    }
+    let ids: Vec<u64> = shown.iter().map(|c| c.id).collect();
+    let mut shown: Vec<&Clip> = store.recent().filter(|c| ids.contains(&c.id)).collect();
+    shown.sort_by_key(|c| std::cmp::Reverse(c.ts));
+    shown
 }
 
 fn action(id: &str, label: &str) -> Value {
@@ -132,10 +204,7 @@ fn action(id: &str, label: &str) -> Value {
 /// What can be done with one stored clip: Enter is the first.
 fn clip_actions(clip: &Clip, paste: bool) -> Vec<Value> {
     let mut a = if paste {
-        vec![
-            action("paste_clip", "Paste"),
-            action("copy_clip", "Copy only"),
-        ]
+        vec![action("paste_clip", "Paste"), action("copy_clip", "Copy")]
     } else {
         vec![action("copy_clip", "Copy"), action("paste_clip", "Paste")]
     };
@@ -152,6 +221,7 @@ fn clip_actions(clip: &Clip, paste: bool) -> Vec<Value> {
     } else {
         action("pin_clip", "Pin")
     });
+    a.push(action("delete_clip", "Delete"));
     a
 }
 
@@ -174,7 +244,8 @@ impl Clipboard {
             }),
             io,
             watch: std::env::var_os("LOOKOUT_CLIPBOARD_NO_WATCH").is_none(),
-            paste_default: true,
+            paste_default: false,
+            deleted: Vec::new(),
         }
     }
 
@@ -226,7 +297,6 @@ impl Clipboard {
 
     fn query(&self, params: &Value) -> Value {
         let rest = params["rest"].as_str().unwrap_or("").trim().to_lowercase();
-        let now = now_secs();
         if self.watch {
             crate::monitor::catch_up(self.io.as_ref(), &self.shared);
         }
@@ -235,7 +305,7 @@ impl Clipboard {
             return json!({"items": [{
                 "id": "clear",
                 "title": format!("Delete clipboard history ({} items)", store.len()),
-                "subtitle": "Removes every stored clip",
+                "subtitle": "Deletes every stored clip",
                 "kind": "clipboard_clear",
                 "action": "clear_history",
                 "score": 5.0,
@@ -267,15 +337,14 @@ impl Clipboard {
                 }),
         );
         items.extend(
-            store
-                .listing()
-                .filter(|c| {
-                    rest.is_empty()
-                        || c.text.to_lowercase().contains(&rest)
-                        || c.source.as_deref().is_some_and(|a| a.contains(&rest))
-                })
-                .take(10)
-                .map(|c| item_for(c, now, self.paste_default)),
+            listed(&store, |c| {
+                rest.is_empty()
+                    || c.text.to_lowercase().contains(&rest)
+                    || c.source.as_deref().is_some_and(|a| a.contains(&rest))
+            })
+            .into_iter()
+            .enumerate()
+            .map(|(rank, c)| item_for(c, self.paste_default, rank)),
         );
         json!({ "items": items })
     }
@@ -352,11 +421,18 @@ impl Handler for Clipboard {
                         clip_id_of(id).and_then(|n| lock(&self.shared.store).get(n).cloned());
                     Ok(match clip {
                         Some(c) => json!({"actions": clip_actions(&c, self.paste_default)}),
-                        None => json!({"actions": [action("copy_clip", "Copy only")]}),
+                        None => json!({"actions": [action("copy_clip", "Copy")]}),
                     })
                 }
             }
             "preview" => match params["action_id"].as_str() {
+                Some("delete_clip") => {
+                    self.clip_of(&params)?;
+                    Ok(
+                        json!({"title": "Delete this clip", "lines": [], "warnings": [],
+                              "undoable": true, "risk": "safe"}),
+                    )
+                }
                 Some(
                     a @ ("copy_clip" | "paste_clip" | "paste_plain" | "open_link" | "open_email"
                     | "preview_color" | "copy_pretty" | "pin_clip" | "unpin_clip"),
@@ -369,7 +445,7 @@ impl Handler for Clipboard {
                         "open_email" => "Start an email to this address",
                         "preview_color" => "Show the values of this color",
                         "copy_pretty" => "Copy this clip as pretty-printed JSON",
-                        "pin_clip" => "Pin this clip so it is never removed",
+                        "pin_clip" => "Pin this clip so it is kept",
                         "unpin_clip" => "Unpin this clip",
                         _ => "Copy this clip to the clipboard",
                     };
@@ -407,6 +483,19 @@ impl Handler for Clipboard {
                 _ => Err("unknown action".into()),
             },
             "execute" => match params["action_id"].as_str() {
+                Some("delete_clip") => {
+                    let id = self.clip_of(&params)?.id;
+                    let mut store = lock(&self.shared.store);
+                    let clip = store
+                        .remove(id)
+                        .ok_or("that clip is no longer in the history")?;
+                    store.save().map_err(|e| e.to_string())?;
+                    drop(store);
+                    self.deleted.push(clip);
+                    let extra = self.deleted.len().saturating_sub(KEEP_DELETED);
+                    self.deleted.drain(..extra);
+                    Ok(json!({"message": "Clip deleted", "undo_token": id.to_string()}))
+                }
                 Some("copy_clip") => {
                     let clip = self.clip_of(&params)?;
                     self.io.write_text(&clip.text)?;
@@ -481,11 +570,26 @@ impl Handler for Clipboard {
                     let n = lock(&self.shared.store)
                         .clear()
                         .map_err(|e| e.to_string())?;
+                    self.deleted.clear();
                     Ok(json!({"message": format!("Deleted {n} clipboard history items")}))
                 }
                 _ => Err("unknown action".into()),
             },
-            "undo" => Err("nothing to undo".into()),
+            "undo" => {
+                if params["dry_run"].as_bool() == Some(true) {
+                    return Ok(json!({"title": "Undo deleting a clip", "lines": [],
+                                     "warnings": [], "undoable": false, "risk": "safe"}));
+                }
+                let token = params["undo_token"].as_str().unwrap_or("");
+                // Gone is not an error: undo can then move on to what came before.
+                let Some(at) = self.deleted.iter().position(|c| c.id.to_string() == token) else {
+                    return Ok(json!({"message": "That clip can no longer be restored"}));
+                };
+                let mut store = lock(&self.shared.store);
+                store.restore(self.deleted.remove(at));
+                store.save().map_err(|e| e.to_string())?;
+                Ok(json!({"message": "Clip restored"}))
+            }
             other => Err(format!("unknown method {other}")),
         }
     }
@@ -639,13 +743,16 @@ mod tests {
     }
 
     #[test]
-    fn pinned_clips_show_first_and_say_so() {
+    fn pinned_clips_say_so_and_the_list_is_newest_first() {
         let (mut c, _) = setup();
         let id = add(&c, "old but precious", None, 5000);
         run(&mut c, "execute", "pin_clip", id).unwrap();
         let q = c.handle("query", json!({"rest": ""})).unwrap();
-        assert_eq!(titles(&q)[0], "old but precious");
-        assert!(q["items"][0]["subtitle"]
+        assert_eq!(titles(&q).last().unwrap(), "old but precious");
+        assert_eq!(titles(&q)[1], "first clip");
+        let score = |n: usize| q["items"][n]["score"].as_f64().unwrap();
+        assert!(score(0) > score(1) && score(1) > score(2));
+        assert!(q["items"][2]["subtitle"]
             .as_str()
             .unwrap()
             .starts_with("Pinned"));
@@ -656,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn subtitle_shows_app_and_time_and_the_app_name_filters() {
+    fn subtitle_shows_the_app_and_the_app_name_filters() {
         let (mut c, _) = setup();
         add(&c, "from the browser", Some("chrome"), 300);
         add(&c, "from the editor", Some("code"), 10);
@@ -670,7 +777,7 @@ mod tests {
             .as_str()
             .unwrap()
             .to_owned();
-        assert_eq!(sub, "Chrome · 5 min ago");
+        assert_eq!(sub, "Chrome");
         let q = c.handle("query", json!({"rest": "chrome"})).unwrap();
         assert_eq!(titles(&q), ["from the browser"]);
     }
@@ -678,6 +785,7 @@ mod tests {
     #[test]
     fn paste_pastes_and_copy_only_does_not() {
         let (mut c, io) = setup();
+        c.paste_default = true;
         let id = add(&c, "  text\u{7} with junk  ", None, 1);
         assert_eq!(
             &action_ids(&mut c, id)[..3],
@@ -708,7 +816,7 @@ mod tests {
         assert!(action_ids(&mut c, mail).contains(&"open_email".to_owned()));
         assert!(action_ids(&mut c, color).contains(&"preview_color".to_owned()));
         assert!(action_ids(&mut c, json_clip).contains(&"copy_pretty".to_owned()));
-        assert_eq!(action_ids(&mut c, plain_clip).len(), 4);
+        assert_eq!(action_ids(&mut c, plain_clip).len(), 5);
         let q = c.handle("query", json!({"rest": "example.com/x"})).unwrap();
         assert!(q["items"][0]["subtitle"]
             .as_str()
@@ -799,12 +907,11 @@ mod tests {
 
     #[test]
     fn default_action_decides_what_enter_does() {
-        assert!(paste_default_from(&json!({})));
-        assert!(paste_default_from(&json!({"default_action": "paste"})));
-        assert!(paste_default_from(&json!({"default_action": "nonsense"})));
+        assert!(!paste_default_from(&json!({})));
+        assert!(paste_default_from(&json!({"default_action": " Paste "})));
+        assert!(!paste_default_from(&json!({"default_action": "nonsense"})));
         assert!(!paste_default_from(&json!({"default_action": " Copy "})));
         let (mut c, _) = setup();
-        c.paste_default = false;
         let q = c.handle("query", json!({"rest": ""})).unwrap();
         assert_eq!(q["items"][0]["action"], "copy_clip");
         let id = add(&c, "x y", None, 1);

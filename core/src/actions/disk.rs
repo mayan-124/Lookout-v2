@@ -15,7 +15,7 @@ pub const COPY_PATH: &str = "copy_path";
 pub const COPY_FILE: &str = "copy_file";
 pub const RECYCLE: &str = "recycle";
 /// Said by every Disk confirmation that moves something to the Recycle Bin.
-const RECYCLE_NOTE: &str = "What you remove goes to the Windows Recycle Bin and can be restored from there. Lookout has no in-app undo.";
+const RECYCLE_NOTE: &str = "What you move goes to the Windows Recycle Bin and can be restored from there. Lookout has no in-app undo.";
 
 fn existing_path(target: &Target) -> Result<PathBuf, ActionError> {
     let uri = target
@@ -367,7 +367,7 @@ impl Action for RecycleAction {
         self.recycler.recycle(&path).map_err(ActionError::Failed)?;
         Ok(Executed {
             message: format!(
-                "Moved {items} item{} ({}) to the Recycle Bin. Rescan to refresh the sizes.",
+                "Moved {items} item{} ({}) to the Recycle Bin. Scan again to refresh the sizes.",
                 if items == 1 { "" } else { "s" },
                 human(size)
             ),

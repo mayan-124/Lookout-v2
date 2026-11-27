@@ -104,7 +104,7 @@ pub const BUTTONS: &[ToolbarButton] = &[
     },
     ToolbarButton {
         id: 15,
-        label: "Extract Text",
+        label: "Text from screen",
         shortcut: "O",
         tool: None,
     },

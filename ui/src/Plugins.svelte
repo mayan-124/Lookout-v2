@@ -109,7 +109,7 @@
     message = "";
     try {
       await invoke("semantic_remove_files");
-      message = "Removed downloaded files and turned off search by meaning.";
+      message = "Deleted downloaded files and turned off search by meaning.";
       load(await invoke<PluginInfo[]>("plugins_list"));
     } catch (e) {
       message = errorText(e);
@@ -320,7 +320,7 @@
           </button>
         {/if}
         {#if setupStatus?.phase === "ready"}
-          <button class="btn small" onclick={removeSemanticFiles}>Remove downloaded files</button>
+          <button class="btn small" onclick={removeSemanticFiles}>Delete downloaded files</button>
         {/if}
         {#if semantic.done > 0 || semantic.state === "ready"}
           <button class="btn small danger" onclick={deleteSemantic}>Delete meaning data</button>

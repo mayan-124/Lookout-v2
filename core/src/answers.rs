@@ -17,6 +17,8 @@ pub const COPY: &str = "answer_copy";
 pub const KIND_DATE: &str = "date_answer";
 pub const KIND_TIME: &str = "time_answer";
 pub const KIND_INFO: &str = "answer_info";
+pub const KIND_CALC: &str = "calculator";
+pub const KIND_CONVERSION: &str = "conversion";
 
 /// The date or time zone answer to `input`, with the result's source and kind.
 fn read<Tz: chrono::TimeZone>(
@@ -92,21 +94,29 @@ impl Action for CopyAnswer {
         COPY
     }
     fn label(&self) -> &str {
-        "Copy answer"
+        "Copy"
     }
     fn applies_to(&self, kind: &Kind) -> bool {
-        matches!(kind, Kind::Custom(n) if n == KIND_DATE || n == KIND_TIME)
+        // A typed web address is copied the same way.
+        const COPIED: [&str; 5] = [
+            KIND_DATE,
+            KIND_TIME,
+            KIND_CALC,
+            KIND_CONVERSION,
+            crate::actions::quick::KIND_URL,
+        ];
+        matches!(kind, Kind::Custom(n) if COPIED.contains(&n.as_str()))
     }
     fn plan(&self, target: &Target) -> Result<Plan, ActionError> {
         let text = target
             .uri
             .clone()
-            .ok_or_else(|| ActionError::Refused("there is no answer to copy".into()))?;
+            .ok_or_else(|| ActionError::Refused("there is nothing to copy".into()))?;
         Ok(Plan {
             risk: Risk::Safe,
             preview: Preview {
                 from: None,
-                title: "Copy answer".into(),
+                title: "Copy".into(),
                 lines: vec![text.clone()],
                 warnings: vec![],
             },
@@ -118,7 +128,7 @@ impl Action for CopyAnswer {
     fn execute(&self, plan: &Plan, _: &Authorized) -> Result<Executed, ActionError> {
         let text = plan.snapshot["text"]
             .as_str()
-            .ok_or_else(|| ActionError::Failed("there is no answer to copy".into()))?;
+            .ok_or_else(|| ActionError::Failed("there is nothing to copy".into()))?;
         self.0.set_text(text).map_err(ActionError::Failed)?;
         Ok(Executed {
             message: format!("Copied: {text}"),

@@ -467,9 +467,9 @@ impl Action for SaveNote {
     fn undo(&self, token: &str, _: &UndoPlan, _: &Authorized) -> Result<String, ActionError> {
         // Already gone is fine: undo can then move on to what came before.
         Ok(if self.0.delete(id_of(token)?).map_err(failed)? {
-            "Note removed".into()
+            "Note deleted".into()
         } else {
-            "That note was already removed".into()
+            "That note was already deleted".into()
         })
     }
 }
@@ -552,7 +552,7 @@ impl Action for DeleteNote {
         Ok(if self.0.restore(id_of(token)?).map_err(failed)? {
             "Note restored".into()
         } else {
-            "That note was cleared and cannot come back".into()
+            "That note was deleted for good and cannot come back".into()
         })
     }
 }
@@ -725,7 +725,7 @@ mod tests {
         assert!(search(&s, "alpha").is_empty());
         assert_eq!(undo(), "Note restored");
         assert_eq!(titles(&search(&s, "alpha")), ["secret plan alpha"]);
-        assert_eq!(undo(), "Note removed");
+        assert_eq!(undo(), "Note deleted");
         assert!(search(&s, "alpha").is_empty());
         // The log holds no note text.
         let log = serde_json::to_string(&engine.history(50).unwrap()).unwrap();

@@ -258,3 +258,193 @@ input[type="checkbox"]:disabled {
   font-family: var(--font-code);
   font-size: 12px;
 }
+
+/* ---- result rows (Row.svelte) and the Disk lists: one look for the chosen one ---- */
+.result,
+.tablerow {
+  border: 1px solid transparent;
+  border-radius: var(--r-lg);
+}
+.result.selected,
+.tablerow.selected,
+button.result:hover,
+button.result:focus-visible {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+.result {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: 52px;
+  padding: 0 12px;
+  cursor: default;
+  transition: background-color var(--dur-fast) var(--ease);
+}
+button.result {
+  width: 100%;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.result:hover,
+button.result.selected {
+  background: var(--accent-soft);
+}
+button.result:focus-visible {
+  outline-offset: -2px;
+}
+/* Typed words: accent colour only, no box, normal weight. */
+.result mark {
+  padding: 0;
+  background: none;
+  color: var(--match-text);
+  font-weight: inherit;
+}
+.result.draggable {
+  /* A press starts a drag, not a text selection. */
+  user-select: none;
+}
+.result .icon {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  color: var(--text-soft);
+  font-size: 11px;
+  overflow: hidden;
+}
+.result .icon.ring {
+  color: var(--accent-text);
+}
+.result .icon.ring svg {
+  width: 22px;
+  height: 22px;
+}
+.result .thumb {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: var(--r-md);
+  border: 1px solid var(--hairline);
+}
+.result .text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.result .l1 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.result .title {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+.result .meta,
+.result .sub,
+.result .snippet {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.result .meta {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-size: var(--fs-xs);
+}
+.result .sub.code {
+  font-size: var(--fs-xs);
+}
+.result .snippet {
+  color: var(--text-soft);
+}
+.result .tophit {
+  margin-right: var(--sp-3);
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: var(--accent-bg);
+  color: var(--accent-on);
+  font-size: 11px;
+  font-weight: 600;
+}
+/* Secondary text is too faint on the highlight. */
+.result.selected .meta,
+.result.selected .sub,
+.result.selected .when,
+button.result:hover .sub,
+button.result:hover .when {
+  color: var(--text-soft);
+}
+.result .when,
+.result .qk,
+.result .rowcancel,
+.result .hint-enter {
+  flex: none;
+}
+.result .when {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+.result .hint-enter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-soft);
+  font-size: var(--fs-xs);
+}
+.tablerow .icon {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  margin-right: 6px;
+  color: var(--text-soft);
+}
+
+/* ---- the right-click menu ---- */
+.menu {
+  position: fixed;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--solid-bg);
+}
+.menu button {
+  all: unset;
+  padding: 6px 12px;
+  border-radius: var(--r-md);
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+.menu button:hover,
+.menu button:focus-visible {
+  background: var(--accent-soft);
+}
+.menu button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}

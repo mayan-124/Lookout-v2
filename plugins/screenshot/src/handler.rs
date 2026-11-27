@@ -569,7 +569,7 @@ impl Handler for ScreenshotPlugin {
                     }),
                     json!({
                         "id": "extract_text",
-                        "title": "Extract text from screen",
+                        "title": "Text from screen",
                         "subtitle": text_sub,
                         "kind": "text",
                         "action": "extract_text",
@@ -632,7 +632,7 @@ impl Handler for ScreenshotPlugin {
                 } else if id == "extract_text" || id.ends_with(":extract_text") {
                     Ok(json!({
                         "actions": [
-                            {"id": "extract_text", "label": "Extract text from screen", "risk": "safe"}
+                            {"id": "extract_text", "label": "Text from screen", "risk": "safe"}
                         ]
                     }))
                 } else {
@@ -685,7 +685,7 @@ impl Handler for ScreenshotPlugin {
                         "risk": "safe"
                     })),
                     "extract_text" => Ok(json!({
-                        "title": "Extract text from screen",
+                        "title": "Text from screen",
                         "lines": ["Selects an area, extracts text using local Windows.Media.Ocr, and copies to clipboard."],
                         "warnings": [],
                         "undoable": false,

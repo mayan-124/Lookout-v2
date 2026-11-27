@@ -202,7 +202,7 @@
       </label>
       <label class="field">
         <span class="fl">
-          <span class="ft">Read text in pictures</span>
+          <span class="ft">Text in pictures</span>
           <span class="hint">Find screenshots and photos by the words in them.</span>
         </span>
         <span class="switch">
@@ -218,13 +218,13 @@
           <span class="ft">Open Lookout</span>
           <span class="hint">Select the box, then press the new keys.</span>
         </span>
-        <input class="code combo" type="text" readonly value={hotkey} onkeydown={hotkeyKeydown} aria-label="Open Lookout hotkey" />
+        <input class="code combo" type="text" readonly value={hotkey} onkeydown={hotkeyKeydown} aria-label="Open Lookout shortcut" />
       </label>
       {#if hotkeyMessage}<p class="note" role="status">{hotkeyMessage}</p>{/if}
       <label class="field">
         <span class="fl">
           <span class="ft">Start Lookout when I sign in to Windows</span>
-          <span class="hint">Keeps the hotkey working after restarts.</span>
+          <span class="hint">Keeps the shortcut working after restarts.</span>
         </span>
         <span class="switch">
           <input type="checkbox" role="switch" bind:checked={startup} disabled={!loaded} onchange={saveStartup} />

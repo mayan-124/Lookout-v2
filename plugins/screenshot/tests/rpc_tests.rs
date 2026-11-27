@@ -42,7 +42,7 @@ fn test_json_rpc_conformance() {
     assert_eq!(items[2]["action"], "record_screen");
     assert_eq!(items[3]["title"], "Record screen (GIF)");
     assert_eq!(items[3]["action"], "record_screen_gif");
-    assert_eq!(items[4]["title"], "Extract text from screen");
+    assert_eq!(items[4]["title"], "Text from screen");
     assert_eq!(items[4]["action"], "extract_text");
     assert_eq!(items[5]["title"], "Open screenshots folder");
     assert_eq!(items[5]["action"], "open_folder");
@@ -130,7 +130,7 @@ fn test_json_rpc_conformance() {
             json!({"action_id": "extract_text", "items": [items[4].clone()], "params": {}}),
         )
         .unwrap();
-    assert_eq!(preview_res_text["title"], "Extract text from screen");
+    assert_eq!(preview_res_text["title"], "Text from screen");
     assert_eq!(preview_res_text["undoable"], false);
 
     let preview_res2 = plugin

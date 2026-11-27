@@ -46,8 +46,10 @@ export const typedSection = (q: string) =>
 export interface Action {
   id: string;
   name: string;
-  /** The help heading and the icon. */
+  /** The feature family: the help heading and the Home tip's icon. */
   category: string;
+  /** The topic's own icon, for quick actions and suggestions. */
+  icon?: string;
   /** The Settings > Features switch that shows it, if any. */
   feature?: Feature;
   /** The smallest mode that advertises it. */
@@ -138,7 +140,7 @@ export function footerHints(
   const enter = o.enter ? `Enter ${o.enter.replace("…", "").toLowerCase()}` : "↑↓ pick";
   const hints: Record<View, string[]> = {
     home: ["Type ? for help", esc, ...jump],
-    history: ["Enter use", "Del remove", "Esc back"],
+    history: ["Enter use", "Del delete", "Esc back"],
     results: [enter, o.path ? "Tab complete" : "Tab filter", esc],
     help: ["↑↓ pick", "Enter try", esc],
     setup: ["Tab next", "Enter choose", "Esc skip setup"],

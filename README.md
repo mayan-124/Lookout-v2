@@ -10,9 +10,9 @@ A local-first command bar for Windows. Find files and apps by name, by the text 
 
 The optional "By meaning" search also needs the Microsoft Visual C++ 2015-2022 x64 runtime, which the installer does not include. Most PCs already have it.
 
-Uninstall from Windows Settings. Your Lookout data stays unless you tick the "delete the application data" box. Screenshots and recordings you saved are not removed.
+Uninstall from Windows Settings. Your Lookout data stays unless you tick the "delete the application data" box. Screenshots and recordings you saved are not deleted.
 
-## Hotkey
+## Shortcut
 
 `Alt+Space` opens and hides the bar. Change it in Settings > General (`Ctrl+,` opens Settings). Other launchers often use `Alt+Space` too.
 

@@ -66,9 +66,9 @@ test("turning the history off asks once about the saved searches", () => {
   const settings = text("../src/Privacy.svelte");
   for (const s of [
     '"Press the Up arrow in an empty box to see your last searches."',
-    "Clear history now",
+    "Delete search history",
     "askClear = !s.remember_searches",
-    "Also clear the searches already saved?",
+    "Also delete the searches already saved?",
   ]) {
     assert.ok(settings.includes(s), s);
   }

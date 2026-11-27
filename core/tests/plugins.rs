@@ -385,7 +385,7 @@ fn a_plugin_cannot_run_an_action_without_the_confirm_step_and_cannot_lower_its_r
     // The card says where the text comes from, in words the plugin did not write.
     assert_eq!(
         prepared.preview.from.as_deref(),
-        Some("From plugin: Test plugin")
+        Some("From add-on: Test plugin")
     );
     assert!(!e.marker.exists());
 
@@ -416,7 +416,7 @@ fn a_plugin_cannot_run_an_action_without_the_confirm_step_and_cannot_lower_its_r
     assert!(undo.is_undo);
     assert_eq!(
         undo.preview.from.as_deref(),
-        Some("From plugin: Test plugin")
+        Some("From add-on: Test plugin")
     );
     assert!(e.marker.exists());
     app.lookout.present_action(&undo.ticket).unwrap();

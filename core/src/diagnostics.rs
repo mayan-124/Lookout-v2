@@ -85,7 +85,7 @@ pub fn render(facts: &Facts, counts: Option<&Counts>, errors: &[String]) -> Stri
                     .map_or_else(|| "none since this start".into(), when)
             ));
             out.push(format!(
-                "Plugins on: {}",
+                "Add-ons on: {}",
                 if on.is_empty() {
                     "none".into()
                 } else {

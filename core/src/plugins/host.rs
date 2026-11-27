@@ -25,6 +25,8 @@ pub use serde_json::Value as ConfigValue;
 
 pub const PROTOCOL: u32 = 1;
 const MAX_ITEMS: usize = 20;
+/// Most further actions one result may name.
+const MAX_ALSO: usize = 4;
 const MAX_PARAMS_BYTES: usize = 8 * 1024;
 const MAX_TOKEN_BYTES: usize = 1024 * 1024;
 const MAX_LINES: usize = 200;
@@ -775,6 +777,20 @@ impl PluginHost {
         );
         item.metadata.insert("plugin_action".into(), json!(action));
         item.metadata.insert("plugin_params".into(), params);
+        let also: Vec<&str> = v
+            .get("also")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .filter(|a| !a.is_empty() && a.len() <= 64)
+                    .take(MAX_ALSO)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !also.is_empty() {
+            item.metadata.insert("plugin_also".into(), json!(also));
+        }
         Some(item)
     }
 
@@ -819,7 +835,7 @@ impl PluginHost {
                 a.iter()
                     .find(|a| a.get("id").and_then(Value::as_str) == Some(action))
             })
-            .ok_or_else(|| HostError::BadReply("the plugin does not offer that action".into()))?;
+            .ok_or_else(|| HostError::BadReply("the add-on does not offer that action".into()))?;
         let label = entry
             .get("label")
             .and_then(Value::as_str)
@@ -905,7 +921,7 @@ impl PluginHost {
     /// The line the card shows above anything the plugin wrote.
     pub fn from_line(&self, id: &str) -> String {
         let name = self.find(id).map_or(id, |p| p.manifest.name.as_str());
-        format!("From plugin: {}", clean(name, 60))
+        format!("From add-on: {}", clean(name, 60))
     }
 
     pub fn label_of(&self, id: &str, action: &str) -> Option<String> {

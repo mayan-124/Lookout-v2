@@ -106,7 +106,7 @@
     <p class="note">File text uses {mb(health.content.size_bytes)} of {mb(health.content.max_bytes)}.</p>
   {/if}
   {#if health.content.full}
-    <p class="warning"><strong>File text storage is full.</strong> Raise the limit in Speed or delete your search data.</p>
+    <p class="warning"><strong>File text storage is full.</strong> Raise the limit in Speed, or use Delete my data.</p>
   {/if}
   {#if health.content.state !== "off"}
     <div class="action">

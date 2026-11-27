@@ -23,8 +23,12 @@ export function homeActions(mode: Mode, show: Show): Action[] {
   return [...places.values()].sort((a, b) => a.home! - b.home!);
 }
 
-/** One simple 16x16 line icon per category. */
+/** One simple 16x16 line icon per feature family and per topic. */
 export const ICONS: Record<string, string> = {
+  Find: "M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zM10.5 10.5L14 14",
+  Everyday: "M14 8A6 6 0 1 1 2 8a6 6 0 0 1 12 0zM8 4.5V8l2.5 1.5",
+  "This PC": "M2 3h12v8H2zM6 14h4M8 11v3",
+  Lookout: "M2 4.5h7M12 4.5h2M2 11.5h2M7 11.5h7M12 4.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zM7 11.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z",
   Search: "M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zM10.5 10.5L14 14",
   "Time filters": "M2.5 3.5h11V14h-11zM2.5 7h11M5.5 2v3M10.5 2v3",
   Timers: "M13 9a5 5 0 1 1-10 0 5 5 0 0 1 10 0zM8 9V6.4M6.5 2h3",

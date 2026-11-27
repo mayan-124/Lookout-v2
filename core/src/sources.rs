@@ -92,6 +92,8 @@ impl Source for CalculatorSource {
         );
         item.subtitle = Some(format!("{} =", q.raw));
         item.uri = Some(text);
+        item.metadata
+            .insert("default_action".into(), crate::answers::COPY.into());
         item.score = ANSWER_SCORE;
         item.score_features.match_quality = 1.0;
         emit(vec![item]);
@@ -125,6 +127,8 @@ impl Source for UnitsSource {
         );
         item.subtitle = Some(conv.summary());
         item.uri = Some(text);
+        item.metadata
+            .insert("default_action".into(), crate::answers::COPY.into());
         item.score = ANSWER_SCORE;
         item.score_features.match_quality = 1.0;
         emit(vec![item]);

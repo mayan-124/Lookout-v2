@@ -467,7 +467,7 @@ impl Source for PortSource {
         let mut item = Item::new(
             format!("port:{port}"),
             Kind::Port,
-            format!("Kill port {port}"),
+            format!("Free port {port}"),
             self.id(),
         );
         item.subtitle = Some(hint);

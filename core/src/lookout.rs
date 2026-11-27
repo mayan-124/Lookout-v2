@@ -1652,6 +1652,9 @@ fn target_of(item: &crate::item::Item) -> Option<Target> {
             origin: Some(PluginOrigin {
                 plugin_id: meta("plugin")?.as_str()?.to_owned(),
                 action_id: meta("plugin_action")?.as_str()?.to_owned(),
+                also: meta("plugin_also")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default(),
                 params: meta("plugin_params").cloned().unwrap_or_default(),
             }),
         });
@@ -1681,6 +1684,8 @@ fn target_of(item: &crate::item::Item) -> Option<Target> {
                 || name == crate::timers::KIND_RUNNING
                 || name == crate::answers::KIND_DATE
                 || name == crate::answers::KIND_TIME
+                || name == crate::answers::KIND_CALC
+                || name == crate::answers::KIND_CONVERSION
                 || name == crate::notes::KIND_NEW
                 || name == crate::notes::KIND_NOTE =>
         {
@@ -1912,9 +1917,11 @@ mod tests {
             .lookout
             .target("file:C:\\Windows\\system32\\cmd.exe")
             .is_none());
-        // Calculator answers are not openable.
+        // Calculator answers are copied, never opened.
         let calc = f.ask(2, "1+1");
-        assert!(f.lookout.target(&calc.items[0].id).is_none());
+        let id = &calc.items[0].id;
+        assert!(f.lookout.prepare_action("open", id).is_err());
+        assert!(f.lookout.prepare_action("answer_copy", id).is_ok());
         // After a new query the old ids are forgotten.
         assert!(f.lookout.target(&first.id).is_none());
     }

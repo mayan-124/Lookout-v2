@@ -68,6 +68,8 @@ pub struct Target {
 pub struct PluginOrigin {
     pub plugin_id: String,
     pub action_id: String,
+    /// Further actions the same result offers, such as Copy and Delete.
+    pub also: Vec<String>,
     pub params: serde_json::Value,
 }
 

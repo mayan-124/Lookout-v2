@@ -179,7 +179,7 @@
   {/if}
   {#if progress?.state === "cancelled"}<p class="status">Cancelled, so there are no results. Press Scan again to look for duplicates.</p>{/if}
   {#if notice}<p class="warning" role="status">{notice}</p>{/if}
-  {#if data.reclaimed > 0}<p class="status">Cleared so far this session: <strong>{human(data.reclaimed)}</strong></p>{/if}
+  {#if data.reclaimed > 0}<p class="status">Freed so far this session: <strong>{human(data.reclaimed)}</strong></p>{/if}
 
   {#if progress && progress.state === "done"}
     {#if data.groups.length === 0}

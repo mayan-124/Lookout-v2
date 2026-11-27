@@ -121,7 +121,7 @@
 
 <div class="clean">
   <div class="picker">
-    <span class="status">Known space-wasters on this PC. Nothing is removed until you press Clean and confirm.</span>
+    <span class="status">Known space-wasters on this PC. Nothing is deleted until you press Clean and confirm.</span>
     {#if running}
       <button class="btn" onclick={cancel}>Cancel</button>
     {:else}
@@ -136,7 +136,7 @@
   {/if}
   {#if progress?.state === "cancelled"}<p class="status">Cancelled, so the list may be incomplete. Press Scan again to finish it.</p>{/if}
   {#if notice}<p class="warning" role="status">{notice}</p>{/if}
-  {#if reclaimed > 0}<p class="status">Cleared so far this session: <strong>{human(reclaimed)}</strong></p>{/if}
+  {#if reclaimed > 0}<p class="status">Freed so far this session: <strong>{human(reclaimed)}</strong></p>{/if}
 
   {#if progress && !running && items.length === 0 && progress.state !== "failed"}
     <p class="status">Nothing worth cleaning was found, so there is nothing to do.</p>
@@ -168,7 +168,7 @@
           </div>
         </div>
         {#if preview?.id === it.id}
-          <div class="plist" role="region" aria-label="What would be removed">
+          <div class="plist" role="region" aria-label="What would be cleaned">
             {#each preview.data.rows as r}
               <div class="line" class:sel={selPath === r.path} role="button" tabindex="0" onclick={() => (selPath = r.path)} onkeydown={(e) => { if (e.key === "Enter") selPath = r.path; }}><span>{r.path}</span><span>{human(r.size)}</span></div>
             {/each}

@@ -12,6 +12,9 @@
   import { look } from "./look.svelte";
   import Setup from "./Setup.svelte";
   import Help from "./Help.svelte";
+  import Row from "./Row.svelte";
+  import Icon, { type Ico } from "./Icon.svelte";
+  import { ageLabel, changesList, rowKeys, verbOf } from "./rows";
   import { isClipRow, isFileRow, movedEnough } from "./dragout";
   import { keepsPage, keepsSearch } from "./lastsearch";
   import { FOLDER_STEP, chooseFoldersTarget, isHelpQuery, stepOnShow } from "./setupflow";
@@ -148,29 +151,12 @@
       })
       .catch(() => {});
   }
-  const AGE = /(\d+)\s*(min|h|days?)\s+ago$/;
-  // A clip's age is the last part of its subtitle ("5 min ago", "just now").
-  function clipTime(i: Item): number {
-    const now = Math.floor(Date.now() / 1000);
-    const last = (i.subtitle ?? "").split(" \u00b7 ").pop() ?? "";
-    const m = AGE.exec(last);
-    if (!m) return now;
-    const n = Number(m[1]);
-    return now - n * (m[2] === "min" ? 60 : m[2] === "h" ? 3600 : 86400);
-  }
+  // A clip says when it was copied, and whether it is code.
+  const clipParams = (i: Item) => (i.metadata?.plugin_params ?? {}) as { ts?: number; code?: boolean };
+  const clipTime = (i: Item) => clipParams(i).ts ?? 0;
+  const isCode = (i: Item) => kindName(i.kind) === "clipboard" && !!clipParams(i).code;
   // A clip of a temp-folder path is noise in the recent list.
   const TEMPISH = /[\\/]temp[\\/]/i;
-  const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  function dayLabel(ts: number): string {
-    const d = new Date(ts * 1000);
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    const days = Math.floor((start.getTime() - new Date(d).setHours(0, 0, 0, 0)) / 86400000);
-    if (days <= 0) return "Today";
-    if (days === 1) return "Yesterday";
-    if (days < 7) return WEEKDAYS[d.getDay()];
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  }
   interface Recent {
     item: Item;
     ts: number;
@@ -189,10 +175,6 @@
     const files = homeFiles.map((item) => ({ item, ts: item.modified_at ?? 0, clip: false }));
     return recentRows<Recent>([...clips, ...files], now).map((r) => ({ ...r, fresh: isFreshClip(r, now) }));
   });
-  function openRecent(r: Recent) {
-    if (r.clip) gotoSection(2);
-    else activate(r.item);
-  }
   // Matched words in a content snippet sit between  and .
   function snippetParts(snippet: string): { text: string; hit: boolean }[] {
     return snippet
@@ -753,6 +735,7 @@
     return () => clearTimeout(t);
   });
 
+  const isFromClipboard = (i: Item | undefined) => i?.source === "plugin:com.lookout.clipboard";
   function onUpdate(u: Update) {
     if (u.generation !== generation) return;
     if (u.generation === homeGen) {
@@ -760,6 +743,7 @@
       return;
     }
     const keep = items[selected]?.id;
+    const hadClips = all.some(isFromClipboard);
     // One block per group, in the order each group first appears; similar-meaning matches go last.
     const rest = u.items.filter((i) => i.source !== "semantic");
     const order = [...new Set(rest.map(groupOf))];
@@ -781,6 +765,12 @@
     const at = keep && !keep.startsWith("action:") ? items.findIndex((i) => i.id === keep) : -1;
     // An intent word's action is selected unless the user has moved off the top.
     selected = at >= 0 && !(intent && selected === 0) ? at : 0;
+    // In the clipboard view, an app that matched the words too does not keep the
+    // selection when the clips arrive.
+    if (typedSection(query) === 2 && (!hadClips || at < 0)) {
+      const first = items.findIndex(isFromClipboard);
+      if (first >= 0 && !isFromClipboard(items[selected])) selected = first;
+    }
     if (pending?.generation === u.generation) {
       const wanted = results.find(pending.find);
       if (wanted) {
@@ -850,12 +840,12 @@
   }
 
   function finish(done: Done) {
-    if (done.action_id === "open" && !done.was_undo) {
+    if ((done.action_id === "open" || done.action_id === "reveal") && !done.was_undo) {
       cleared = true;
       hideBar(); // opened: get out of the way
       return;
     }
-    if (done.action_id === "note_save" || done.action_id === "note_delete") {
+    if (changesList(done.action_id)) {
       // A saved note leaves the box, so Enter cannot save it twice; lists reload.
       if (done.action_id === "note_save" && !done.was_undo) query = "";
       skip = [];
@@ -908,7 +898,7 @@
       const page = keepsPage(hidden_secs, panel || disk || setup !== null, cleared);
       notice = "";
       earlier = null;
-      noteMenu = null;
+      menu = null;
       press = null;
       refusal = null;
       visible = true;
@@ -996,8 +986,8 @@
       e.preventDefault();
       return;
     }
-    if (noteMenu) {
-      noteMenuKey(e);
+    if (menu) {
+      menuKey(e);
       return;
     }
     // Esc closes the large preview before anything else. Disk does its own.
@@ -1007,7 +997,14 @@
       return;
     }
     const plain = !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
+    const menuAsked = e.key === "ContextMenu" || (e.shiftKey && e.key === "F10");
     if (earlier !== null) {
+      if (menuAsked) {
+        e.preventDefault();
+        const r = historyList?.querySelector('[aria-selected="true"]')?.getBoundingClientRect();
+        if (r) openMenu(searchMenu(earlier[earlierAt]), r.left + 48, r.bottom - 8);
+        return;
+      }
       if (plain && e.key === "ArrowUp") {
         e.preventDefault();
         moveEarlier((earlierAt + 1) % earlier.length);
@@ -1135,17 +1132,7 @@
       }
       if (at >= 0 && (e.key === "ArrowUp" || e.key === "ArrowDown")) input?.focus();
     }
-    if ((e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) && isNote(cur)) {
-      e.preventDefault();
-      const r = list?.querySelector(`[data-index="${selected}"]`)?.getBoundingClientRect();
-      if (r) openNoteMenu(cur!, r.left + 48, r.bottom - 8);
-      return;
-    }
-    if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === "c" && isFile(cur)) {
-      e.preventDefault();
-      if (!e.repeat) copyFile(cur);
-      return;
-    }
+    if (rowKey(e, menuAsked)) return;
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && query === "") {
       // With text in the box, Ctrl+Z stays the text field's own undo.
       e.preventDefault();
@@ -1191,7 +1178,7 @@
         e.preventDefault();
         if (isDiskCommand(query)) openDisk();
         else if (!e.repeat && understood && selected === items.length) exactWords();
-        else if (!e.repeat && noFolders && done && items.length === 0) chooseFolders();
+        else if (!e.repeat && offersFolders && done && items.length === 0) chooseFolders();
         else if (!e.repeat) activate(items[selected]);
         break;
     }
@@ -1218,7 +1205,6 @@
   const previewable = (i: Item | undefined) =>
     !!pathOf(i) && ["file", "folder", "screenshot", "project"].includes(kindName(i!.kind));
   // One simple icon per kind; kinds without one (answers, ports) keep their short text badge.
-  type Ico = "app" | "folder" | "image" | "clipboard" | "file" | "rec" | "gif" | "scan" | "timer" | "moon" | "sun" | "gear" | "globe" | "network" | "key" | "warn" | "dot" | "calendar" | "clock" | "note";
   const BADGE_KINDS = ["calculator", "conversion", "port"];
   function iconKind(i: Item): Ico | null {
     const k = kindName(i.kind);
@@ -1237,7 +1223,7 @@
     if (k === "file") return "file";
     if (/^record.*gif/i.test(i.title)) return "gif";
     if (/^record/i.test(i.title)) return "rec";
-    if (/^extract text/i.test(i.title)) return "scan";
+    if (/^text from screen/i.test(i.title)) return "scan";
     if (typeof i.metadata?.quick_key === "string") return "key";
     return BADGE_KINDS.includes(k) ? null : "dot";
   }
@@ -1324,6 +1310,7 @@
     return t && t.path === pathOf(thumbItem) ? t.src : null;
   });
 
+  // Keyed by the verb, so an add-on's action reads like Lookout's own.
   const ACTION_LABEL: Record<string, string> = {
     open: "Open",
     paste_clip: "Paste",
@@ -1339,6 +1326,7 @@
     note_save: "Save",
     note_copy: "Copy",
     note_delete: "Delete",
+    clear_history: "Delete",
   };
 
   // Quick keys: a short word that puts a result on top when typed with a space.
@@ -1387,56 +1375,123 @@
   const openLabel = (i: Item | undefined) => {
     const a = i && actionOf(i);
     if (a) return a.run === "fill" ? "Type it" : "Open";
-    return ACTION_LABEL[defaultAction(i) ?? ""] ?? "Run";
+    return ACTION_LABEL[verbOf(defaultAction(i) ?? "")] ?? "Run";
   };
-  function copyText(i: Item | undefined) {
-    if (!i || card) return;
-    begin(() => invoke<Prepared>("prepare_action", { action: "copy_clip", id: i.id }));
-  }
-
   const isFile = (i: Item | undefined) => !!i && isFileRow(kindName(i.kind), i.source, i.uri);
-  /** Puts the file itself on the clipboard: what dragging does, from the keyboard. */
-  function copyFile(i: Item | undefined) {
+  /** Runs one action on a result: the keys, the menu and the preview use this. */
+  function doAction(action: string, i: Item | undefined) {
     if (!i || card) return;
     remember(query);
-    begin(() => invoke<Prepared>("prepare_action", { action: "copy_file", id: i.id }));
+    begin(() => invoke<Prepared>("prepare_action", { action, id: i.id }));
+  }
+  const isNote = (i: Item | undefined) => !!i && kindName(i.kind) === "note";
+
+  /** The row a key acts on: the focused Recent row on Home, else the selection. */
+  function keyRow(target: EventTarget | null): { item: Item; el: Element | null } | undefined {
+    if (home) {
+      const el = (target as Element | null)?.closest?.("[data-recent]");
+      const r = el ? recent[Number(el.getAttribute("data-recent"))] : undefined;
+      return r && { item: r.item, el: el! };
+    }
+    // The Disk analyzer row stands alone: nothing hidden behind it is acted on.
+    if (isDiskCommand(query)) return;
+    return cur && { item: cur, el: list?.querySelector(`[data-index="${selected}"]`) ?? null };
   }
 
-  // Right-click on a note: Copy or Delete. Delete can be undone.
-  let noteMenu = $state<{ id: string; x: number; y: number } | null>(null);
-  let noteMenuEl: HTMLElement | undefined = $state();
-  const isNote = (i: Item | undefined) => !!i && kindName(i.kind) === "note";
-  function openNoteMenu(i: Item, x: number, y: number) {
-    if (card) return;
-    // Kept inside the window, which is only as tall as what it shows.
-    noteMenu = { id: i.id, x: Math.min(x, window.innerWidth - 140), y: Math.min(y, window.innerHeight - 84) };
-    tick().then(() => noteMenuEl?.querySelector("button")?.focus());
+  /** Menu, Ctrl+C, Ctrl+Shift+C, Ctrl+E and Delete. True if the key was used. */
+  function rowKey(e: KeyboardEvent, menuAsked: boolean): boolean {
+    const row = keyRow(e.target);
+    if (!row) return false;
+    const keys = rowKeys(row.item);
+    const letter = e.key.toLowerCase();
+    const ctrl = e.ctrlKey && !e.altKey && !e.metaKey;
+    let run: (() => void) | undefined;
+    if (menuAsked) {
+      const r = row.el?.getBoundingClientRect();
+      if (r) run = () => openMenu(rowMenu(row.item), r.left + 48, r.bottom - 8);
+    } else if (ctrl && letter === "c" && e.shiftKey) {
+      const action = keys.copyFile;
+      if (action) run = () => doAction(action, row.item);
+    } else if (ctrl && letter === "c") {
+      // Selected text is copied as text.
+      const box = e.target === input && input?.selectionStart !== input?.selectionEnd;
+      const action = box || String(window.getSelection()) ? undefined : keys.copy?.action;
+      if (action) run = () => doAction(action, row.item);
+    } else if (ctrl && !e.shiftKey && letter === "e") {
+      const action = keys.reveal;
+      if (action) run = () => doAction(action, row.item);
+    } else if (e.key === "Delete" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+      // In the search box, Delete edits the text until the cursor is at its end.
+      const action = e.target !== input || caretIsAtEnd() ? keys.remove?.action : undefined;
+      if (action) run = () => doAction(action, row.item);
+    }
+    if (!run) return false;
+    e.preventDefault();
+    if (!e.repeat) run();
+    return true;
   }
-  function closeNoteMenu() {
-    noteMenu = null;
+
+  interface Entry {
+    label: string;
+    run: () => void;
+  }
+  /** Everything one result offers, Enter first. */
+  function rowMenu(i: Item): Entry[] {
+    const keys = rowKeys(i);
+    const first = defaultAction(i);
+    const entries: Entry[] = first ? [{ label: openLabel(i), run: () => activate(i) }] : [];
+    const add = (action: string | undefined, label: string) => {
+      if (action && action !== first) entries.push({ label, run: () => doAction(action, i) });
+    };
+    add(keys.copy?.action, keys.copy?.label ?? "");
+    add(keys.paste, "Paste");
+    add(keys.copyFile, "Copy file");
+    add(keys.reveal, "Show in folder");
+    add(keys.remove?.action, keys.remove?.label ?? "");
+    if (!home && ui.show.quick_keys && canKey(i)) entries.push({ label: "Set quick key", run: () => startKey(i) });
+    return entries;
+  }
+  const searchMenu = (text: string): Entry[] => [
+    { label: "Search", run: () => setInput(text) },
+    { label: "Delete", run: forgetSearch },
+  ];
+
+  // Right-click or the Menu key on any result row.
+  let menu = $state<{ entries: Entry[]; x: number; y: number } | null>(null);
+  let menuEl: HTMLElement | undefined = $state();
+  function openMenu(entries: Entry[], x: number, y: number) {
+    if (card || entries.length === 0) return;
+    // Kept inside the window, which is only as tall as what it shows.
+    const height = 12 + entries.length * 32;
+    menu = { entries, x: Math.min(x, window.innerWidth - 160), y: Math.max(0, Math.min(y, window.innerHeight - height)) };
+    tick().then(() => menuEl?.querySelector("button")?.focus());
+  }
+  function rightClick(e: MouseEvent, entries: Entry[]) {
+    e.preventDefault();
+    openMenu(entries, e.clientX, e.clientY);
+  }
+  function closeMenu() {
+    menu = null;
     input?.focus();
   }
-  function noteAction(action: "note_copy" | "note_delete") {
-    const id = noteMenu?.id;
-    closeNoteMenu();
-    if (id) begin(() => invoke<Prepared>("prepare_action", { action, id }));
-  }
-  function noteMenuKey(e: KeyboardEvent) {
-    const buttons = [...(noteMenuEl?.querySelectorAll("button") ?? [])];
+  function menuKey(e: KeyboardEvent) {
+    const buttons = [...(menuEl?.querySelectorAll("button") ?? [])];
     const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       buttons[(at + (e.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]?.focus();
     } else if (e.key === "Escape" || e.key === "Tab") {
       e.preventDefault();
-      closeNoteMenu();
+      closeMenu();
     } else if (e.key !== "Enter" && e.key !== " ") {
-      closeNoteMenu();
+      closeMenu();
     }
   }
   $effect(() => {
-    // The menu goes with its row.
-    if (noteMenu && !items.some((i) => i.id === noteMenu!.id)) noteMenu = null;
+    // The menu goes with its list.
+    items;
+    recent;
+    menu = null;
   });
 
   const isClip = (i: Item) => isClipRow(kindName(i.kind), i.source);
@@ -1498,10 +1553,13 @@
   });
   // An empty Clipboard or Capture search says whether the add-on is off.
   const ADDONS: Record<number, [string, string]> = {
-    2: ["com.lookout.clipboard", "Clipboard history needs the Clipboard add-on. Turn it on in Settings > Advanced > Add-ons."],
+    2: ["com.lookout.clipboard", "Clipboard needs the Clipboard add-on. Turn it on in Settings > Advanced > Add-ons."],
     3: ["dev.lookout.screenshot", "Capture needs the Screenshot add-on. Turn it on in Settings > Advanced > Add-ons."],
   };
-  const emptySection = $derived(view === "results" && done && all.length === 0 ? typedSection(query) : 0);
+  // Apps may match "clip " too, so an empty history is judged by its own rows.
+  const fromClipboard = $derived(all.some(isFromClipboard));
+  const noClips = $derived(typedSection(query) === 2 && !fromClipboard);
+  const emptySection = $derived(view === "results" && done && (all.length === 0 || noClips) ? typedSection(query) : 0);
   let addonOff = $state("");
   $effect(() => {
     const wanted = ADDONS[emptySection];
@@ -1520,15 +1578,26 @@
   /** What an empty result list says: what happened and what to do next. */
   const emptyText = $derived.by(() => {
     const typed = query.trim();
-    if (all.length > 0) return `Nothing under ${LANES[lane].name}. Press Tab to see other results.`;
+    if (all.length > 0 && emptySection !== 2) return `Nothing under ${LANES[lane].name}. Press Tab to see other results.`;
     if (addonOff) return addonOff;
     const section = typedSection(query);
     const rest = typed.replace(/^\S+\s*/, "");
-    if (section === 2 && !rest) return "Nothing copied yet. Copy some text and it appears here.";
+    if (section === 2) {
+      return rest ? `No clips match “${rest}”. Try fewer words.` : "Nothing copied yet. Copy some text and it appears here.";
+    }
     if (noFolders) return `No results for “${typed}”.`;
     if (status?.indexing) return `No results for “${typed}” yet. Files are still being prepared, so try again shortly.`;
     return `No results for “${typed}”. Check the spelling or try fewer words.`;
   });
+  /** "Choose folders" is offered for file searches only. */
+  const offersFolders = $derived(noFolders && typedSection(query) === 0);
+  /** Pause holds the clipboard history with all other background work. */
+  function togglePause() {
+    invoke("set_paused", { paused: !status?.paused })
+      .then(refreshStatus)
+      .catch((e) => (notice = errorText(e)));
+    input?.focus();
+  }
   // The tallest the screen allows: fixed-height panels shrink to fit at high Windows scaling.
   function fitScreen() {
     document.documentElement.style.setProperty("--room", `${window.screen.availHeight - 32}px`);
@@ -1555,7 +1624,7 @@
   onkeydown={onKeydown}
   onresize={fitScreen}
   onpointerdown={(e) => {
-    if (noteMenu && !(e.target as Element).closest(".menu")) noteMenu = null;
+    if (menu && !(e.target as Element).closest(".menu")) menu = null;
   }}
   onblur={() => !pinned && (visible = false)}
   onfocus={() => (visible = true)}
@@ -1564,31 +1633,28 @@
 />
 <svelte:document onvisibilitychange={() => (visible = document.visibilityState === "visible")} onselectionchange={trackCaret} />
 
+{#snippet enterHint(label: string)}
+  <span class="hint-enter"><kbd>Enter</kbd>{label}</span>
+{/snippet}
+
 {#snippet exactRow()}
   <li role="presentation" class="entry">
-    <div
+    <Row
       role="option"
-      tabindex="-1"
+      tabindex={-1}
       id={`result-${items.length}`}
       aria-selected={selected === items.length}
-      class="row"
-      class:selected={selected === items.length}
+      selected={selected === items.length}
       data-index={items.length}
       onmousemove={() => (selected = items.length)}
       onclick={exactWords}
-      onkeydown={() => {}}
+      oncontextmenu={(e) => rightClick(e, [{ label: "Search", run: exactWords }])}
     >
-      <span class="icon" aria-hidden="true"
-        ><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
-          ><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" /></svg
-        ></span
-      >
-      <span class="text">
-        <span class="title">Search for the exact words instead</span>
-        <span class="meta">“{query.trim()}”</span>
-      </span>
-      {#if selected === items.length}<span class="hint-enter"><kbd>Enter</kbd></span>{/if}
-    </div>
+      {#snippet icon()}<span class="icon" aria-hidden="true"><Icon name="search" /></span>{/snippet}
+      {#snippet title()}Search for the exact words instead{/snippet}
+      {#snippet detail()}<span class="sub">“{query.trim()}”</span>{/snippet}
+      {#snippet end()}{#if selected === items.length}{@render enterHint("Search")}{/if}{/snippet}
+    </Row>
   </li>
 {/snippet}
 
@@ -1602,7 +1668,7 @@
   {@const k = iconKind(it)}
   {@const act = actionOf(it)}
   {#if act}
-    <span class="icon" aria-hidden="true">{@render glyph(act.category)}</span>
+    <span class="icon" aria-hidden="true">{@render glyph(act.icon ?? act.category)}</span>
   {:else if isRunning(it)}
     <span class="icon ring" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round">
@@ -1611,51 +1677,7 @@
       </svg>
     </span>
   {:else if k}
-    <span class="icon" aria-hidden="true">
-      <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round">
-        {#if k === "app"}
-          <rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1" /><rect x="9" y="2.5" width="4.5" height="4.5" rx="1" /><rect x="2.5" y="9" width="4.5" height="4.5" rx="1" /><rect x="9" y="9" width="4.5" height="4.5" rx="1" />
-        {:else if k === "folder"}
-          <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6l1.4 1.5h5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" />
-        {:else if k === "image"}
-          <rect x="2" y="3" width="12" height="10" rx="1.6" /><circle cx="5.7" cy="6.5" r="1.1" /><path d="M2.5 12l3.6-3.4 2.6 2.4 2-1.8 3.3 2.8" />
-        {:else if k === "rec"}
-          <circle cx="8" cy="8" r="5.5" /><circle cx="8" cy="8" r="2.4" fill="currentColor" />
-        {:else if k === "gif"}
-          <rect x="1.8" y="3.5" width="12.4" height="9" rx="1.8" /><path d="M6.6 6.6a1.6 1.6 0 1 0 0 2.8V8.2H5.8M8.8 6.4v3.2M10.4 9.6V6.4h1.7M10.4 8h1.3" />
-        {:else if k === "scan"}
-          <path d="M2 5.5V3.5A1.5 1.5 0 0 1 3.5 2h2M10 2h2.5A1.5 1.5 0 0 1 14 3.5v2M14 10.5v2a1.5 1.5 0 0 1-1.5 1.5H10M6 14H3.5A1.5 1.5 0 0 1 2 12.5v-2M5.5 6h5M8 6v4.5" />
-        {:else if k === "timer"}
-          <circle cx="8" cy="9" r="5" /><path d="M8 9V6.4M6.5 2h3M12 4l.9-.9" />
-        {:else if k === "calendar"}
-          <path d="M2.5 3.5h11V14h-11zM2.5 7h11M5.5 2v3M10.5 2v3" />
-        {:else if k === "clock"}
-          <circle cx="8" cy="8" r="5.8" /><path d="M8 4.5V8l2.5 1.5" />
-        {:else if k === "note"}
-          <path d="M3 2.5h10v8L9.5 14H3zM13 10.5H9.5V14M5.5 5.5h5M5.5 8h3" />
-        {:else if k === "moon"}
-          <path d="M13 9.3A5.5 5.5 0 0 1 6.7 3a5.5 5.5 0 1 0 6.3 6.3z" />
-        {:else if k === "sun"}
-          <circle cx="8" cy="8" r="2.6" /><path d="M8 1.8v1.5M8 12.7v1.5M1.8 8h1.5M12.7 8h1.5M3.6 3.6l1 1M11.4 11.4l1 1M3.6 12.4l1-1M11.4 4.6l1-1" />
-        {:else if k === "gear"}
-          <circle cx="8" cy="8" r="2" /><path d="M8 1.8l1 1.6 1.9-.4.5 1.8 1.8.6-.5 1.9L14 8l-1.3 1.2.5 1.9-1.8.6-.5 1.8-1.9-.4L8 14.2l-1-1.6-1.9.4-.5-1.8-1.8-.6.5-1.9L2 8l1.3-1.2-.5-1.9 1.8-.6.5-1.8 1.9.4z" />
-        {:else if k === "globe"}
-          <circle cx="8" cy="8" r="5.8" /><path d="M2.2 8h11.6M8 2.2c2 1.7 2.8 3.6 2.8 5.8S10 12.1 8 13.8C6 12.1 5.2 10.2 5.2 8S6 3.9 8 2.2z" />
-        {:else if k === "network"}
-          <rect x="6" y="2" width="4" height="3" rx=".8" /><rect x="1.8" y="11" width="4" height="3" rx=".8" /><rect x="10.2" y="11" width="4" height="3" rx=".8" /><path d="M8 5v3M4 11V8h8v3" />
-        {:else if k === "key"}
-          <circle cx="5.2" cy="10.8" r="2.7" /><path d="M7.2 8.8l6.3-6.3M11 5l1.8 1.8M9.3 6.7l1.4 1.4" />
-        {:else if k === "warn"}
-          <path d="M8 2.2L14.2 13H1.8z" /><path d="M8 6.5v3M8 11.3v.1" />
-        {:else if k === "dot"}
-          <circle cx="8" cy="8" r="1.6" fill="currentColor" />
-        {:else if k === "clipboard"}
-          <rect x="3.5" y="3" width="9" height="10.5" rx="1.5" /><path d="M6 3V2h4v1M5.8 7h4.4M5.8 9.5h4.4" />
-        {:else}
-          <path d="M4 2h5l3 3v9H4z" /><path d="M9 2v3h3" />
-        {/if}
-      </svg>
-    </span>
+    <span class="icon" aria-hidden="true"><Icon name={k} /></span>
   {:else}
     <span class="icon code">{badgeOf(it)}</span>
   {/if}
@@ -1836,32 +1858,31 @@
                 <ul class="recent">
                   {#each recent as r, n (r.item.id)}
                     <li>
-                      <button
-                        class="row rrow"
-                        class:top={n === 0}
-                        class:draggable={r.clip}
-                        title={refusal?.id === r.item.id ? refusal.text : undefined}
+                      <Row
+                        tag="button"
+                        extra={r.clip ? "draggable" : ""}
+                        data-recent={n}
+                        tooltip={refusal?.id === r.item.id ? refusal.text : undefined}
                         onpointerenter={() => checkDrag(r.item)}
                         onpointerdown={(e) => r.clip && pressRow(e, r.item)}
                         ondragstart={(e) => e.preventDefault()}
+                        oncontextmenu={(e) => rightClick(e, rowMenu(r.item))}
                         onclick={() => {
-                          if (!dragged) openRecent(r);
+                          if (!dragged) activate(r.item);
                           dragged = false;
                         }}
                       >
-                        {#if n === 0 && thumbSrc}
-                          <img class="thumb" src={thumbSrc} alt="" />
-                        {:else}
-                          {@render tile(r.item)}
-                        {/if}
-                        <span class="text">
-                          <span class="title">{r.clip ? mask(r.item.title) : r.item.title}</span>
+                        {#snippet icon()}
+                          {#if n === 0 && thumbSrc}<img class="thumb" src={thumbSrc} alt="" />{:else}{@render tile(r.item)}{/if}
+                        {/snippet}
+                        {#snippet title()}<span class:code={isCode(r.item)}>{r.clip ? mask(r.item.title) : r.item.title}</span>{/snippet}
+                        {#snippet detail()}
                           <span class="sub" class:code={!r.clip}
                             >{r.clip ? (r.fresh ? "Clip · just copied" : "Copied") : (r.item.uri ?? r.item.subtitle ?? "")}</span
                           >
-                        </span>
-                        <span class="when">{dayLabel(r.ts)}</span>
-                      </button>
+                        {/snippet}
+                        {#snippet end()}<span class="when">{ageLabel(r.ts, Math.floor(Date.now() / 1000))}</span>{/snippet}
+                      </Row>
                     </li>
                   {/each}
                 </ul>
@@ -1873,20 +1894,22 @@
                 <ul class="recent" role="listbox" aria-label="Recent searches" bind:this={historyList}>
                   {#each earlier as h, n (h)}
                     <li role="presentation">
-                      <button
-                        type="button"
-                        class="row rrow"
-                        class:top={n === earlierAt}
-                        class:picked={n === earlierAt}
+                      <Row
+                        tag="button"
                         role="option"
+                        selected={n === earlierAt}
                         aria-selected={n === earlierAt}
                         onfocus={() => (earlierAt = n)}
                         onmousemove={() => (earlierAt = n)}
+                        oncontextmenu={(e) => {
+                          earlierAt = n;
+                          rightClick(e, searchMenu(h));
+                        }}
                         onclick={() => setInput(h)}
                       >
-                        <span class="icon" aria-hidden="true">{@render glyph("Search")}</span>
-                        <span class="text"><span class="title">{h}</span></span>
-                      </button>
+                        {#snippet icon()}<span class="icon" aria-hidden="true">{@render glyph("Search")}</span>{/snippet}
+                        {#snippet title()}{h}{/snippet}
+                      </Row>
                     </li>
                   {/each}
                 </ul>
@@ -1928,7 +1951,7 @@
             <div class="qgrid" role="group" aria-label="Quick actions">
               {#each quickActions as a (a.id)}
                 <button type="button" class="btn small qa" onclick={() => runAction(a)}>
-                  {@render glyph(a.category)}<span>{a.label ?? a.name}</span>
+                  {@render glyph(a.icon ?? a.category)}<span>{a.label ?? a.name}</span>
                 </button>
               {/each}
             </div>
@@ -1949,18 +1972,19 @@
         <div class="res one" in:fly={{ x: 16, duration: dur(120), delay: dur(50) }}>
           <ul class="results card glass" role="listbox">
             <li role="presentation" class="entry">
-              <div role="option" tabindex="-1" aria-selected="true" class="row selected" onclick={openDisk} onkeydown={() => {}}>
-                <span class="icon" aria-hidden="true"
-                  ><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"
-                    ><circle cx="8" cy="8" r="5.5" /><path d="M8 8V2.5M8 8l4 3" /></svg
-                  ></span
-                >
-                <span class="text">
-                  <span class="title">Disk analyzer</span>
-                  <span class="snippet">See what uses space on a drive or folder. Scans only when you press Scan.</span>
-                </span>
-                <span class="hint-enter"><kbd>Enter</kbd></span>
-              </div>
+              <Row
+                role="option"
+                tabindex={-1}
+                aria-selected="true"
+                selected
+                onclick={openDisk}
+                oncontextmenu={(e) => rightClick(e, [{ label: "Open", run: openDisk }])}
+              >
+                {#snippet icon()}<span class="icon" aria-hidden="true"><Icon name="disk" /></span>{/snippet}
+                {#snippet title()}Disk analyzer{/snippet}
+                {#snippet detail()}<span class="sub">See what uses space on a drive or folder. Scans only when you press Scan.</span>{/snippet}
+                {#snippet end()}{@render enterHint("Open")}{/snippet}
+              </Row>
             </li>
           </ul>
         </div>
@@ -2008,11 +2032,20 @@
                 {/if}
               </div>
             {/if}
+            {#if fromClipboard || (emptySection === 2 && !addonOff)}
+              <p class="readline trust">
+                <span>{status?.paused ? "Paused: nothing you copy is recorded." : "Clips are encrypted on this PC; text that looks like a secret is masked."}</span>
+                <button type="button" class="btn small text" title="Pauses recording and all background work" onclick={togglePause}
+                  >{status?.paused ? "Resume" : "Pause"}</button
+                >
+              </p>
+            {/if}
             {#if status?.sizes_pending && typedSize()}<p class="readline muted" role="status">Sizes are still being collected</p>{/if}
             {#if opsShown && badOperator && offers.length === 0}<p class="readline" role="status">{OPERATOR_HINT}</p>{/if}
             {#if meant}<p class="readline" role="status">{meant}</p>{/if}
             {#if understoodLine}<p class="readline" role="status">{understoodLine}</p>{/if}
             {#if corrected}<p class="note">Showing results for <b>{corrected}</b></p>{/if}
+            {#if items.length > 0 && emptySection === 2}<p class="empty" role="status">{emptyText}</p>{/if}
             {#if items.length > 0}
               <ul id="results" class="results" role="listbox" bind:this={list}>
                 {#each items as item, i (item.id)}
@@ -2026,88 +2059,75 @@
                     {#if !top && (i === 1 || groupOf(items[i - 1]) !== groupOf(item))}
                       <div class="group label-caps">{groupOf(item)}</div>
                     {/if}
-                    <div
+                    <Row
                       role="option"
-                      tabindex="-1"
+                      tabindex={-1}
                       id={`result-${i}`}
                       aria-selected={i === selected}
-                      class="row"
-                      class:top
-                      class:selected={i === selected}
-                      class:draggable={canDrag(item)}
+                      selected={i === selected}
+                      extra={canDrag(item) ? "draggable" : ""}
                       data-index={i}
-                      title={refusal?.id === item.id ? refusal.text : undefined}
+                      tooltip={refusal?.id === item.id ? refusal.text : wraps(item) ? (item.subtitle ?? undefined) : undefined}
                       onmousemove={() => (selected = i)}
                       onpointerenter={() => checkDrag(item)}
                       onpointerdown={(e) => pressRow(e, item)}
                       ondragstart={(e) => e.preventDefault()}
                       oncontextmenu={(e) => {
-                        if (!isNote(item)) return;
-                        e.preventDefault();
                         selected = i;
-                        openNoteMenu(item, e.clientX, e.clientY);
+                        rightClick(e, rowMenu(item));
                       }}
                       onclick={() => {
                         if (!dragged) activate(item);
                         dragged = false;
                       }}
-                      onkeydown={() => {}}
                     >
-                      {#if top && thumbSrc}
-                        <img class="thumb" src={thumbSrc} alt="" />
-                      {:else}
-                        {@render tile(item)}
-                      {/if}
-                      <span class="text">
-                        <span class="l1">
-                          {#if top}<span class="tophit">Top hit</span>{/if}
-                          <span class="title"
-                            >{#each highlight(item.title) as part}{#if part.hit}<mark>{part.text}</mark
-                                >{:else}{part.text}{/if}{/each}</span
-                          >
-                          {#if !top && !isPlugin(item)}
-                            {#if typeof item.metadata?.snippet === "string" && item.uri}
-                              <span class="meta code">{item.uri}</span>
-                            {:else if item.subtitle}
-                              <span class="meta" class:code={isPath(item)}>{kindName(item.kind) === "clipboard" ? mask(item.subtitle) : subOf(item)}</span>
-                            {/if}
-                          {/if}
-                        </span>
-                        {#if top && item.subtitle}
-                          <span class="sub" class:code={isPath(item)} class:wrap={wraps(item)}
-                            >{#each highlight(kindName(item.kind) === "clipboard" ? mask(item.subtitle) : (subOf(item) ?? "")) as part}{#if part.hit}<mark>{part.text}</mark
-                                >{:else}{part.text}{/if}{/each}</span
-                          >
-                        {:else if !top && isPlugin(item) && item.subtitle}
-                          <span class="sub wrap">{kindName(item.kind) === "clipboard" ? mask(item.subtitle) : item.subtitle}</span>
-                        {/if}
+                      {#snippet icon()}
+                        {#if top && thumbSrc}<img class="thumb" src={thumbSrc} alt="" />{:else}{@render tile(item)}{/if}
+                      {/snippet}
+                      {#snippet title()}{#if top}<span class="tophit">Top hit</span>{/if}<span class:code={isCode(item)}
+                          >{#each highlight(kindName(item.kind) === "clipboard" ? mask(item.title) : item.title) as part}{#if part.hit}<mark>{part.text}</mark
+                              >{:else}{part.text}{/if}{/each}</span
+                        >{/snippet}
+                      {#snippet aside()}
+                        <!-- Under a matched line, the path moves up beside the name. -->
+                        {#if typeof item.metadata?.snippet === "string" && item.uri}<span class="meta code">{item.uri}</span>{/if}
+                      {/snippet}
+                      {#snippet detail()}
                         {#if typeof item.metadata?.snippet === "string"}
                           <span class="snippet"
                             >{#each snippetParts(item.metadata.snippet) as part}{#if part.hit}<mark>{part.text}</mark
                                 >{:else}{part.text}{/if}{/each}</span
                           >
+                        {:else if item.subtitle}
+                          <span class="sub" class:code={isPath(item)}
+                            >{#each highlight(kindName(item.kind) === "clipboard" ? mask(item.subtitle) : (subOf(item) ?? "")) as part}{#if part.hit}<mark>{part.text}</mark
+                                >{:else}{part.text}{/if}{/each}</span
+                          >
                         {/if}
-                      </span>
-                      {#if item.source === "action"}
-                        <kbd class="qk" title="Example">{item.metadata?.example}</kbd>
-                      {/if}
-                      {#if typeof item.metadata?.quick_key === "string"}
-                        <kbd class="qk" title="Quick key">{item.metadata.quick_key}</kbd>
-                      {/if}
-                      {#if isRunning(item)}
-                        <button
-                          type="button"
-                          class="btn small rowcancel"
-                          onclick={(e) => {
-                            e.stopPropagation();
-                            activate(item);
-                          }}>Cancel</button
-                        >
-                      {/if}
-                      {#if i === selected && defaultAction(item)}
-                        <span class="hint-enter"><kbd>Enter</kbd>{#if top}{openLabel(item)}{/if}</span>
-                      {/if}
-                    </div>
+                      {/snippet}
+                      {#snippet end()}
+                        {#if kindName(item.kind) === "clipboard" && clipTime(item)}
+                          <span class="when">{ageLabel(clipTime(item), Math.floor(Date.now() / 1000))}</span>
+                        {/if}
+                        {#if item.source === "action"}
+                          <kbd class="qk" title="Example">{item.metadata?.example}</kbd>
+                        {/if}
+                        {#if typeof item.metadata?.quick_key === "string"}
+                          <kbd class="qk" title="Quick key">{item.metadata.quick_key}</kbd>
+                        {/if}
+                        {#if isRunning(item)}
+                          <button
+                            type="button"
+                            class="btn small rowcancel"
+                            onclick={(e) => {
+                              e.stopPropagation();
+                              activate(item);
+                            }}>Cancel</button
+                          >
+                        {/if}
+                        {#if i === selected && defaultAction(item)}{@render enterHint(openLabel(item))}{/if}
+                      {/snippet}
+                    </Row>
                   </li>
                 {/each}
                 {#if understood}{@render exactRow()}{/if}
@@ -2118,7 +2138,7 @@
               {/if}
               {#if done}
                 <p class="empty" role="status">{emptyText}</p>
-                {#if noFolders && all.length === 0}
+                {#if offersFolders && all.length === 0}
                   <div class="nofolders">
                     <span>Lookout has no folders to search yet.</span>
                     <button class="btn primary" onclick={chooseFolders}>Choose folders to search <kbd>Enter</kbd></button>
@@ -2147,7 +2167,8 @@
                 </div>
               {:else}
                 <div class="plain">
-                  <strong class="nm">{mask(cur.title)}</strong>
+                  <strong class="nm" class:code={isCode(cur)}>{mask(cur.title)}</strong>
+                  {#if kindName(cur.kind) === "clipboard" && clipTime(cur)}<span class="sub">Copied {ageLabel(clipTime(cur), Math.floor(Date.now() / 1000))}</span>{/if}
                   {#if cur.subtitle}<span class="sub wrap">{mask(cur.subtitle)}</span>{/if}
                   {#if cur.source === "action"}<span class="sub">Example: <span class="code">{cur.metadata?.example}</span></span>{/if}
                   <span class="sub">{groupOf(cur)}</span>
@@ -2157,11 +2178,13 @@
                 {#if defaultAction(cur)}
                   <button class="btn small primary" onclick={() => activate(cur)}>{openLabel(cur)}</button>
                 {/if}
-                {#if kindName(cur.kind) === "clipboard" && defaultAction(cur) !== "copy_clip"}
-                  <button class="btn small" onclick={() => copyText(cur)}>Copy text</button>
+                {#if rowKeys(cur).paste && verbOf(defaultAction(cur) ?? "") === "copy_clip"}
+                  <button class="btn small" onclick={() => doAction(rowKeys(cur).paste ?? "", cur)}>Paste</button>
+                {:else if kindName(cur.kind) === "clipboard" && verbOf(defaultAction(cur) ?? "") !== "copy_clip"}
+                  <button class="btn small" title="Ctrl+C" onclick={() => doAction(rowKeys(cur).copy?.action ?? "", cur)}>Copy</button>
                 {/if}
                 {#if isFile(cur)}
-                  <button class="btn small" title="Ctrl+Shift+C" onclick={() => copyFile(cur)}>Copy file</button>
+                  <button class="btn small" title="Ctrl+Shift+C" onclick={() => doAction("copy_file", cur)}>Copy file</button>
                 {/if}
                 {#if ui.show.quick_keys && canKey(cur) && !keyFor}
                   <button class="btn small" onclick={() => startKey(cur)}>Set quick key</button>
@@ -2220,10 +2243,18 @@
     </footer>
     </div>
   </div>
-  {#if noteMenu}
-    <div class="menu" role="menu" tabindex="-1" bind:this={noteMenuEl} style:left={`${noteMenu.x}px`} style:top={`${noteMenu.y}px`}>
-      <button type="button" role="menuitem" onclick={() => noteAction("note_copy")}>Copy</button>
-      <button type="button" role="menuitem" onclick={() => noteAction("note_delete")}>Delete</button>
+  {#if menu}
+    <div class="menu" role="menu" tabindex="-1" bind:this={menuEl} style:left={`${menu.x}px`} style:top={`${menu.y}px`}>
+      {#each menu.entries as entry (entry.label)}
+        <button
+          type="button"
+          role="menuitem"
+          onclick={() => {
+            closeMenu();
+            entry.run();
+          }}>{entry.label}</button
+        >
+      {/each}
     </div>
   {/if}
 </main>
@@ -2481,43 +2512,6 @@
     overflow-y: auto;
     min-height: 0;
   }
-  .rrow {
-    all: unset;
-    box-sizing: border-box;
-    width: 100%;
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    height: 58px;
-    padding: 0 12px;
-    border: 1px solid transparent;
-    border-radius: var(--r-lg);
-    cursor: pointer;
-  }
-  .rrow:hover {
-    background: var(--accent-soft);
-  }
-  .rrow:focus-visible {
-    outline: 2px solid var(--accent);
-  }
-  .rrow.top {
-    height: 62px;
-    border-radius: 18px;
-    border-color: var(--accent-line);
-  }
-  .rrow .icon,
-  .rrow .thumb {
-    width: 56px;
-    height: 42px;
-  }
-  .rrow .title {
-    max-width: 100%;
-  }
-  .when {
-    flex: none;
-    color: var(--muted);
-    font-size: var(--fs-sm);
-  }
   .pick {
     position: relative;
     min-height: 230px;
@@ -2535,14 +2529,6 @@
   .face.over {
     position: absolute;
     inset: 18px 22px;
-  }
-  .rrow.picked {
-    background: var(--accent-soft);
-  }
-  /* secondary text is too faint on the highlight */
-  .rrow:hover .sub,
-  .rrow:hover .when {
-    color: var(--text-soft);
   }
   .qgrid {
     display: grid;
@@ -2727,10 +2713,6 @@
     gap: 8px;
     flex-wrap: wrap;
   }
-  /* A press on a draggable row starts a drag, not a text selection. */
-  .row.draggable {
-    user-select: none;
-  }
   .results {
     list-style: none;
     margin: 0;
@@ -2759,120 +2741,6 @@
   .group {
     padding: 12px 12px 4px;
   }
-  .row {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    min-height: 44px;
-    padding: 6px 12px;
-    border: 1px solid transparent;
-    border-radius: var(--r-lg);
-    background: transparent;
-    cursor: default;
-    transition: background-color var(--dur-fast) var(--ease);
-  }
-  .row.selected {
-    background: var(--accent-soft);
-    border-color: var(--accent-line);
-  }
-  .row.top {
-    min-height: 72px;
-    padding: 9px 14px;
-    border-radius: 18px;
-    border-color: var(--accent);
-  }
-  .row.top.selected {
-    background: var(--accent-soft);
-    border-color: var(--accent);
-  }
-  /* secondary text is too faint on the highlight */
-  .row.selected .meta,
-  .row.selected .sub {
-    color: var(--text-soft);
-  }
-
-  .icon {
-    flex: none;
-    width: 32px;
-    height: 32px;
-    box-sizing: border-box;
-    display: grid;
-    place-items: center;
-    border: 1px solid var(--hairline);
-    border-radius: var(--r-md);
-    background: var(--panel);
-    color: var(--text-soft);
-    font-size: 11px;
-    overflow: hidden;
-  }
-  .row.top .icon {
-    width: 54px;
-    height: 54px;
-    border-radius: var(--r-lg);
-    color: var(--accent-text);
-    font-size: var(--fs-xs);
-  }
-  .thumb {
-    flex: none;
-    width: 72px;
-    height: 54px;
-    object-fit: cover;
-    border-radius: var(--r-md);
-    border: 1px solid var(--hairline);
-  }
-  .tophit {
-    flex: none;
-    padding: 1px 8px;
-    border-radius: var(--r-pill);
-    background: var(--accent-bg);
-    color: var(--accent-on);
-    font-size: 11px;
-    font-weight: 600;
-  }
-
-  .text {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .l1 {
-    overflow: hidden;
-    display: flex;
-    align-items: baseline;
-    gap: var(--sp-3);
-    min-width: 0;
-  }
-  .title {
-    flex: none;
-    max-width: 60%;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    font-size: var(--fs-md);
-    font-weight: 500;
-  }
-  .row.top .title {
-    flex: 0 1 auto;
-    min-width: 0;
-    max-width: 100%;
-    font-size: var(--fs-hit);
-  }
-  /* Path or source, right-aligned in compact rows. */
-  .meta {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    text-align: right;
-    color: var(--muted);
-    font-size: var(--fs-xs);
-  }
-  .meta:not(.code) {
-    font-size: var(--fs-sm);
-  }
   .sub {
     overflow: hidden;
     white-space: nowrap;
@@ -2888,37 +2756,6 @@
     overflow: visible;
     overflow-wrap: anywhere;
   }
-  .snippet {
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    color: var(--text-soft);
-    font-size: var(--fs-sm);
-  }
-  /* Typed words: accent colour only, no box, normal weight. */
-  mark {
-    padding: 0;
-    background: none;
-    color: var(--match-text);
-    font-weight: inherit;
-  }
-  .icon.ring {
-    color: var(--accent-text);
-  }
-  .icon.ring svg {
-    width: 22px;
-    height: 22px;
-  }
-  .row.top .icon.ring svg {
-    width: 30px;
-    height: 30px;
-  }
-  .qk {
-    flex: none;
-  }
-  .rowcancel {
-    flex: none;
-  }
   .notetext {
     margin: 0;
     max-height: 260px;
@@ -2926,32 +2763,6 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     user-select: text;
-  }
-  .menu {
-    position: fixed;
-    z-index: 20;
-    display: flex;
-    flex-direction: column;
-    min-width: 128px;
-    padding: 4px;
-    border: 1px solid var(--border-strong);
-    border-radius: var(--r-md);
-    background: var(--raised);
-  }
-  .menu button {
-    all: unset;
-    padding: 6px 12px;
-    border-radius: var(--r-md);
-    font-size: var(--fs-md);
-    cursor: pointer;
-  }
-  .menu button:hover,
-  .menu button:focus-visible {
-    background: var(--accent-soft);
-  }
-  .menu button:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
   }
   .timerprev .big {
     font-family: var(--font-code);
@@ -2961,15 +2772,6 @@
     font-variant-numeric: tabular-nums;
     color: var(--accent-text);
   }
-  .hint-enter {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--text-soft);
-    font-size: var(--fs-xs);
-  }
-
   .note {
     margin: 0;
     padding: 8px 20px 0;
@@ -3013,6 +2815,13 @@
   .fchip:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
+  }
+  .trust {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--muted);
   }
   .empty {
     padding: 20px 22px;

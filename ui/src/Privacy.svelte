@@ -173,15 +173,30 @@
     const timer = setInterval(pollRebuild, 1000);
     return () => clearInterval(timer);
   });
-  // [switch, name, what it is, where it shows]
-  const FEATURES: [Feature, string, string, string][] = [
-    ["disk", "Disk analyzer", "See what uses space.", "Shows in the dock and help."],
-    ["clipboard", "Clipboard", "Find text you copied.", "Shows in the dock and help."],
-    ["capture", "Capture", "Take screenshots and recordings.", "Shows in the dock and help."],
-    ["timers", "Timers", "Count down from the search box.", "Shows in help and tips."],
-    ["quick_keys", "Quick keys", "Open things with a short word.", "Shows in help, tips and results."],
-    ["filters", "Date and kind filters", "Search like “pdf last week”.", "Shows in help and tips."],
-    ["notes", "Notes", "Save short notes from the search box.", "Shows in help, tips and Home."],
+  // [switch, name, what it is, where it shows], under the feature families.
+  const FEATURES: [string, [Feature, string, string, string][]][] = [
+    [
+      "Find",
+      [
+        ["quick_keys", "Quick keys", "Open things with a short word.", "Shows in help, tips and results."],
+        ["filters", "Date and kind filters", "Search like “pdf last week”.", "Shows in help and tips."],
+      ],
+    ],
+    [
+      "Capture",
+      [
+        ["capture", "Capture", "Take screenshots and recordings.", "Shows in the dock and help."],
+        ["clipboard", "Clipboard", "Find text you copied.", "Shows in the dock and help."],
+      ],
+    ],
+    [
+      "Everyday",
+      [
+        ["timers", "Timers", "Count down from the search box.", "Shows in help and tips."],
+        ["notes", "Notes", "Save short notes from the search box.", "Shows in help, tips and Home."],
+      ],
+    ],
+    ["This PC", [["disk", "Disk analyzer", "See what uses space.", "Shows in the dock and help."]]],
   ];
   const ALWAYS_SKIPPED = [
     "Lookout's own data and cache folders",
@@ -378,7 +393,7 @@
     askClear = false;
     try {
       await invoke("clear_search_history");
-      historyMessage = "Cleared your search history.";
+      historyMessage = "Deleted your search history.";
     } catch (e) {
       historyMessage = errorText(e);
     }
@@ -391,7 +406,7 @@
     askClearNotes = false;
     try {
       await invoke("clear_notes");
-      notesMessage = "Cleared all your notes.";
+      notesMessage = "Deleted all your notes.";
     } catch (e) {
       notesMessage = errorText(e);
     }
@@ -495,7 +510,7 @@
     message = "";
     try {
       load(await invoke<PrivacyState>("delete_index"));
-      message = "Deleted your search data and its key.";
+      message = "Deleted your data and its key.";
     } catch (e) {
       message = errorText(e);
     }
@@ -589,19 +604,19 @@
               readonly
               value={info?.open_hotkey ?? ""}
               onkeydown={(e) => hotkeyKeydown("set_open_hotkey", e, (t) => (openMessage = t))}
-              aria-label="Open Lookout hotkey"
+              aria-label="Open Lookout shortcut"
             />
           </div>
           {#if openMessage}<p class="note" role="status">{openMessage}</p>{/if}
           <div class="field">
-            {@render field("Read text from the screen", "Select the box, then press the new keys.")}
+            {@render field("Text from screen", "Select the box, then press the new keys.")}
             <input
               class="code"
               type="text"
               readonly
               value={info?.grab_hotkey ?? ""}
               onkeydown={(e) => hotkeyKeydown("set_grab_hotkey", e, (t) => (grabMessage = t))}
-              aria-label="Grab text hotkey"
+              aria-label="Text from screen shortcut"
             />
           </div>
           {#if grabMessage}<p class="note" role="status">{grabMessage}</p>{/if}
@@ -624,7 +639,7 @@
         </div>
         <div class="scard">
           <h3 class="stitle">Start with Windows</h3>
-          {@render toggle("Open at sign-in", "Keeps the hotkey working after restarts.", info?.start_with_windows ?? false, setStartWithWindows, !info)}
+          {@render toggle("Open at sign-in", "Keeps the shortcut working after restarts.", info?.start_with_windows ?? false, setStartWithWindows, !info)}
           {#if startupMessage}<p class="hint" role="alert">{startupMessage}</p>{/if}
         </div>
         <div class="scard">
@@ -671,10 +686,13 @@
       {:else if section === "features"}
         <h2 id="priv-title">Features</h2>
         <p class="hint">Mode: {modeLabel(ui)}. Hidden features still work when you type them.</p>
-        {#each FEATURES as [key, name, what, where] (key)}
-          {@render toggle(name, `${what} ${where}`, ui.show[key], (el) => choose(setShow(key, el.checked)))}
+        {#each FEATURES as [family, switches] (family)}
+          <h3 class="label-caps">{family}</h3>
+          {#each switches as [key, name, what, where] (key)}
+            {@render toggle(name, `${what} ${where}`, ui.show[key], (el) => choose(setShow(key, el.checked)))}
+          {/each}
+          {#if family === "This PC"}{@render cliSwitch()}{/if}
         {/each}
-        {@render cliSwitch()}
         <h3 class="label-caps">Window</h3>
         {@render toggle(
           "Remember my last search for 30 seconds",
@@ -727,7 +745,7 @@
           (el) => setContentOption("index_contents", el),
         )}
         {@render toggle(
-          "Read text in pictures",
+          "Text in pictures",
           "Finds words inside images and screenshots so they can be searched.",
           info?.ocr ?? false,
           (el) => setContentOption("ocr", el),
@@ -741,13 +759,13 @@
           setRememberSearches,
         )}
         {#if askClear}
-          <p class="warning" role="alert">Also clear the searches already saved?</p>
+          <p class="warning" role="alert">Also delete the searches already saved?</p>
           <div class="row end">
             <button class="btn small" onclick={() => (askClear = false)}>Keep them</button>
-            <button class="btn small primary" onclick={clearHistory}>Clear them</button>
+            <button class="btn small primary" onclick={clearHistory}>Delete them</button>
           </div>
         {:else}
-          <p><button class="btn small" onclick={clearHistory}>Clear history now</button></p>
+          <p><button class="btn small" onclick={clearHistory}>Delete search history</button></p>
         {/if}
         {#if historyMessage}<p class="hint" role="status">{historyMessage}</p>{/if}
         <h3 class="label-caps">Notes</h3>
@@ -876,11 +894,11 @@
           </p>
           <div class="row">
             <button class="btn" onclick={() => (confirmingDelete = false)}>Cancel</button>
-            <button class="btn danger" disabled={busy} onclick={deleteIndex}>Delete everything</button>
+            <button class="btn danger" disabled={busy} onclick={deleteIndex}>Delete my data</button>
           </div>
         {:else}
           <p class="hint">Removes your notes and the search data Lookout stored about your files. Your files are not touched.</p>
-          <p><button class="btn danger" onclick={() => (confirmingDelete = true)}>Delete my search data…</button></p>
+          <p><button class="btn danger" onclick={() => (confirmingDelete = true)}>Delete my data…</button></p>
         {/if}
       {/if}
     </div>
