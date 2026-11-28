@@ -40,7 +40,6 @@ use crate::index_service::{
 use crate::item::{Item, Kind};
 use crate::names_store::{self, Persister};
 use crate::notes::{CopyNote, DeleteNote, NoteSource, NoteStore, PasteNote, SaveNote};
-use crate::paste::SystemPaste;
 use crate::pause::PauseState;
 use crate::plugins::{DragData, HostConfig, PluginActions, PluginHost, PluginSource};
 use crate::ranking;
@@ -743,11 +742,7 @@ impl Lookout {
             Arc::new(CopyAnswer(Arc::new(WindowsClipboardWriter))),
             Arc::new(SaveNote(notes.clone())),
             Arc::new(CopyNote(notes.clone(), Arc::new(WindowsClipboardWriter))),
-            Arc::new(PasteNote(
-                notes.clone(),
-                Arc::new(WindowsClipboardWriter),
-                Arc::new(SystemPaste),
-            )),
+            Arc::new(PasteNote(notes.clone(), Arc::new(WindowsClipboardWriter))),
             Arc::new(DeleteNote(notes.clone())),
             Arc::new(crate::saved::SaveAction(saved.clone(), app_list.clone())),
             Arc::new(crate::saved::RemoveAction(saved.clone())),

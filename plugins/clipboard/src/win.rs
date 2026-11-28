@@ -36,16 +36,11 @@ use windows_sys::Win32::System::Memory::{
 use windows_sys::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL,
-};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetMessageW,
-    GetWindowThreadProcessId, IsWindow, RegisterClassW, SetForegroundWindow, TranslateMessage,
-    EVENT_SYSTEM_FOREGROUND, HWND_MESSAGE, MSG, SW_SHOWNORMAL, WINEVENT_OUTOFCONTEXT,
-    WM_CLIPBOARDUPDATE, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowThreadProcessId,
+    RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG, SW_SHOWNORMAL, WM_CLIPBOARDUPDATE,
+    WNDCLASSW,
 };
 
 use crate::image;
@@ -82,7 +77,6 @@ pub struct WindowsClipboard {
 /// Set by the listener window on every clipboard change.
 static CHANGED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
 /// The last window to come to the front that was not Lookout (raw HWND, 0 = none).
-static LAST_APP_WINDOW: AtomicUsize = AtomicUsize::new(0);
 static LISTENER: Once = Once::new();
 /// The hidden listener window (raw HWND, 0 until created); owns our clipboard writes.
 static LISTENER_WINDOW: AtomicUsize = AtomicUsize::new(0);
@@ -97,23 +91,9 @@ unsafe extern "system" fn listener_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPAR
     unsafe { DefWindowProcW(hwnd, msg, w, l) }
 }
 
-unsafe extern "system" fn on_foreground(
-    _hook: HWINEVENTHOOK,
-    _event: u32,
-    hwnd: HWND,
-    _object: i32,
-    _child: i32,
-    _thread: u32,
-    _time: u32,
-) {
-    if program_of(hwnd).is_some_and(|p| !is_lookout(&p)) {
-        LAST_APP_WINDOW.store(hwnd as usize, Ordering::Release);
-    }
-}
-
-/// A hidden message-only window that receives `WM_CLIPBOARDUPDATE`, plus a hook
-/// that remembers the foreground window. Runs its own message loop forever. If
-/// anything fails the watcher still works from the sequence number.
+/// A hidden message-only window that receives `WM_CLIPBOARDUPDATE`. Runs its
+/// own message loop forever. If anything fails the watcher still works from the
+/// sequence number.
 fn listen() {
     let class = wide("LookoutClipboardListener");
     // SAFETY: plain window-class and window creation with valid, NUL-terminated
@@ -152,19 +132,6 @@ fn listen() {
         }
         LISTENER_WINDOW.store(hwnd as usize, Ordering::Release);
         AddClipboardFormatListener(hwnd);
-        let fg = GetForegroundWindow();
-        if program_of(fg).is_some_and(|p| !is_lookout(&p)) {
-            LAST_APP_WINDOW.store(fg as usize, Ordering::Release);
-        }
-        SetWinEventHook(
-            EVENT_SYSTEM_FOREGROUND,
-            EVENT_SYSTEM_FOREGROUND,
-            null_mut(),
-            Some(on_foreground),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        );
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);
@@ -533,67 +500,6 @@ impl ClipboardIo for WindowsClipboard {
             .wait_timeout_while(guard, timeout, |c| !*c)
             .unwrap_or_else(PoisonError::into_inner);
         *changed = false;
-    }
-
-    /// Ctrl+V to the window that was in front before Lookout. Nothing is sent
-    /// unless the window about to receive it is a known, non-Lookout window.
-    fn paste(&self) -> Result<(), String> {
-        let front = || {
-            // SAFETY: no arguments.
-            let fg = unsafe { GetForegroundWindow() };
-            (fg, program_of(fg))
-        };
-        if front().1.is_none_or(|p| is_lookout(&p)) {
-            let target = LAST_APP_WINDOW.load(Ordering::Acquire) as *mut core::ffi::c_void;
-            // SAFETY: IsWindow accepts any handle value.
-            if target.is_null() || unsafe { IsWindow(target) } == 0 {
-                return Err("no earlier window to paste into".to_owned());
-            }
-            // SAFETY: a window handle checked above.
-            unsafe { SetForegroundWindow(target) };
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let (fg, program) = front();
-        if fg.is_null() || program.is_none_or(|p| is_lookout(&p)) {
-            return Err("no suitable window to paste into".to_owned());
-        }
-        // Windows drops keys sent to an administrator's window, without a word.
-        if lookout_core::paste::out_of_reach(fg as usize) {
-            return Err("that window runs as administrator".to_owned());
-        }
-        std::thread::sleep(Duration::from_millis(150));
-        let key = |vk: u16, flags| INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: vk,
-                    wScan: 0,
-                    dwFlags: flags,
-                    time: 0,
-                    dwExtraInfo: 0,
-                },
-            },
-        };
-        let v = u16::from(b'V');
-        let inputs = [
-            key(VK_CONTROL, 0),
-            key(v, 0),
-            key(v, KEYEVENTF_KEYUP),
-            key(VK_CONTROL, KEYEVENTF_KEYUP),
-        ];
-        // SAFETY: `inputs` is a valid array of 4 INPUT structs.
-        let sent = unsafe {
-            SendInput(
-                4,
-                inputs.as_ptr(),
-                i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(40),
-            )
-        };
-        if sent == 4 {
-            Ok(())
-        } else {
-            Err("Windows did not accept the keystrokes".to_owned())
-        }
     }
 
     fn open_url(&self, url: &str) -> Result<(), String> {

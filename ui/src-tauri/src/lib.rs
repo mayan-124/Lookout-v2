@@ -660,6 +660,8 @@ fn skip_list() -> Vec<String> {
 }
 
 fn show_bar(app: &AppHandle) -> Result<(), BarError> {
+    // Where a paste will go: asked before the bar takes the focus.
+    lookout_core::paste::remember_front();
     let t0 = Instant::now();
     let window = bar_window(app)?;
     position_bar(app, &window, cursor_monitor(app));
@@ -975,17 +977,31 @@ async fn run_action(
 ) -> Result<Done, String> {
     let l = services_of(&services)?;
     with_action(&app, || {
-        let done = l.run_action(&ticket).map_err(|e| e.to_string());
-        if let Ok(d) = &done {
+        let mut done = l.run_action(&ticket).map_err(|e| e.to_string());
+        if let Ok(d) = &mut done {
             // Another window has the focus now: hiding first keeps the bar from
             // taking it back.
             if gives_away_focus(&d.action_id) {
+                // Noted first: hiding can bring some other window forward.
+                let target = lookout_core::paste::target();
                 hide_bar_window(&app);
+                if lookout_core::paste::is_paste(&d.action_id) && !d.was_undo {
+                    wait_until_hidden(&app);
+                    d.message = lookout_core::paste::paste_into(target);
+                }
             }
             announce(&app, d);
         }
         done
     })
+}
+
+/// Hiding is queued on the window's thread: a paste waits until it has happened.
+fn wait_until_hidden(app: &AppHandle) {
+    let until = Instant::now() + Duration::from_millis(300);
+    while bar_window(app).is_ok_and(|w| w.is_visible().unwrap_or(false)) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Actions after which another program has, or should keep, the focus.

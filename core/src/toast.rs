@@ -60,7 +60,7 @@ pub fn for_action(action: &str, message: &str, undoable: bool, was_undo: bool) -
     let verb = action.rsplit('/').next().unwrap_or(action);
     let said = match verb {
         "paste_clip" | "paste_plain" | "note_paste" => {
-            return (message == PASTE_FAILED).then(|| Toast {
+            return message.starts_with(PASTE_FAILED).then(|| Toast {
                 text: message.to_owned(),
                 button: None,
                 ms: FAILED_MS,

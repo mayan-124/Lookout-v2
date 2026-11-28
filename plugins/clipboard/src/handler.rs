@@ -628,10 +628,9 @@ impl Handler for Clipboard {
                 Some(a @ ("paste_clip" | "paste_plain")) => {
                     let clip = self.clip_of(&params)?;
                     self.put_back(&clip, a == "paste_plain")?;
-                    Ok(match self.io.paste() {
-                        Ok(()) => json!({"message": "Pasted"}),
-                        Err(_) => json!({"message": "Copied. Press Ctrl+V"}),
-                    })
+                    // Lookout itself types Ctrl+V after hiding its bar: only the
+                    // program in front may hand the front to another.
+                    Ok(json!({"message": "Copied. Press Ctrl+V"}))
                 }
                 Some("open_link") => {
                     let url = self.clip_of(&params)?.text.trim().to_owned();
@@ -731,10 +730,6 @@ mod tests {
         }
         fn write_text(&self, t: &str) -> Result<(), String> {
             self.0.lock().unwrap().push(t.to_owned());
-            Ok(())
-        }
-        fn paste(&self) -> Result<(), String> {
-            self.0.lock().unwrap().push("<PASTE>".to_owned());
             Ok(())
         }
         fn open_url(&self, url: &str) -> Result<(), String> {
@@ -961,7 +956,7 @@ mod tests {
     }
 
     #[test]
-    fn paste_pastes_and_copy_only_does_not() {
+    fn paste_and_copy_both_put_the_text_on_the_clipboard() {
         let (mut c, io) = setup();
         c.paste_default = true;
         let id = add(&c, "  text\u{7} with junk  ", None, 1);
@@ -972,14 +967,11 @@ mod tests {
         let q = c.handle("query", json!({"rest": "junk"})).unwrap();
         assert_eq!(q["items"][0]["action"], "paste_clip");
         run(&mut c, "execute", "copy_clip", id).unwrap();
-        assert!(!io.0.lock().unwrap().iter().any(|e| e == "<PASTE>"));
         run(&mut c, "execute", "paste_clip", id).unwrap();
         run(&mut c, "execute", "paste_plain", id).unwrap();
         let log = io.0.lock().unwrap().clone();
         assert_eq!(log[0], log[1]);
-        assert_eq!(log[2], "<PASTE>");
-        assert_eq!(log[3], "text with junk");
-        assert_eq!(log[4], "<PASTE>");
+        assert_eq!(log[2], "text with junk");
     }
 
     #[test]
@@ -1058,7 +1050,7 @@ mod tests {
         assert_eq!(r["actions"][0]["id"], "ignore_next");
     }
 
-    /// A clipboard where there is no window to paste into.
+    /// A clipboard that only takes text.
     struct NoTarget(Mutex<Vec<String>>);
     impl ClipboardIo for NoTarget {
         fn sequence(&self) -> u32 {
@@ -1074,7 +1066,7 @@ mod tests {
     }
 
     #[test]
-    fn with_no_window_to_paste_into_the_text_is_only_copied() {
+    fn a_paste_answers_that_the_text_is_copied() {
         let io = Arc::new(NoTarget(Mutex::new(vec![])));
         let mut c = Clipboard::with_store(io.clone(), Store::in_memory());
         let id = add(&c, "hello", None, 1);

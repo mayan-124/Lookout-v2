@@ -18,7 +18,6 @@ use crate::actions::{
 use crate::content::secrets;
 use crate::index_service::unix_now;
 use crate::item::{Item, Kind, ScoreFeatures};
-use crate::paste::KeyPaste;
 use crate::query::ParsedQuery;
 use crate::ranking::{self, RankingWeights};
 use crate::securedb::{DbError, SecureDb};
@@ -553,11 +552,7 @@ impl Action for CopyNote {
 }
 
 /// Copies the note, then types Ctrl+V into the app that was in front.
-pub struct PasteNote(
-    pub Arc<NoteStore>,
-    pub Arc<dyn TextClipboard>,
-    pub Arc<dyn KeyPaste>,
-);
+pub struct PasteNote(pub Arc<NoteStore>, pub Arc<dyn TextClipboard>);
 
 impl Action for PasteNote {
     fn id(&self) -> &str {
@@ -584,12 +579,9 @@ impl Action for PasteNote {
         let id = plan.snapshot["id"].as_i64().ok_or_else(gone)?;
         let note = self.0.get(id).map_err(failed)?.ok_or_else(gone)?;
         self.1.set_text(&note.text).map_err(ActionError::Failed)?;
-        let message = match self.2.paste() {
-            Ok(()) => "Pasted",
-            Err(_) => crate::toast::PASTE_FAILED,
-        };
+        // The app types it once the bar is out of the way (see `paste`).
         Ok(Executed {
-            message: message.into(),
+            message: crate::toast::PASTE_FAILED.into(),
             undo_token: None,
         })
     }

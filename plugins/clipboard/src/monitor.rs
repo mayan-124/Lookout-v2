@@ -56,10 +56,6 @@ pub trait ClipboardIo: Send + Sync {
     fn wait_change(&self, timeout: Duration) {
         std::thread::sleep(timeout);
     }
-    /// Sends Ctrl+V to the program that was active before Lookout opened.
-    fn paste(&self) -> Result<(), String> {
-        Err("pasting is not supported here".to_owned())
-    }
     /// Opens an http(s) link or mailto address in the default program.
     fn open_url(&self, _url: &str) -> Result<(), String> {
         Err("opening links is not supported here".to_owned())
