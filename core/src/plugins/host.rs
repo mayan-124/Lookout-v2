@@ -138,6 +138,7 @@ struct Runtime {
     failures: u32,
     retry_at: Option<Instant>,
     sent_paused: bool,
+    sent_appearance: Value,
 }
 
 struct Plugin {
@@ -219,6 +220,8 @@ pub struct PluginHost {
     plugins: Vec<Arc<Plugin>>,
     cfg: HostConfig,
     pause: PauseState,
+    /// The window's theme and accent, passed on to add-ons that draw.
+    appearance: Mutex<Value>,
     state_path: PathBuf,
     stop: AtomicBool,
 }
@@ -324,6 +327,7 @@ impl PluginHost {
                         failures: 0,
                         retry_at: None,
                         sent_paused: false,
+                        sent_appearance: Value::Null,
                     }),
                     labels: Mutex::new(HashMap::new()),
                     brief: AtomicUsize::new(0),
@@ -334,6 +338,7 @@ impl PluginHost {
             plugins,
             cfg,
             pause,
+            appearance: Mutex::new(Value::Null),
             state_path,
             stop: AtomicBool::new(false),
         });
@@ -486,6 +491,11 @@ impl PluginHost {
         rt.retry_at = None;
     }
 
+    /// The window's theme and accent; add-ons are told at start and on change.
+    pub fn set_appearance(&self, appearance: Value) {
+        *lock(&self.appearance) = appearance;
+    }
+
     /// Stores new settings for a plugin and restarts it so it picks them up.
     pub fn set_config(&self, id: &str, config: Value) -> Result<(), HostError> {
         let p = self.find(id)?;
@@ -585,17 +595,20 @@ impl PluginHost {
         let own_dir = self.cfg.data_dir.join("plugins").join(&p.manifest.id);
         let _ = std::fs::create_dir_all(&own_dir);
         let paused = self.pause.is_paused();
+        let appearance = lock(&self.appearance).clone();
         let init = json!({
             "protocol": PROTOCOL,
             "data_dir": own_dir,
             "key": self.cfg.master_key.as_ref().map(|m| crate::crypto::derive_plugin_key(m, &p.manifest.id).to_hex()),
             "config": effective_config(&p.manifest.config_defaults, &lock(&p.user).config),
             "paused": paused,
+            "appearance": appearance,
         });
         match proc.call("initialize", init, self.cfg.timeouts.init) {
             Ok(_) => {
                 rt.proc = Some(proc);
                 rt.sent_paused = paused;
+                rt.sent_appearance = appearance;
                 rt.last_used = Instant::now();
                 rt.last_error = None;
                 rt.failures = 0;
@@ -679,6 +692,7 @@ impl PluginHost {
 
     fn supervise(&self) {
         let paused = self.pause.is_paused();
+        let appearance = lock(&self.appearance).clone();
         for p in &self.plugins {
             let Ok(mut rt) = p.run.try_lock() else {
                 continue;
@@ -696,11 +710,20 @@ impl PluginHost {
                         if let Some(mut proc) = rt.proc.take() {
                             proc.stop(self.cfg.timeouts.shutdown);
                         }
-                    } else if rt.sent_paused != paused {
-                        if let Some(proc) = rt.proc.as_ref() {
-                            proc.notify("pause_changed", json!({"paused": paused}));
+                    } else {
+                        if rt.sent_paused != paused {
+                            if let Some(proc) = rt.proc.as_ref() {
+                                proc.notify("pause_changed", json!({"paused": paused}));
+                            }
+                            rt.sent_paused = paused;
                         }
-                        rt.sent_paused = paused;
+                        if rt.sent_appearance != appearance {
+                            if let Some(proc) = rt.proc.as_ref() {
+                                let params = json!({"appearance": appearance});
+                                proc.notify("appearance_changed", params);
+                            }
+                            rt.sent_appearance = appearance.clone();
+                        }
                     }
                 }
                 Some(false) => Self::fail(&mut rt, "the add-on stopped unexpectedly".into()),

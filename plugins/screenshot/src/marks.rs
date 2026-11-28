@@ -1,5 +1,4 @@
-//! Drawing on the capture overlay: the toolbar beside the box and the marks made
-//! with it. The marks are the editor's own annotations, kept in the frozen
+//! Drawing on the capture overlay: the marks made with the bar's tools. The marks are the editor's own annotations, kept in the frozen
 //! picture's coordinates, so they stay on the picture when the box is moved or
 //! resized. Nothing here writes to disk.
 
@@ -24,45 +23,6 @@ pub enum Tool {
     Hide,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Button {
-    Tool(Tool),
-    Undo,
-    Redo,
-    Copy,
-    Save,
-    Editor,
-    Record,
-    Scroll,
-    ReadText,
-    Close,
-}
-
-const DRAW_ROW: [(Button, &str); 8] = [
-    (Button::Tool(Tool::Pen), "Pen"),
-    (Button::Tool(Tool::Marker), "Marker"),
-    (Button::Tool(Tool::Arrow), "Arrow"),
-    (Button::Tool(Tool::Box), "Box"),
-    (Button::Tool(Tool::Text), "Text"),
-    (Button::Tool(Tool::Hide), "Hide"),
-    (Button::Undo, "Undo"),
-    (Button::Redo, "Redo"),
-];
-
-const ACTION_ROW: [(Button, &str); 7] = [
-    (Button::Copy, "Copy"),
-    (Button::Save, "Save"),
-    (Button::Editor, "Editor"),
-    (Button::Record, "Record"),
-    (Button::Scroll, "Scroll"),
-    (Button::ReadText, "Read text"),
-    (Button::Close, "Close"),
-];
-
-const WIDTH: f32 = 448.0;
-const ROW: f32 = 32.0;
-const EDGE: f32 = 4.0;
-
 /// The monitor holding most of `sel`; the first one if none touches it.
 pub fn monitor_for(monitors: &[Monitor], sel: RectI, fallback: Monitor) -> Monitor {
     let shared = |m: &Monitor| {
@@ -79,64 +39,40 @@ pub fn monitor_for(monitors: &[Monitor], sel: RectI, fallback: Monitor) -> Monit
         .unwrap_or(fallback)
 }
 
-/// The scale the toolbar is drawn at: the monitor's, less on a very narrow one.
-pub fn toolbar_scale(monitor: Monitor) -> f32 {
-    monitor
-        .scale
-        .min(monitor.rect.width() as f32 / (WIDTH + 20.0))
-}
+const PEN_COLORS: [Color; 7] = [
+    Color::RED,
+    Color::AMBER,
+    Color::GREEN,
+    Color::BLUE,
+    Color::PURPLE,
+    Color::WHITE,
+    Color::BLACK,
+];
 
-/// Below the box; above it when there is no room below; else inside its bottom
-/// edge. Always wholly on the one monitor.
-pub fn toolbar_rect(sel: RectI, monitor: Monitor, draw: bool) -> RectI {
-    let s = toolbar_scale(monitor);
-    let px = |v: f32| (v * s).round() as i32;
-    let rows = if draw { 2.0 } else { 1.0 };
-    let (w, h) = (px(WIDTH), px(rows * ROW + 2.0 * EDGE));
-    let (gap, margin) = (px(12.0), px(8.0));
-    let m = monitor.rect;
-    let x = ((sel.left + sel.right - w) / 2)
-        .min(m.right - w - margin)
-        .max(m.left + margin);
-    let below = sel.bottom + gap;
-    // The size label sits just above the box.
-    let above = sel.top - px(40.0) - h;
-    let y = if below + h <= m.bottom - margin && below >= m.top + margin {
-        below
-    } else if above >= m.top + px(60.0) && above + h <= m.bottom - margin {
-        above
-    } else {
-        (sel.bottom - h - gap)
-            .min(m.bottom - h - margin)
-            .max(m.top + margin)
-    };
-    RectI::new(x, y, x + w, y + h)
-}
+const MARKER_COLORS: [Color; 5] = [
+    Color::rgb(250, 204, 21),
+    Color::rgb(74, 222, 128),
+    Color::rgb(56, 189, 248),
+    Color::rgb(244, 114, 182),
+    Color::rgb(251, 146, 60),
+];
 
-/// Every button with its place, for both drawing and clicking.
-pub fn buttons(toolbar: RectI, draw: bool) -> Vec<(Button, &'static str, RectI)> {
-    let s = toolbar.width() as f32 / WIDTH;
-    let px = |v: f32| (v * s).round() as i32;
-    let rows: &[&[(Button, &str)]] = if draw {
-        &[&DRAW_ROW, &ACTION_ROW]
-    } else {
-        &[&ACTION_ROW]
-    };
-    let mut all = Vec::new();
-    for (n, row) in rows.iter().enumerate() {
-        let each = (toolbar.width() - 2 * px(EDGE)) as f32 / row.len() as f32;
-        let top = toolbar.top + px(EDGE) + px(n as f32 * ROW);
-        for (k, (button, label)) in row.iter().enumerate() {
-            let left = toolbar.left + px(EDGE) + (k as f32 * each).round() as i32;
-            let right = toolbar.left + px(EDGE) + ((k + 1) as f32 * each).round() as i32;
-            all.push((
-                *button,
-                *label,
-                RectI::new(left + 1, top + 1, right - 1, top + px(ROW) - 1),
-            ));
-        }
+/// The colours a tool can draw in, the first being its own; none for `Hide`.
+pub fn colors(tool: Tool) -> &'static [Color] {
+    match tool {
+        Tool::Marker => &MARKER_COLORS,
+        Tool::Hide => &[],
+        _ => &PEN_COLORS,
     }
-    all
+}
+
+/// Thin, medium and thick at 100%: a line's width, or the height of text.
+fn widths(tool: Tool) -> [f32; 3] {
+    match tool {
+        Tool::Marker => [12.0, 18.0, 28.0],
+        Tool::Text => [14.0, 20.0, 30.0],
+        _ => [2.0, 3.0, 6.0],
+    }
 }
 
 /// The point, kept inside the box.
@@ -151,36 +87,39 @@ struct Stroke {
     tool: Tool,
     points: Vec<PointI>,
     scale: f32,
+    color: Color,
+    /// The chosen width, scaled.
+    width: f32,
 }
 
 impl Stroke {
     /// The annotation as drawn so far; `None` while it is too small to keep.
     fn annotation(&self) -> Option<Annotation> {
         let (first, last) = (*self.points.first()?, *self.points.last()?);
-        let thickness = 3.0 * self.scale;
+        let (color, thickness) = (self.color, self.width);
         let moved = (first.x - last.x).abs() >= 3 || (first.y - last.y).abs() >= 3;
         let rect = RectI::from_points(first, last);
         let solid = rect.width() >= 3 && rect.height() >= 3;
         match self.tool {
             Tool::Pen => (self.points.len() > 1).then(|| Annotation::Pen {
                 points: self.points.clone(),
-                color: Color::RED,
+                color,
                 thickness,
             }),
             Tool::Marker => (self.points.len() > 1).then(|| Annotation::Highlighter {
                 points: self.points.clone(),
-                color: Color::rgb(250, 204, 21),
-                thickness: 18.0 * self.scale,
+                color,
+                thickness,
             }),
             Tool::Arrow => moved.then_some(Annotation::Arrow {
                 start: first,
                 end: last,
-                color: Color::RED,
+                color,
                 thickness,
             }),
             Tool::Box => solid.then_some(Annotation::Rectangle {
                 rect,
-                color: Color::RED,
+                color,
                 thickness,
                 fill: None,
             }),
@@ -199,6 +138,7 @@ struct Typing {
     at: PointI,
     text: String,
     size: u32,
+    color: Color,
 }
 
 impl Typing {
@@ -206,7 +146,7 @@ impl Typing {
         Annotation::Text {
             pos: self.at,
             text: format!("{}{caret}", self.text),
-            color: Color::RED,
+            color: self.color,
             size: self.size,
             bold: true,
         }
@@ -222,6 +162,9 @@ pub struct Marks {
     typing: Option<Typing>,
     /// The frozen picture with the finished marks on it, while there are any.
     painted: Option<ImageBuffer>,
+    /// Chosen colour and thickness of each tool; none means the tool's own.
+    chosen_color: [Option<usize>; 6],
+    chosen_level: [Option<usize>; 6],
 }
 
 impl Marks {
@@ -255,6 +198,24 @@ impl Marks {
         });
     }
 
+    pub fn color(&self, tool: Tool) -> Color {
+        let chosen = self.chosen_color[tool as usize].unwrap_or(0);
+        colors(tool).get(chosen).copied().unwrap_or(Color::RED)
+    }
+
+    /// Thin 0, medium 1, thick 2.
+    pub fn level(&self, tool: Tool) -> usize {
+        self.chosen_level[tool as usize].unwrap_or(1)
+    }
+
+    pub fn set_color(&mut self, tool: Tool, index: usize) {
+        self.chosen_color[tool as usize] = Some(index);
+    }
+
+    pub fn set_level(&mut self, tool: Tool, level: usize) {
+        self.chosen_level[tool as usize] = Some(level.min(2));
+    }
+
     /// Picking the tool in hand puts it down.
     pub fn pick(&mut self, tool: Tool) {
         self.tool = (self.tool != Some(tool)).then_some(tool);
@@ -266,17 +227,21 @@ impl Marks {
             return;
         };
         let p = inside(p, sel);
+        let (color, width) = (self.color(tool), widths(tool)[self.level(tool)] * scale);
         if tool == Tool::Text {
             self.typing = Some(Typing {
                 at: p,
                 text: String::new(),
-                size: (20.0 * scale).round() as u32,
+                size: width.round() as u32,
+                color,
             });
         } else {
             self.stroke = Some(Stroke {
                 tool,
                 points: vec![p],
                 scale,
+                color,
+                width,
             });
         }
     }
@@ -342,55 +307,6 @@ impl Marks {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn monitor(left: i32, width: i32, height: i32, scale: f32) -> Monitor {
-        Monitor {
-            rect: RectI::new(left, 0, left + width, height),
-            scale,
-        }
-    }
-
-    fn within(inner: RectI, outer: RectI) -> bool {
-        inner.left >= outer.left
-            && inner.top >= outer.top
-            && inner.right <= outer.right
-            && inner.bottom <= outer.bottom
-    }
-
-    #[test]
-    fn the_toolbar_stays_on_the_boxs_monitor_at_every_scale() {
-        for scale in [1.0, 1.25, 1.5, 2.0] {
-            let screens = [
-                monitor(0, 1920, 1080, 1.0),
-                monitor(1920, 2560, 1440, scale),
-            ];
-            for sel in [
-                RectI::new(1925, 5, 1990, 60),
-                RectI::new(4400, 1380, 4480, 1440),
-                RectI::new(1920, 0, 4480, 1440),
-                RectI::new(1800, 900, 2900, 1430),
-                RectI::new(0, 1000, 40, 1080),
-            ] {
-                let m = monitor_for(&screens, sel, screens[0]);
-                for draw in [true, false] {
-                    let bar = toolbar_rect(sel, m, draw);
-                    assert!(within(bar, m.rect), "{scale} {sel:?} -> {bar:?}");
-                    for (_, _, b) in buttons(bar, draw) {
-                        assert!(within(b, bar), "{scale} {b:?} outside {bar:?}");
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_toolbar_sits_below_then_above_the_box() {
-        let m = monitor(0, 1920, 1080, 1.0);
-        let sel = RectI::new(500, 200, 900, 500);
-        assert!(toolbar_rect(sel, m, true).top >= sel.bottom);
-        let low = RectI::new(500, 700, 900, 1070);
-        assert!(toolbar_rect(low, m, true).bottom <= low.top);
-    }
 
     #[test]
     fn marks_stay_on_the_picture_and_undo_restores_it() {

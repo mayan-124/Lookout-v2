@@ -240,6 +240,9 @@ impl Default for ScreenshotPlugin {
 
 impl Handler for ScreenshotPlugin {
     fn notify(&mut self, method: &str, params: Value) {
+        if method == "appearance_changed" {
+            crate::skin::choose(&params["appearance"]);
+        }
         if method == "pause_changed" {
             let is_paused = params["paused"].as_bool().unwrap_or(false);
             self.paused.store(is_paused, Ordering::Release);
@@ -257,6 +260,7 @@ impl Handler for ScreenshotPlugin {
                     *d = PathBuf::from(dir);
                 }
 
+                crate::skin::choose(&params["appearance"]);
                 let config = &params["config"];
                 let hk_raw = config["hotkey"]
                     .as_str()

@@ -1957,7 +1957,12 @@ fn get_appearance(services: State<Services>) -> AppearanceState {
 /// Not async: quick picks are then saved in the order they were made.
 #[tauri::command]
 fn set_appearance(appearance: Appearance, services: State<Services>) -> Result<(), String> {
-    lock(&services.settings).set_appearance(appearance, &services.paths.settings())
+    lock(&services.settings).set_appearance(appearance.clone(), &services.paths.settings())?;
+    // The screenshot overlay draws in the same colors.
+    if let Some(host) = services.current().and_then(|l| l.plugins().cloned()) {
+        host.set_appearance(serde_json::json!(appearance));
+    }
+    Ok(())
 }
 
 #[tauri::command]

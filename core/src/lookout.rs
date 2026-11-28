@@ -452,7 +452,9 @@ impl Lookout {
             if cfg.master_key.is_none() {
                 cfg.master_key = storage.key.clone();
             }
-            PluginHost::start(cfg, pause.clone())
+            let host = PluginHost::start(cfg, pause.clone());
+            host.set_appearance(serde_json::json!(opts.settings.appearance));
+            host
         });
         // Full-text index and its worker. A failure here only disables content search.
         let mut content_error: Option<String> = None;
