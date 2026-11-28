@@ -20,7 +20,7 @@ export const DAILY: readonly Offer[] = [
     id: SCREENSHOT_ID,
     name: "Screenshots",
     what: "Capture or record your screen.",
-    privacy: "Saved on this PC. Captures only when you ask.",
+    privacy: "Saved on this PC. Captures only when you ask. The frozen screen picture stays in memory until the capture box closes; it is written to disk only if you save.",
   },
   {
     id: "com.lookout.files-tools",

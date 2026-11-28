@@ -65,6 +65,8 @@ pub struct Ui {
     pub advanced_open: bool,
     /// The bar stays open after a copy or a saved note.
     pub keep_open_after_copy: bool,
+    /// Clicking a clip or a note copies it instead of pasting it.
+    pub copy_on_click: bool,
     /// Home is only the search box until something is typed.
     pub compact_home: bool,
 }
@@ -79,6 +81,7 @@ pub struct UiState {
     pub hide_tips: bool,
     pub advanced_open: bool,
     pub hide_after_copy: bool,
+    pub paste_on_click: bool,
     pub compact_home: bool,
 }
 
@@ -103,6 +106,7 @@ impl Ui {
             hide_tips: self.hide_tips,
             advanced_open: self.advanced_open,
             hide_after_copy: !self.keep_open_after_copy,
+            paste_on_click: !self.copy_on_click,
             compact_home: self.compact_home,
         }
     }
@@ -284,6 +288,7 @@ mod tests {
             hide_tips: true,
             advanced_open: true,
             keep_open_after_copy: true,
+            copy_on_click: true,
             compact_home: true,
         };
         s.reset_ui(&path).unwrap();

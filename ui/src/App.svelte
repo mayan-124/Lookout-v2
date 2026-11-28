@@ -14,7 +14,8 @@
   import Help from "./Help.svelte";
   import Row from "./Row.svelte";
   import Icon, { type Ico } from "./Icon.svelte";
-  import { ageLabel, changesList, changesPins, hidesBar, isQuiet, rowKeys, verbOf } from "./rows";
+  import { ageLabel, changesList, changesPins, hidesBar, isQuiet, mainAction, noticed, rowButtons, rowKeys, shiftAction, verbOf } from "./rows";
+  import Trail from "./Trail.svelte";
   import { isClipRow, isFileRow, movedEnough } from "./dragout";
   import { iconLoader, iconTarget, rowWatcher } from "./appicons";
   import { keepsPage, keepsSearch } from "./lastsearch";
@@ -70,8 +71,7 @@
   type Card =
     | { phase: "rename"; id: string; name: string; pattern: string }
     | { phase: "confirm"; prepared: Prepared; presented: boolean; busy: boolean; error: string }
-    // `hides`: Enter closes the card and puts the bar away.
-    | { phase: "result"; ok: boolean; message: string; undoable: boolean; hides?: boolean };
+    | { phase: "result"; ok: boolean; message: string; undoable: boolean };
   interface Shown {
     id: number;
     hidden_secs: number | null;
@@ -432,6 +432,19 @@
     if (error) notice = error;
     input?.focus();
   }
+  // The lists that are screens of their own: each has Back and a breadcrumb.
+  const trail = $derived.by(() => {
+    if (panel || disk || card) return null;
+    if (isHelpQuery(query)) return "Help";
+    if (typedSection(query) === 2) return "Clipboard";
+    if (typedSection(query) === 3) return "Capture";
+    return /^\s*notes(\s|$)/i.test(query) ? "Notes" : null;
+  });
+  function goHome() {
+    query = "";
+    run("");
+    tick().then(() => input?.focus());
+  }
   function gotoSection(n: number) {
     if (card) return;
     if (panel) {
@@ -477,12 +490,7 @@
     pending = { generation, find, missing };
   }
   let settingsStart: "general" | "appearance" | "privacy" = $state("general");
-  // Settings opened by typing a command: one Esc then hides the bar.
-  let settingsTyped = $state(false);
-  // Set only while that Esc asks Settings to close.
-  let hideOnClose = false;
   function openSettings(start: typeof settingsStart) {
-    settingsTyped = false;
     disk = false;
     earlier = null;
     settingsStart = start;
@@ -595,10 +603,7 @@
   // Leaving Home drops the list; leaving Settings, the page it was asked for.
   $effect(() => {
     if (!home) earlier = null;
-    if (!panel) {
-      settingsStart = "general";
-      settingsTyped = false;
-    }
+    if (!panel) settingsStart = "general";
   });
   function remember(text: string) {
     if (text === savedSearch || !worthRemembering(text)) return;
@@ -608,6 +613,10 @@
   // Which action Enter starts for a result. The backend decides what is allowed;
   // this only names the action.
   const defaultAction = (i: Item | undefined): string | null => {
+    const own = ownAction(i);
+    return i && own ? mainAction(i, own, ui.paste_on_click) : own;
+  };
+  const ownAction = (i: Item | undefined): string | null => {
     if (!i) return null;
     if (i.source === "action") return "action";
     const plugin = i.metadata?.default_action;
@@ -708,11 +717,9 @@
     loadPinned();
     refreshStatus();
     loadHotkey();
+    // Home again, with its lists fresh.
+    run("");
     tick().then(() => input?.focus());
-    if (hideOnClose) {
-      cleared = true;
-      hideBar();
-    }
   }
 
   /** A query shortcut and a space: the longer text takes the box. Nothing is run. */
@@ -881,9 +888,7 @@
     if (!item || !action || card) return;
     const suggested = actionOf(item);
     if (suggested) {
-      const typed = query.trim() !== "";
       runAction(suggested);
-      if (typed && panel) settingsTyped = true;
       return;
     }
     // The words that found a window come from its title: they are not kept.
@@ -922,7 +927,7 @@
       skip = [];
       run(query);
     }
-    if (!done.was_undo && hidesBar(done.action_id, done.message, ui.hide_after_copy)) {
+    if (!done.was_undo && hidesBar(done.action_id, ui.hide_after_copy)) {
       card = null;
       cleared = true;
       hideBar();
@@ -931,8 +936,17 @@
       return;
     }
     if (!done.was_undo && isQuiet(done.action_id)) return;
-    const hides = !done.was_undo && verbOf(done.action_id) === "rename_files";
-    card = { phase: "result", ok: true, message: done.message, undoable: done.undoable, hides };
+    // The notice window says it, with Undo where there is one.
+    if (!done.was_undo && noticed(done.action_id, done.undoable)) {
+      card = null;
+      if (verbOf(done.action_id) === "rename_files") {
+        cleared = true;
+        hideBar();
+      }
+      tick().then(() => input?.focus());
+      return;
+    }
+    card = { phase: "result", ok: true, message: done.message, undoable: done.undoable };
   }
 
   async function confirm(e: Event) {
@@ -1059,6 +1073,13 @@
       await invoke("bar_painted", { id: event.payload.id });
     });
     const unlistenResults = listen<Update>("query-results", (e) => onUpdate(e.payload));
+    // The notice window's Undo button, pressed with the bar open or closed.
+    const unlistenUndone = listen("undone", () => {
+      loadLists();
+      if (query.trim() !== "" && !panel && !disk) run(query);
+      else if (!panel && !disk) loadHome();
+    });
+    const unlistenAsk = listen("undo-requested", () => startUndo());
     // Only report ready once the listeners exist, so no show event is lost.
     Promise.all([unlistenShown, unlistenResults]).then(() => invoke("frontend_ready"));
     // The status refresh runs only while the window is visible: no timer at all when hidden.
@@ -1078,6 +1099,8 @@
       document.removeEventListener("visibilitychange", syncPoll);
       unlistenShown.then((f) => f());
       unlistenResults.then((f) => f());
+      unlistenUndone.then((f) => f());
+      unlistenAsk.then((f) => f());
     };
   });
 
@@ -1174,10 +1197,8 @@
     if (panel) {
       if (e.key === "Escape") {
         e.preventDefault();
-        // A question on the page is answered first: then nothing is hidden.
-        hideOnClose = settingsTyped;
+        // A question on the page is answered first.
         leavePanel();
-        hideOnClose = false;
       }
       return;
     }
@@ -1190,13 +1211,6 @@
       if (e.key === "Escape") {
         e.preventDefault();
         dismissCard();
-      } else if (e.key === "Enter" && card.phase === "result" && card.hides) {
-        // A focused button (Undo, Close) keeps its own Enter.
-        if (e.repeat || e.target instanceof HTMLButtonElement) return;
-        e.preventDefault();
-        dismissCard();
-        cleared = true;
-        hideBar();
       }
       return;
     }
@@ -1267,7 +1281,9 @@
       case "Escape":
         e.preventDefault();
         remember(query);
-        if (pinned && query !== "") {
+        // From a list of its own (clips, notes, help), one step back first.
+        if (trail) goHome();
+        else if (pinned && query !== "") {
           // A pinned window stays: the first Esc clears the query, the next hides it.
           query = "";
           run("");
@@ -1494,6 +1510,7 @@
     answer_copy: "Copy",
     note_save: "Save",
     note_copy: "Copy",
+    note_paste: "Paste",
     note_delete: "Delete",
     clear_history: "Delete",
   };
@@ -1585,7 +1602,8 @@
       if (r) run = () => openMenu(rowMenu(row.item), r.left + 48, r.bottom - 8);
     } else if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
       // A focused button that is not a Home row keeps its own Enter.
-      const action = home || !(e.target instanceof HTMLButtonElement) ? keys.paste : undefined;
+      const other = shiftAction(keys, defaultAction(row.item))?.action;
+      const action = home || !(e.target instanceof HTMLButtonElement) ? other : undefined;
       if (action) run = () => doAction(action, row.item);
     } else if (ctrl && letter === "c" && e.shiftKey) {
       const action = keys.copyFile;
@@ -1818,7 +1836,6 @@
   }
   $effect(fitScreen);
 
-  const cardHides = $derived.by(() => card?.phase === "result" && !!card.hides);
   const hints = $derived(
     footerHints(view, {
       mode: ui.mode,
@@ -1827,8 +1844,8 @@
       picked: !!homeCur,
       path: PATHLIKE.test(query),
       clears: pinned && query !== "",
-      paste: !!cur && !!rowKeys(cur).paste && verbOf(defaultAction(cur) ?? "") === "copy_clip",
-      hides: view === "settings" ? settingsTyped : cardHides,
+      shift: cur ? shiftAction(rowKeys(cur), defaultAction(cur))?.label : null,
+      back: !!trail,
     }),
   );
 
@@ -2023,7 +2040,15 @@
       {#if showSetup}
         <!-- drawn above -->
       {:else if disk}
-        <div class="page glass diskpage"><Disk onclose={closeDisk} /></div>
+        <div class="page glass diskpage">
+          <Disk
+            onclose={closeDisk}
+            onhide={() => {
+              cleared = true;
+              hideBar();
+            }}
+          />
+        </div>
       {:else if panel}
         <div class="page glass"><Privacy bind:this={privacy} start={settingsStart} onclose={closePanel} onsetup={runSetupAgain} /></div>
       {:else if card?.phase === "confirm"}
@@ -2101,6 +2126,7 @@
         </section>
       {:else if showHelp}
         <div class="card glass">
+          <Trail path={["Home", "Help"]} onback={goHome} />
           <Help entries={helpList} words={ui.mode === "full"} bind:selected={helpSelected} onpick={pickHelp} ontoggle={() => (helpAdvanced = !helpAdvanced)} />
         </div>
       {:else if compact}
@@ -2120,6 +2146,7 @@
                       {#if n === 0 || homeEntries[n - 1].section !== r.section}
                         <div class="group label-caps">{r.section}</div>
                       {/if}
+                      <div class="rowwrap">
                       <Row
                         tag="button"
                         role="option"
@@ -2161,6 +2188,8 @@
                           {#if n === homeAt}{@render enterHint(openLabel(r.item))}{/if}
                         {/snippet}
                       </Row>
+                      {@render rowActs(r.item, n === homeAt)}
+                      </div>
                     </li>
                   {/each}
                 </ul>
@@ -2269,6 +2298,7 @@
       {:else}
         <div class="res" class:one={items.length === 0} in:fly={{ x: 16, duration: dur(120), delay: dur(50) }}>
           <div class="card glass listcard">
+            {#if trail}<Trail path={["Home", trail]} onback={goHome} />{/if}
             {#if offers.length > 0}
               <div class="filters" role="group" aria-label="Suggestions">
                 {#each offers as o, n (o.text)}
@@ -2355,6 +2385,7 @@
                     {#if !top && (i === 1 || groupOf(items[i - 1]) !== groupOf(item))}
                       <div class="group label-caps">{groupOf(item)}</div>
                     {/if}
+                    <div class="rowwrap">
                     <Row
                       role="option"
                       tabindex={-1}
@@ -2427,6 +2458,8 @@
                         {#if i === selected && defaultAction(item)}{@render enterHint(openLabel(item))}{/if}
                       {/snippet}
                     </Row>
+                    {@render rowActs(item, i === selected)}
+                    </div>
                   </li>
                 {/each}
                 {#if understood}{@render exactRow()}{/if}
@@ -2479,10 +2512,9 @@
                     >{openLabel(cur)}{#if rowKeys(cur).paste}&nbsp;<kbd>Enter</kbd>{/if}</button
                   >
                 {/if}
-                {#if rowKeys(cur).paste && verbOf(defaultAction(cur) ?? "") === "copy_clip"}
-                  <button class="btn small" onclick={() => doAction(rowKeys(cur).paste ?? "", cur)}>Paste <kbd>Shift+Enter</kbd></button>
-                {:else if kindName(cur.kind) === "clipboard" && verbOf(defaultAction(cur) ?? "") !== "copy_clip"}
-                  <button class="btn small" onclick={() => doAction(rowKeys(cur).copy?.action ?? "", cur)}>Copy <kbd>Ctrl+C</kbd></button>
+                {#if shiftAction(rowKeys(cur), defaultAction(cur))}
+                  {@const other = shiftAction(rowKeys(cur), defaultAction(cur))!}
+                  <button class="btn small" onclick={() => doAction(other.action, cur)}>{other.label} <kbd>Shift+Enter</kbd></button>
                 {/if}
                 {#if isFile(cur)}
                   <button class="btn small" title="Ctrl+Enter or Ctrl+E" onclick={() => doAction("reveal", cur)}>Show in folder</button>
@@ -2555,7 +2587,60 @@
   {/if}
 </main>
 
+<!-- Laid over the row's right end: nothing shifts and the row keeps its height.
+     Keys stay with the search box; Right and right-click offer the same. -->
+{#snippet rowActs(item: Item, selected: boolean)}
+  {@const buttons = rowButtons(item, pinnedIds.has(item.id))}
+  {#if buttons.length > 0}
+    <span class="rowacts" class:on={selected}>
+      {#each buttons as b (b.icon)}
+        <button
+          type="button"
+          tabindex={-1}
+          title={b.label}
+          aria-label={b.label}
+          onmousedown={(e) => e.preventDefault()}
+          onclick={() => (b.action ? doAction(b.action, item) : activate(item))}><Icon name={b.icon} /></button
+        >
+      {/each}
+    </span>
+  {/if}
+{/snippet}
+
 <style>
+  .rowwrap {
+    position: relative;
+  }
+  .rowacts {
+    position: absolute;
+    top: 50%;
+    right: var(--sp-2);
+    transform: translateY(-50%);
+    display: none;
+    gap: 2px;
+    background: var(--base);
+    border-radius: var(--r-md);
+  }
+  .rowwrap:hover .rowacts,
+  .rowacts.on {
+    display: flex;
+  }
+  .rowacts button {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-md);
+    background: none;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .rowacts button:hover {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+  }
   /* No outer card: no background, border, radius or shadow on the wrapper. */
   .bar {
     width: 100%;

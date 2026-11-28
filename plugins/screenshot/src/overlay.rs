@@ -7,32 +7,35 @@ use std::ptr::null_mut;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use windows::core::w;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::core::BOOL;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 #[cfg(feature = "review")]
 use windows::Win32::Graphics::Gdi::UpdateWindow;
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, EndPaint,
-    InvalidateRect, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HDC, PAINTSTRUCT,
-    SRCCOPY,
+    EnumDisplayMonitors, GetMonitorInfoW, InvalidateRect, SelectObject, BITMAPINFO,
+    BITMAPINFOHEADER, DIB_RGB_COLORS, HDC, HMONITOR, MONITORINFO, PAINTSTRUCT, SRCCOPY,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, LoadCursorW,
     PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow, ShowWindow, TranslateMessage,
-    CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS,
-    IDC_SIZENWSE, IDC_SIZEWE, MSG, SW_SHOW, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, IDC_ARROW, IDC_CROSS, IDC_SIZEALL, IDC_SIZENESW,
+    IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, SW_SHOW, WM_CHAR, WM_DESTROY, WM_KEYDOWN,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONDOWN,
+    WM_SETCURSOR, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::annotation::{
-    draw_system_text_rgba, fill_rounded_rect_rgba, measure_system_text, stroke_rounded_rect_rgba,
-    Color,
+    draw_system_text_rgba, fill_rounded_rect_rgba, measure_system_text, render_annotation,
+    stroke_rounded_rect_rgba, Annotation, Color,
 };
 use crate::capture::{capture_virtual_desktop, enable_per_monitor_dpi_v2, CaptureResult};
 use crate::geometry::{PointI, RectI};
 use crate::image::ImageBuffer;
+use crate::marks::{self, Button, Marks, Monitor};
 
 static LAST_USED_MODE: AtomicU8 = AtomicU8::new(0);
 
@@ -90,7 +93,9 @@ impl Destination {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayAction {
+    /// The marked picture is on the clipboard already.
     Copy,
+    Save,
     Edit,
     Record,
     Scroll,
@@ -163,18 +168,160 @@ impl Default for SelectionState {
 }
 
 pub struct OverlaySession {
+    /// The screen as it was when the overlay opened. Held only in memory, and
+    /// dropped with the session.
     pub capture: CaptureResult,
     pub state: SelectionState,
+    pub marks: Marks,
+    /// In overlay pixels; empty means the whole overlay is one screen.
+    pub monitors: Vec<Monitor>,
+}
+
+impl OverlaySession {
+    fn monitor(&self, sel: RectI) -> Monitor {
+        let whole = Monitor {
+            rect: RectI::new(
+                0,
+                0,
+                self.capture.bounds.width(),
+                self.capture.bounds.height(),
+            ),
+            scale: self.state.dpi_scale,
+        };
+        marks::monitor_for(&self.monitors, sel, whole)
+    }
+
+    /// Drawing tools are offered for screenshots only.
+    fn draws(&self) -> bool {
+        self.state.capture_mode == CaptureMode::Screenshot
+    }
+
+    /// The toolbar beside the box, if there is a box big enough for one.
+    fn toolbar(&self) -> Option<RectI> {
+        let sel = self
+            .state
+            .rect
+            .filter(|r| r.width() >= 16 && r.height() >= 16)?;
+        Some(marks::toolbar_rect(sel, self.monitor(sel), self.draws()))
+    }
+
+    /// Ends the session with `action`, if there is a box to act on.
+    fn finish(&mut self, action: OverlayAction) -> bool {
+        let big = self
+            .state
+            .rect
+            .is_some_and(|r| r.width() >= 4 && r.height() >= 4);
+        if big {
+            self.marks.finish_text(&self.capture.image);
+            self.state.chosen_action = Some(action);
+            self.state.confirmed = true;
+        }
+        big
+    }
+
+    /// What Enter and a double-click do in the mode chosen above.
+    fn confirm(&mut self) -> bool {
+        let action = default_action(self.state.capture_mode);
+        self.finish(action)
+    }
+
+    /// Runs a toolbar button. True if the overlay is done.
+    fn press_button(&mut self, button: Button) -> bool {
+        self.marks.finish_text(&self.capture.image);
+        match button {
+            Button::Tool(tool) => self.marks.pick(tool),
+            Button::Undo => self.marks.undo(&self.capture.image),
+            Button::Redo => self.marks.redo(&self.capture.image),
+            Button::Copy => return copy_selection(self),
+            Button::Save => return self.finish(OverlayAction::Save),
+            Button::Editor => return self.finish(OverlayAction::Edit),
+            Button::Record => return self.finish(OverlayAction::Record),
+            Button::Scroll => return self.finish(OverlayAction::Scroll),
+            Button::ReadText => return self.finish(OverlayAction::Text),
+            Button::Close => {
+                self.state.cancelled = true;
+                return true;
+            }
+        }
+        false
+    }
+}
+
+fn default_action(mode: CaptureMode) -> OverlayAction {
+    match mode {
+        CaptureMode::Screenshot => OverlayAction::Edit,
+        CaptureMode::RecordVideo => OverlayAction::Record,
+        CaptureMode::ScrollCapture => OverlayAction::Scroll,
+        CaptureMode::TextExtract => OverlayAction::Text,
+    }
+}
+
+/// Close enough to an edge of the box to move it while a tool is in hand.
+fn on_border(r: RectI, p: PointI, tolerance: i32) -> bool {
+    let near = RectI::new(
+        r.left - tolerance,
+        r.top - tolerance,
+        r.right + tolerance,
+        r.bottom + tolerance,
+    );
+    let core = RectI::new(
+        r.left + tolerance,
+        r.top + tolerance,
+        r.right - tolerance,
+        r.bottom - tolerance,
+    );
+    near.contains(p) && !core.contains(p)
+}
+
+/// The screens, in the overlay's own pixels.
+fn monitors_in(bounds: RectI) -> Vec<Monitor> {
+    unsafe extern "system" fn each(monitor: HMONITOR, _: HDC, _: *mut RECT, list: LPARAM) -> BOOL {
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(monitor, &mut info).as_bool() {
+            let (mut x, mut y) = (96u32, 96u32);
+            let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y);
+            let r = info.rcMonitor;
+            // The pointer is the vector passed below, which outlives the call.
+            let list = &mut *(list.0 as *mut Vec<Monitor>);
+            list.push(Monitor {
+                rect: RectI::new(r.left, r.top, r.right, r.bottom),
+                scale: x as f32 / 96.0,
+            });
+        }
+        true.into()
+    }
+    let mut list: Vec<Monitor> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(
+            None,
+            None,
+            Some(each),
+            LPARAM(std::ptr::from_mut(&mut list) as isize),
+        );
+    }
+    for m in &mut list {
+        let r = m.rect;
+        m.rect = RectI::new(
+            r.left - bounds.left,
+            r.top - bounds.top,
+            r.right - bounds.left,
+            r.bottom - bounds.top,
+        );
+    }
+    list
 }
 
 thread_local! {
     static SESSION: RefCell<Option<OverlaySession>> = const { RefCell::new(None) };
 }
 
-/// Copies the selection and ends the session as cancelled, so no caller goes on
-/// to edit, record, scroll or read text. False (the overlay stays) without a
-/// selection or when the clipboard refuses.
+/// Copies the marked selection and ends the session. False (the overlay stays)
+/// without a selection or when the clipboard refuses.
 fn copy_selection(sess: &mut OverlaySession) -> bool {
+    sess.marks.finish_text(&sess.capture.image);
     let Some(r) = sess
         .state
         .rect
@@ -183,12 +330,11 @@ fn copy_selection(sess: &mut OverlaySession) -> bool {
         return false;
     };
     let copied = sess
-        .capture
-        .image
+        .marks
+        .picture(&sess.capture.image)
         .crop(r)
         .is_ok_and(|img| crate::clipboard::copy_to_clipboard(&img).is_ok());
-    sess.state.cancelled |= copied;
-    copied
+    copied && sess.finish(OverlayAction::Copy)
 }
 
 fn lparam_to_point(lp: LPARAM) -> PointI {
@@ -278,20 +424,154 @@ pub fn get_top_bar_rect(screen_w: i32, scale: f32) -> RectI {
 }
 
 pub fn get_selection_toolbar_rect(r: RectI, screen_w: i32, screen_h: i32, scale: f32) -> RectI {
-    let tb_w = (360.0 * scale).round() as i32;
-    let tb_h = (36.0 * scale).round() as i32;
-    let tb_x = ((r.left + r.right - tb_w) / 2).clamp(10, (screen_w - tb_w - 10).max(10));
-    let gap = (16.0 * scale).round() as i32;
-
-    let tb_y = if r.bottom + gap + tb_h < screen_h - 10 {
-        r.bottom + gap
-    } else if r.top - gap - tb_h > (56.0 * scale).round() as i32 {
-        r.top - gap - tb_h
-    } else {
-        (screen_h - tb_h - 14).max(10)
+    let screen = Monitor {
+        rect: RectI::new(0, 0, screen_w, screen_h),
+        scale,
     };
+    marks::toolbar_rect(r, screen, true)
+}
 
-    RectI::new(tb_x, tb_y, tb_x + tb_w, tb_y + tb_h)
+/// A press of the left button, on a bar, on the box or on the picture.
+unsafe fn press(hwnd: HWND, p: PointI) -> LRESULT {
+    let mut handled_ui = false;
+    let mut should_close = false;
+
+    SESSION.with(|s| {
+        if let Some(sess) = s.borrow_mut().as_mut() {
+            let scale = sess.state.dpi_scale;
+            let scr_w = sess.capture.bounds.width();
+
+            // 1. Hit test Top Bar
+            let top_bar = get_top_bar_rect(scr_w, scale);
+            if top_bar.contains(p) {
+                handled_ui = true;
+                let bx = top_bar.left;
+                let by = top_bar.top;
+
+                let btn_shot = RectI::new(
+                    bx + (6.0 * scale).round() as i32,
+                    by + (6.0 * scale).round() as i32,
+                    bx + (80.0 * scale).round() as i32,
+                    by + (36.0 * scale).round() as i32,
+                );
+                let btn_rec = RectI::new(
+                    bx + (84.0 * scale).round() as i32,
+                    by + (6.0 * scale).round() as i32,
+                    bx + (166.0 * scale).round() as i32,
+                    by + (36.0 * scale).round() as i32,
+                );
+                let btn_scroll = RectI::new(
+                    bx + (170.0 * scale).round() as i32,
+                    by + (6.0 * scale).round() as i32,
+                    bx + (248.0 * scale).round() as i32,
+                    by + (36.0 * scale).round() as i32,
+                );
+                let btn_text = RectI::new(
+                    bx + (252.0 * scale).round() as i32,
+                    by + (6.0 * scale).round() as i32,
+                    bx + (324.0 * scale).round() as i32,
+                    by + (36.0 * scale).round() as i32,
+                );
+                let btn_timer = RectI::new(
+                    bx + (336.0 * scale).round() as i32,
+                    by + (6.0 * scale).round() as i32,
+                    bx + (384.0 * scale).round() as i32,
+                    by + (36.0 * scale).round() as i32,
+                );
+                let btn_cursor = RectI::new(
+                    bx + (388.0 * scale).round() as i32,
+                    by + (6.0 * scale).round() as i32,
+                    bx + (442.0 * scale).round() as i32,
+                    by + (36.0 * scale).round() as i32,
+                );
+                let btn_dest = RectI::new(
+                    bx + (446.0 * scale).round() as i32,
+                    by + (6.0 * scale).round() as i32,
+                    bx + (534.0 * scale).round() as i32,
+                    by + (36.0 * scale).round() as i32,
+                );
+                let btn_close = RectI::new(
+                    bx + (538.0 * scale).round() as i32,
+                    by + (6.0 * scale).round() as i32,
+                    bx + (562.0 * scale).round() as i32,
+                    by + (36.0 * scale).round() as i32,
+                );
+
+                if btn_shot.contains(p) {
+                    sess.state.capture_mode = CaptureMode::Screenshot;
+                    LAST_USED_MODE.store(0, Ordering::Release);
+                } else if btn_rec.contains(p) {
+                    sess.state.capture_mode = CaptureMode::RecordVideo;
+                    LAST_USED_MODE.store(1, Ordering::Release);
+                } else if btn_scroll.contains(p) {
+                    sess.state.capture_mode = CaptureMode::ScrollCapture;
+                    LAST_USED_MODE.store(2, Ordering::Release);
+                } else if btn_text.contains(p) {
+                    sess.state.capture_mode = CaptureMode::TextExtract;
+                    LAST_USED_MODE.store(3, Ordering::Release);
+                } else if btn_timer.contains(p) {
+                    sess.state.delay_timer = sess.state.delay_timer.next();
+                } else if btn_cursor.contains(p) {
+                    sess.state.include_cursor = !sess.state.include_cursor;
+                } else if btn_dest.contains(p) {
+                    sess.state.destination = sess.state.destination.next();
+                } else if btn_close.contains(p) {
+                    sess.state.cancelled = true;
+                    should_close = true;
+                }
+            }
+
+            // 2. Hit test the toolbar beside the box
+            if !handled_ui {
+                if let Some(tb) = sess.toolbar().filter(|tb| tb.contains(p)) {
+                    handled_ui = true;
+                    let hit = marks::buttons(tb, sess.draws())
+                        .into_iter()
+                        .find(|(_, _, b)| b.contains(p));
+                    if let Some((button, _, _)) = hit {
+                        should_close = sess.press_button(button);
+                    }
+                }
+            }
+
+            if !handled_ui {
+                sess.marks.finish_text(&sess.capture.image);
+                let tol = get_selection_handle_size(scale);
+                if let Some(r) = sess.state.rect {
+                    let handles = get_selection_handles(r);
+                    let drawing = sess.draws() && sess.marks.tool.is_some();
+                    if let Some(h_idx) = hit_test_handle(&handles, p, tol) {
+                        sess.state.mode = OverlayMode::Resizing(h_idx);
+                        sess.state.drag_start = p;
+                    } else if drawing && r.contains(p) && !on_border(r, p, tol) {
+                        sess.marks.press(p, r, sess.monitor(r).scale);
+                    } else if r.contains(p) || (drawing && on_border(r, p, tol)) {
+                        sess.state.mode =
+                            OverlayMode::Moving(PointI::new(p.x - r.left, p.y - r.top));
+                        sess.state.drag_start = p;
+                    } else {
+                        sess.state.rect = None;
+                        sess.state.mode = OverlayMode::Selecting;
+                        sess.state.drag_start = p;
+                    }
+                } else {
+                    sess.state.mode = OverlayMode::Selecting;
+                    sess.state.drag_start = p;
+                }
+            }
+            sess.state.current_cursor = p;
+        }
+    });
+
+    if should_close {
+        PostQuitMessage(0);
+        return LRESULT(0);
+    }
+    if !handled_ui {
+        let _ = SetCapture(hwnd);
+    }
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    LRESULT(0)
 }
 
 unsafe extern "system" fn overlay_wndproc(
@@ -323,7 +603,16 @@ unsafe extern "system" fn overlay_wndproc(
                                 SetCursor(Some(c));
                                 cursor_handled = true;
                             }
-                        } else if r.contains(cur) {
+                        } else if sess.toolbar().is_some_and(|tb| tb.contains(cur)) {
+                            if let Ok(c) = LoadCursorW(None, IDC_ARROW) {
+                                SetCursor(Some(c));
+                                cursor_handled = true;
+                            }
+                        } else if (sess.marks.tool.is_none()
+                            || !sess.draws()
+                            || on_border(r, cur, tol))
+                            && (r.contains(cur) || sess.marks.tool.is_some())
+                        {
                             if let Ok(c) = LoadCursorW(None, IDC_SIZEALL) {
                                 SetCursor(Some(c));
                                 cursor_handled = true;
@@ -340,195 +629,15 @@ unsafe extern "system" fn overlay_wndproc(
             }
             LRESULT(1)
         }
-        WM_LBUTTONDOWN => {
-            let p = lparam_to_point(lparam);
-            let mut handled_ui = false;
-            let mut should_close = false;
-
+        WM_LBUTTONDOWN => press(hwnd, lparam_to_point(lparam)),
+        WM_CHAR => {
             SESSION.with(|s| {
                 if let Some(sess) = s.borrow_mut().as_mut() {
-                    let scale = sess.state.dpi_scale;
-                    let scr_w = sess.capture.bounds.width();
-                    let scr_h = sess.capture.bounds.height();
-
-                    // 1. Hit test Top Bar
-                    let top_bar = get_top_bar_rect(scr_w, scale);
-                    if top_bar.contains(p) {
-                        handled_ui = true;
-                        let bx = top_bar.left;
-                        let by = top_bar.top;
-
-                        let btn_shot = RectI::new(
-                            bx + (6.0 * scale).round() as i32,
-                            by + (6.0 * scale).round() as i32,
-                            bx + (80.0 * scale).round() as i32,
-                            by + (36.0 * scale).round() as i32,
-                        );
-                        let btn_rec = RectI::new(
-                            bx + (84.0 * scale).round() as i32,
-                            by + (6.0 * scale).round() as i32,
-                            bx + (166.0 * scale).round() as i32,
-                            by + (36.0 * scale).round() as i32,
-                        );
-                        let btn_scroll = RectI::new(
-                            bx + (170.0 * scale).round() as i32,
-                            by + (6.0 * scale).round() as i32,
-                            bx + (248.0 * scale).round() as i32,
-                            by + (36.0 * scale).round() as i32,
-                        );
-                        let btn_text = RectI::new(
-                            bx + (252.0 * scale).round() as i32,
-                            by + (6.0 * scale).round() as i32,
-                            bx + (324.0 * scale).round() as i32,
-                            by + (36.0 * scale).round() as i32,
-                        );
-                        let btn_timer = RectI::new(
-                            bx + (336.0 * scale).round() as i32,
-                            by + (6.0 * scale).round() as i32,
-                            bx + (384.0 * scale).round() as i32,
-                            by + (36.0 * scale).round() as i32,
-                        );
-                        let btn_cursor = RectI::new(
-                            bx + (388.0 * scale).round() as i32,
-                            by + (6.0 * scale).round() as i32,
-                            bx + (442.0 * scale).round() as i32,
-                            by + (36.0 * scale).round() as i32,
-                        );
-                        let btn_dest = RectI::new(
-                            bx + (446.0 * scale).round() as i32,
-                            by + (6.0 * scale).round() as i32,
-                            bx + (534.0 * scale).round() as i32,
-                            by + (36.0 * scale).round() as i32,
-                        );
-                        let btn_close = RectI::new(
-                            bx + (538.0 * scale).round() as i32,
-                            by + (6.0 * scale).round() as i32,
-                            bx + (562.0 * scale).round() as i32,
-                            by + (36.0 * scale).round() as i32,
-                        );
-
-                        if btn_shot.contains(p) {
-                            sess.state.capture_mode = CaptureMode::Screenshot;
-                            LAST_USED_MODE.store(0, Ordering::Release);
-                        } else if btn_rec.contains(p) {
-                            sess.state.capture_mode = CaptureMode::RecordVideo;
-                            LAST_USED_MODE.store(1, Ordering::Release);
-                        } else if btn_scroll.contains(p) {
-                            sess.state.capture_mode = CaptureMode::ScrollCapture;
-                            LAST_USED_MODE.store(2, Ordering::Release);
-                        } else if btn_text.contains(p) {
-                            sess.state.capture_mode = CaptureMode::TextExtract;
-                            LAST_USED_MODE.store(3, Ordering::Release);
-                        } else if btn_timer.contains(p) {
-                            sess.state.delay_timer = sess.state.delay_timer.next();
-                        } else if btn_cursor.contains(p) {
-                            sess.state.include_cursor = !sess.state.include_cursor;
-                        } else if btn_dest.contains(p) {
-                            sess.state.destination = sess.state.destination.next();
-                        } else if btn_close.contains(p) {
-                            sess.state.cancelled = true;
-                            should_close = true;
-                        }
+                    if let Some(c) = char::from_u32(wparam.0 as u32) {
+                        sess.marks.type_char(c);
                     }
-
-                    // 2. Hit test Selection Toolbar (if selection is present)
-                    if !handled_ui {
-                        if let Some(r) = sess.state.rect {
-                            if r.width() >= 16 && r.height() >= 16 {
-                                let tb = get_selection_toolbar_rect(r, scr_w, scr_h, scale);
-                                if tb.contains(p) {
-                                    handled_ui = true;
-                                    let tbx = tb.left;
-                                    let tby = tb.top;
-                                    let btn_copy = RectI::new(
-                                        tbx + (4.0 * scale).round() as i32,
-                                        tby + (4.0 * scale).round() as i32,
-                                        tbx + (72.0 * scale).round() as i32,
-                                        tby + (32.0 * scale).round() as i32,
-                                    );
-                                    let btn_edit = RectI::new(
-                                        tbx + (74.0 * scale).round() as i32,
-                                        tby + (4.0 * scale).round() as i32,
-                                        tbx + (142.0 * scale).round() as i32,
-                                        tby + (32.0 * scale).round() as i32,
-                                    );
-                                    let btn_rec = RectI::new(
-                                        tbx + (144.0 * scale).round() as i32,
-                                        tby + (4.0 * scale).round() as i32,
-                                        tbx + (212.0 * scale).round() as i32,
-                                        tby + (32.0 * scale).round() as i32,
-                                    );
-                                    let btn_scroll = RectI::new(
-                                        tbx + (214.0 * scale).round() as i32,
-                                        tby + (4.0 * scale).round() as i32,
-                                        tbx + (282.0 * scale).round() as i32,
-                                        tby + (32.0 * scale).round() as i32,
-                                    );
-                                    let btn_text = RectI::new(
-                                        tbx + (284.0 * scale).round() as i32,
-                                        tby + (4.0 * scale).round() as i32,
-                                        tbx + (352.0 * scale).round() as i32,
-                                        tby + (32.0 * scale).round() as i32,
-                                    );
-
-                                    if btn_copy.contains(p) {
-                                        sess.state.chosen_action = Some(OverlayAction::Copy);
-                                        sess.state.confirmed = true;
-                                        should_close = true;
-                                    } else if btn_edit.contains(p) {
-                                        sess.state.chosen_action = Some(OverlayAction::Edit);
-                                        sess.state.confirmed = true;
-                                        should_close = true;
-                                    } else if btn_rec.contains(p) {
-                                        sess.state.chosen_action = Some(OverlayAction::Record);
-                                        sess.state.confirmed = true;
-                                        should_close = true;
-                                    } else if btn_scroll.contains(p) {
-                                        sess.state.chosen_action = Some(OverlayAction::Scroll);
-                                        sess.state.confirmed = true;
-                                        should_close = true;
-                                    } else if btn_text.contains(p) {
-                                        sess.state.chosen_action = Some(OverlayAction::Text);
-                                        sess.state.confirmed = true;
-                                        should_close = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if !handled_ui {
-                        let tol = get_selection_handle_size(scale);
-                        if let Some(r) = sess.state.rect {
-                            let handles = get_selection_handles(r);
-                            if let Some(h_idx) = hit_test_handle(&handles, p, tol) {
-                                sess.state.mode = OverlayMode::Resizing(h_idx);
-                                sess.state.drag_start = p;
-                            } else if r.contains(p) {
-                                sess.state.mode =
-                                    OverlayMode::Moving(PointI::new(p.x - r.left, p.y - r.top));
-                                sess.state.drag_start = p;
-                            } else {
-                                sess.state.rect = None;
-                                sess.state.mode = OverlayMode::Selecting;
-                                sess.state.drag_start = p;
-                            }
-                        } else {
-                            sess.state.mode = OverlayMode::Selecting;
-                            sess.state.drag_start = p;
-                        }
-                    }
-                    sess.state.current_cursor = p;
                 }
             });
-
-            if should_close {
-                PostQuitMessage(0);
-                return LRESULT(0);
-            }
-            if !handled_ui {
-                let _ = SetCapture(hwnd);
-            }
             let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
@@ -538,6 +647,12 @@ unsafe extern "system" fn overlay_wndproc(
             SESSION.with(|s| {
                 if let Some(sess) = s.borrow_mut().as_mut() {
                     sess.state.current_cursor = p;
+                    if sess.marks.drawing() {
+                        if let Some(r) = sess.state.rect {
+                            sess.marks.drag(p, r);
+                            need_redraw = true;
+                        }
+                    }
                     match sess.state.mode {
                         OverlayMode::Selecting => {
                             sess.state.rect = Some(RectI::from_points(sess.state.drag_start, p));
@@ -585,30 +700,31 @@ unsafe extern "system" fn overlay_wndproc(
                         sess.state.rect = Some(r);
                     }
                     sess.state.mode = OverlayMode::Idle;
+                    sess.marks.release(&sess.capture.image);
                 }
             });
             let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
         WM_LBUTTONDBLCLK => {
+            let p = lparam_to_point(lparam);
+            // Two quick clicks on a button or with a tool are two presses.
+            let mut again = false;
             let mut should_close = false;
             SESSION.with(|s| {
                 if let Some(sess) = s.borrow_mut().as_mut() {
-                    if let Some(r) = sess.state.rect {
-                        if r.width() >= 4 && r.height() >= 4 {
-                            let action = match sess.state.capture_mode {
-                                CaptureMode::Screenshot => OverlayAction::Edit,
-                                CaptureMode::RecordVideo => OverlayAction::Record,
-                                CaptureMode::ScrollCapture => OverlayAction::Scroll,
-                                CaptureMode::TextExtract => OverlayAction::Text,
-                            };
-                            sess.state.chosen_action = Some(action);
-                            sess.state.confirmed = true;
-                            should_close = true;
-                        }
+                    let scr_w = sess.capture.bounds.width();
+                    again = (sess.draws() && sess.marks.tool.is_some())
+                        || sess.toolbar().is_some_and(|tb| tb.contains(p))
+                        || get_top_bar_rect(scr_w, sess.state.dpi_scale).contains(p);
+                    if !again {
+                        should_close = sess.confirm();
                     }
                 }
             });
+            if again {
+                return press(hwnd, p);
+            }
             if should_close {
                 PostQuitMessage(0);
             }
@@ -632,30 +748,38 @@ unsafe extern "system" fn overlay_wndproc(
 
             SESSION.with(|s| {
                 if let Some(sess) = s.borrow_mut().as_mut() {
+                    if sess.marks.typing() {
+                        // Letters go into the text; Enter keeps it, Esc drops it.
+                        need_redraw = true;
+                        match key {
+                            0x43 if ctrl => should_close = copy_selection(sess),
+                            0x0D => sess.marks.finish_text(&sess.capture.image),
+                            0x1B => sess.marks.drop_text(),
+                            _ => {}
+                        }
+                        return;
+                    }
                     match key {
                         // Ctrl+C copies the selection and closes
                         0x43 if ctrl => should_close = copy_selection(sess),
+                        // Ctrl+S saves it and closes
+                        0x53 if ctrl => should_close = sess.finish(OverlayAction::Save),
+                        // Ctrl+Z and Ctrl+Y undo and redo a mark
+                        0x5A if ctrl => {
+                            sess.marks.undo(&sess.capture.image);
+                            need_redraw = true;
+                        }
+                        0x59 if ctrl => {
+                            sess.marks.redo(&sess.capture.image);
+                            need_redraw = true;
+                        }
                         0x1B => {
                             // Esc key cancels capture
                             sess.state.cancelled = true;
                             should_close = true;
                         }
-                        0x0D => {
-                            // Enter key confirms selection
-                            if let Some(r) = sess.state.rect {
-                                if r.width() >= 4 && r.height() >= 4 {
-                                    let action = match sess.state.capture_mode {
-                                        CaptureMode::Screenshot => OverlayAction::Edit,
-                                        CaptureMode::RecordVideo => OverlayAction::Record,
-                                        CaptureMode::ScrollCapture => OverlayAction::Scroll,
-                                        CaptureMode::TextExtract => OverlayAction::Text,
-                                    };
-                                    sess.state.chosen_action = Some(action);
-                                    sess.state.confirmed = true;
-                                    should_close = true;
-                                }
-                            }
-                        }
+                        // Enter confirms: for a screenshot, in the full editor
+                        0x0D => should_close = sess.confirm(),
                         // S / s
                         0x53 => {
                             sess.state.capture_mode = CaptureMode::Screenshot;
@@ -724,8 +848,9 @@ fn paint_overlay(hwnd: HWND, hdc: HDC) {
             get_window_dpi_scale(hwnd)
         };
 
-        let display_img = render_overlay_frame_scaled_opts(
-            &sess.capture.image,
+        let draft = sess.marks.draft();
+        let display_img = render_frame(
+            sess.marks.picture(&sess.capture.image),
             sess.state.rect,
             sess.state.current_cursor,
             scale,
@@ -735,6 +860,8 @@ fn paint_overlay(hwnd: HWND, hdc: HDC) {
             sess.state.delay_timer,
             sess.state.include_cursor,
             sess.state.destination,
+            draft.as_ref(),
+            Some(sess),
         );
 
         // Present display_img to window DC via DIB Section
@@ -786,8 +913,10 @@ fn paint_overlay(hwnd: HWND, hdc: HDC) {
 pub fn select_capture_session() -> Option<CaptureOverlayOutcome> {
     enable_per_monitor_dpi_v2();
 
+    // The picture is frozen now, before the overlay is on screen.
     let capture_res = capture_virtual_desktop().ok()?;
     let bounds = capture_res.bounds;
+    let monitors = monitors_in(bounds);
 
     SESSION.with(|s| {
         *s.borrow_mut() = Some(OverlaySession {
@@ -796,6 +925,8 @@ pub fn select_capture_session() -> Option<CaptureOverlayOutcome> {
                 dpi_scale: 1.0,
                 ..Default::default()
             },
+            marks: Marks::default(),
+            monitors,
         });
     });
 
@@ -852,24 +983,25 @@ pub fn select_capture_session() -> Option<CaptureOverlayOutcome> {
     if sess.state.confirmed && !sess.state.cancelled {
         if let Some(sel) = sess.state.rect {
             if sel.width() >= 4 && sel.height() >= 4 {
-                let cropped = sess.capture.image.crop(sel).ok()?;
-                let is_drm_black = cropped.is_black(0.999);
+                let action = sess
+                    .state
+                    .chosen_action
+                    .unwrap_or(default_action(sess.state.capture_mode));
+                let raw = sess.capture.image.crop(sel).ok()?;
+                let is_drm_black = raw.is_black(0.999);
+                // Marks go with the picture, not into a recording or a text read.
+                let cropped = match action {
+                    OverlayAction::Copy | OverlayAction::Save | OverlayAction::Edit => {
+                        sess.marks.picture(&sess.capture.image).crop(sel).ok()?
+                    }
+                    _ => raw,
+                };
                 let screen_sel = RectI::new(
                     bounds.left + sel.left,
                     bounds.top + sel.top,
                     bounds.left + sel.right,
                     bounds.top + sel.bottom,
                 );
-                let action = sess
-                    .state
-                    .chosen_action
-                    .unwrap_or(match sess.state.capture_mode {
-                        CaptureMode::Screenshot => OverlayAction::Edit,
-                        CaptureMode::RecordVideo => OverlayAction::Record,
-                        CaptureMode::ScrollCapture => OverlayAction::Scroll,
-                        CaptureMode::TextExtract => OverlayAction::Text,
-                    });
-
                 return Some(CaptureOverlayOutcome {
                     action,
                     screen_rect: screen_sel,
@@ -957,6 +1089,8 @@ pub fn open_real_overlay_for_demo_scaled(
         *s.borrow_mut() = Some(OverlaySession {
             capture: capture_res,
             state,
+            marks: Marks::default(),
+            monitors: Vec::new(),
         });
     });
 
@@ -1159,46 +1293,34 @@ pub fn draw_top_bar(
 }
 
 pub fn draw_selection_toolbar(img: &mut ImageBuffer, r: RectI, scale: f32) {
-    let scr_w = img.width as i32;
-    let scr_h = img.height as i32;
-    let tb_rect = get_selection_toolbar_rect(r, scr_w, scr_h, scale);
+    let toolbar = get_selection_toolbar_rect(r, img.width as i32, img.height as i32, scale);
+    draw_toolbar(img, toolbar, true, &Marks::default());
+}
 
+fn draw_toolbar(img: &mut ImageBuffer, toolbar: RectI, draws: bool, held: &Marks) {
+    let scale = toolbar.width() as f32 / 448.0;
     let radius = (6.0 * scale).round() as i32;
-    fill_rounded_rect_rgba(img, tb_rect, radius, Color::rgb(20, 23, 28));
-    stroke_rounded_rect_rgba(img, tb_rect, radius, Color::rgb(45, 52, 64));
+    fill_rounded_rect_rgba(img, toolbar, radius, Color::rgb(20, 23, 28));
+    stroke_rounded_rect_rgba(img, toolbar, radius, Color::rgb(45, 52, 64));
 
-    let tbx = tb_rect.left;
-    let tby = tb_rect.top;
     let btn_radius = (4.0 * scale).round() as i32;
-    let font_size = (10.0 * scale).round().max(10.0) as u32;
-
-    let buttons = [
-        ("📋 Copy", 4.0, 72.0),
-        ("✏ Edit", 74.0, 142.0),
-        ("⏺ Record", 144.0, 212.0),
-        ("📜 Scroll", 214.0, 282.0),
-        ("🔤 Text", 284.0, 352.0),
-    ];
-
-    for (label, l_off, r_off) in buttons {
-        let b_rect = RectI::new(
-            tbx + (l_off * scale).round() as i32,
-            tby + (4.0 * scale).round() as i32,
-            tbx + (r_off * scale).round() as i32,
-            tby + (32.0 * scale).round() as i32,
-        );
-        fill_rounded_rect_rgba(img, b_rect, btn_radius, Color::rgb(30, 35, 43));
-        let (tw, th) = measure_system_text(label, font_size, false);
-        let tx = b_rect.left + (b_rect.width() - tw) / 2;
-        let ty = b_rect.top + (b_rect.height() - th) / 2;
-        draw_system_text_rgba(
-            img,
-            PointI::new(tx, ty),
-            label,
-            Color::rgb(230, 233, 238),
-            font_size,
-            true,
-        );
+    let font_size = (11.0 * scale).round().max(10.0) as u32;
+    for (button, label, rect) in marks::buttons(toolbar, draws) {
+        let active = matches!(button, Button::Tool(t) if held.tool == Some(t));
+        let dim = (button == Button::Undo && !held.model.can_undo())
+            || (button == Button::Redo && !held.model.can_redo());
+        let (back, ink) = if active {
+            (Color::AMBER, Color::rgb(20, 23, 28))
+        } else if dim {
+            (Color::rgb(24, 28, 34), Color::rgb(110, 116, 128))
+        } else {
+            (Color::rgb(30, 35, 43), Color::rgb(230, 233, 238))
+        };
+        fill_rounded_rect_rgba(img, rect, btn_radius, back);
+        let (tw, th) = measure_system_text(label, font_size, true);
+        let tx = rect.left + (rect.width() - tw) / 2;
+        let ty = rect.top + (rect.height() - th) / 2;
+        draw_system_text_rgba(img, PointI::new(tx, ty), label, ink, font_size, true);
     }
 }
 
@@ -1225,8 +1347,8 @@ pub fn render_top_bar_demo(scale: f32) -> ImageBuffer {
 
 #[cfg(feature = "review")]
 pub fn render_selection_toolbar_demo(scale: f32) -> ImageBuffer {
-    let w = (380.0 * scale).round() as u32;
-    let h = (56.0 * scale).round() as u32;
+    let w = (468.0 * scale).round() as u32;
+    let h = (96.0 * scale).round() as u32;
     let mut img = ImageBuffer::new(w, h);
     for y in 0..h {
         for x in 0..w {
@@ -1274,6 +1396,37 @@ pub fn render_overlay_frame_scaled_opts(
     include_cursor: bool,
     destination: Destination,
 ) -> ImageBuffer {
+    render_frame(
+        base_image,
+        sel_rect,
+        cur,
+        scale,
+        is_scrolling,
+        is_recording,
+        capture_mode,
+        delay_timer,
+        include_cursor,
+        destination,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_frame(
+    base_image: &ImageBuffer,
+    sel_rect: Option<RectI>,
+    cur: PointI,
+    scale: f32,
+    is_scrolling: bool,
+    is_recording: bool,
+    capture_mode: CaptureMode,
+    delay_timer: DelayTimer,
+    include_cursor: bool,
+    destination: Destination,
+    draft: Option<&Annotation>,
+    session: Option<&OverlaySession>,
+) -> ImageBuffer {
     let w = base_image.width;
     let h = base_image.height;
     let mut display_img = base_image.clone();
@@ -1291,6 +1444,10 @@ pub fn render_overlay_frame_scaled_opts(
             display_img.pixels[idx + 1] = (display_img.pixels[idx + 1] as u32 * 50 / 100) as u8;
             display_img.pixels[idx + 2] = (display_img.pixels[idx + 2] as u32 * 50 / 100) as u8;
         }
+    }
+
+    if let Some(mark) = draft {
+        render_annotation(&mut display_img, mark);
     }
 
     // 2. Draw neutral thin white crosshair guidelines
@@ -1441,7 +1598,7 @@ pub fn render_overlay_frame_scaled_opts(
                 match capture_mode {
                     CaptureMode::Screenshot => {
                         format!(
-                            "{} × {}  (Enter to edit, Ctrl+C to copy)",
+                            "{} × {}  (Enter for the editor, Ctrl+C to copy)",
                             r.width(),
                             r.height()
                         )
@@ -1496,7 +1653,13 @@ pub fn render_overlay_frame_scaled_opts(
 
             // Selection Toolbar (when selection is at least 16x16)
             if r.width() >= 16 && r.height() >= 16 {
-                draw_selection_toolbar(&mut display_img, r, scale);
+                match session {
+                    Some(s) => {
+                        let toolbar = marks::toolbar_rect(r, s.monitor(r), s.draws());
+                        draw_toolbar(&mut display_img, toolbar, s.draws(), &s.marks);
+                    }
+                    None => draw_selection_toolbar(&mut display_img, r, scale),
+                }
             }
         }
     }

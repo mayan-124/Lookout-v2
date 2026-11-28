@@ -3,6 +3,9 @@
   import { onDestroy, onMount, tick } from "svelte";
   import Chart, { type ChartData, type Detail } from "./Chart.svelte";
   import Icon from "./Icon.svelte";
+  import Trail from "./Trail.svelte";
+  import { hidesBar } from "./rows";
+  import { ui } from "./uistate.svelte";
   import Cleanup from "./Cleanup.svelte";
   import Duplicates from "./Duplicates.svelte";
   import Preview, { type Source } from "./Preview.svelte";
@@ -90,7 +93,7 @@
     depth: number;
   }
 
-  let { onclose }: { onclose: () => void } = $props();
+  let { onclose, onhide }: { onclose: () => void; onhide: () => void } = $props();
 
   let locations: Location[] = $state([]);
   let chosen = $state("");
@@ -507,6 +510,7 @@
       try {
         const d = await invoke<Done>("run_action", { ticket: prepared.ticket });
         notice = d.message;
+        if (hidesBar(action, ui.hide_after_copy)) onhide();
       } catch (e) {
         notice = errorText(e);
       }
@@ -572,6 +576,20 @@
     await show(crumbs.length >= 2 ? crumbs[crumbs.length - 2].id : 0);
   }
 
+  const PAGES = { disk: "Disk analyzer", cleanup: "Clean up", dupes: "Duplicates" } as const;
+  const path = $derived([
+    "Home",
+    "Disk analyzer",
+    ...(page !== "disk" ? [PAGES[page]] : finished && focus !== 0 ? (view?.crumbs.slice(1).map((c) => c.name) ?? []) : []),
+  ]);
+
+  /** One step back: from another page, from inside a folder, then to Home. */
+  function back() {
+    if (page !== "disk") page = "disk";
+    else if (finished && focus !== 0) up();
+    else onclose();
+  }
+
   function select(delta: number) {
     if (flat.length === 0) return;
     selectRow(Math.min(flat.length - 1, Math.max(0, selected + delta)));
@@ -595,7 +613,7 @@
       else if (menu) menu = null;
       else if (exp) exp = false;
       else if (scanning) cancel();
-      else onclose();
+      else back();
       return;
     }
     if (tag === "SELECT" || tag === "INPUT") return;
@@ -785,8 +803,9 @@
   <header>
     <h2>Disk analyzer</h2>
     <span class="hint">Scans only when you press Scan. Closing this view frees the data.</span>
-    <button class="btn" onclick={onclose}>Close <kbd>Esc</kbd></button>
   </header>
+
+  <Trail {path} onback={back} />
 
   <div class="tabs pages" role="tablist" aria-label="Disk tools">
     <button role="tab" aria-selected={page === "disk"} class:on={page === "disk"} onclick={() => (page = "disk")}>Disk analyzer</button>

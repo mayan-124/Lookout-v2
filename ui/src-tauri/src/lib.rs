@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use lookout_core::actions::disk::{TextClipboard, WindowsClipboardWriter};
 use lookout_core::actions::open::Launcher;
-use lookout_core::actions::{Done, GateConfig, Prepared};
+use lookout_core::actions::{Done, GateConfig, Prepared, Risk};
 use lookout_core::apps::default_start_menu_dirs;
 use lookout_core::autostart::{RunEntry, AUTOSTART_FLAG};
 use lookout_core::cli::{parse_dev_flags, parse_measure_args, MeasureArgs};
@@ -27,6 +27,7 @@ use lookout_core::settings::{monitor_key, Appearance, Settings, DEFAULT_HOTKEY};
 use lookout_core::share::{Payload, Refusal};
 use lookout_core::storage::{DataPaths, Storage};
 use lookout_core::thumbnail::{AppIcons, Shot, Thumbnails};
+use lookout_core::toast::{self, Toast};
 use lookout_core::uimode::{Mode, Show, Ui, UiState};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -975,16 +976,62 @@ async fn run_action(
     let l = services_of(&services)?;
     with_action(&app, || {
         let done = l.run_action(&ticket).map_err(|e| e.to_string());
-        // Another window has the focus now: hiding first keeps the bar from
-        // taking it back.
-        if done
-            .as_ref()
-            .is_ok_and(|d| d.action_id == lookout_core::winswitch::FOCUS)
-        {
-            hide_bar_window(&app);
+        if let Ok(d) = &done {
+            // Another window has the focus now: hiding first keeps the bar from
+            // taking it back.
+            if gives_away_focus(&d.action_id) {
+                hide_bar_window(&app);
+            }
+            announce(&app, d);
         }
         done
     })
+}
+
+/// Actions after which another program has, or should keep, the focus.
+fn gives_away_focus(action: &str) -> bool {
+    let verb = action.rsplit('/').next().unwrap_or(action);
+    action == lookout_core::winswitch::FOCUS
+        || matches!(verb, "paste_clip" | "paste_plain" | "note_paste")
+}
+
+/// The small notice for a finished action, which stays up with the bar closed.
+fn announce(app: &AppHandle, done: &Done) {
+    let Some(notice) =
+        toast::for_action(&done.action_id, &done.message, done.undoable, done.was_undo)
+    else {
+        return;
+    };
+    let app = app.clone();
+    toast::show(notice, move || undo_from_notice(&app));
+}
+
+/// The notice's Undo button. An undo that needs a yes still gets its card.
+fn undo_from_notice(app: &AppHandle) {
+    let Some(l) = app.try_state::<Services>().and_then(|s| s.current()) else {
+        return;
+    };
+    let said = l.prepare_undo().and_then(|p| {
+        if p.risk == Risk::Safe {
+            return l.run_action(&p.ticket).map(|d| Some(d.message));
+        }
+        l.cancel_action(&p.ticket);
+        Ok(None)
+    });
+    match said {
+        Ok(Some(message)) => {
+            if app.emit_to(BAR, "undone", ()).is_err() {
+                log::warn("could not tell the bar about an undo");
+            }
+            toast::show(Toast::short(message), || {});
+        }
+        Ok(None) => {
+            if show_bar(app).is_err() || app.emit_to(BAR, "undo-requested", ()).is_err() {
+                log::error("could not ask about the undo");
+            }
+        }
+        Err(e) => toast::show(Toast::short(e.to_string()), || {}),
+    }
 }
 
 #[tauri::command]
@@ -995,7 +1042,11 @@ async fn confirm_action(
 ) -> Result<Done, String> {
     let l = services_of(&services)?;
     with_action(&app, || {
-        l.confirm_action(&ticket).map_err(|e| e.to_string())
+        let done = l.confirm_action(&ticket).map_err(|e| e.to_string());
+        if let Ok(d) = &done {
+            announce(&app, d);
+        }
+        done
     })
 }
 
@@ -1936,6 +1987,11 @@ fn set_hide_tips(hide: bool, services: State<Services>) -> Result<UiState, Strin
 }
 
 #[tauri::command]
+fn set_paste_on_click(paste: bool, services: State<Services>) -> Result<UiState, String> {
+    change_ui(&services, |ui| ui.copy_on_click = !paste)
+}
+
+#[tauri::command]
 fn set_compact_home(compact: bool, services: State<Services>) -> Result<UiState, String> {
     change_ui(&services, |ui| ui.compact_home = compact)
 }
@@ -2641,6 +2697,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     register_pause_hotkey(&handle, &settings.pause_hotkey);
     register_grab_hotkey(&handle, &settings.grab_hotkey);
 
+    // Which window to paste into: the last one in front that was not ours.
+    lookout_core::paste::watch_foreground();
+
     // Hide when the bar loses focus, like a launcher (except while a folder
     // dialog, which takes focus, is open).
     let window = bar_window(&handle)?;
@@ -2889,6 +2948,7 @@ pub fn run() {
             set_ui_show,
             set_hide_tips,
             set_hide_after_copy,
+            set_paste_on_click,
             set_compact_home,
             set_advanced_open,
             reset_ui,

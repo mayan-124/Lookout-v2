@@ -18,6 +18,7 @@ use crate::actions::{
 use crate::content::secrets;
 use crate::index_service::unix_now;
 use crate::item::{Item, Kind, ScoreFeatures};
+use crate::paste::KeyPaste;
 use crate::query::ParsedQuery;
 use crate::ranking::{self, RankingWeights};
 use crate::securedb::{DbError, SecureDb};
@@ -36,6 +37,7 @@ pub const SEARCH_MIN_CHARS: usize = 3;
 
 pub const SAVE: &str = "note_save";
 pub const COPY: &str = "note_copy";
+pub const PASTE: &str = "note_paste";
 pub const DELETE: &str = "note_delete";
 /// `Kind::Custom` names of note results.
 pub const KIND_NOTE: &str = "note";
@@ -545,6 +547,49 @@ impl Action for CopyNote {
         self.1.set_text(&note.text).map_err(ActionError::Failed)?;
         Ok(Executed {
             message: "Note copied".into(),
+            undo_token: None,
+        })
+    }
+}
+
+/// Copies the note, then types Ctrl+V into the app that was in front.
+pub struct PasteNote(
+    pub Arc<NoteStore>,
+    pub Arc<dyn TextClipboard>,
+    pub Arc<dyn KeyPaste>,
+);
+
+impl Action for PasteNote {
+    fn id(&self) -> &str {
+        PASTE
+    }
+    fn label(&self) -> &str {
+        "Paste note"
+    }
+    fn applies_to(&self, kind: &Kind) -> bool {
+        matches!(kind, Kind::Custom(n) if n == KIND_NOTE)
+    }
+    fn plan(&self, target: &Target) -> Result<Plan, ActionError> {
+        let id = id_of(target.uri.as_deref().unwrap_or_default())?;
+        let note = self.0.get(id).map_err(failed)?.ok_or_else(gone)?;
+        Ok(Plan {
+            risk: Risk::Safe,
+            preview: preview("Paste note", &note.text),
+            undoable: false,
+            snapshot: serde_json::json!({ "id": id }),
+            fingerprint: format!("{PASTE}|{id}"),
+        })
+    }
+    fn execute(&self, plan: &Plan, _: &Authorized) -> Result<Executed, ActionError> {
+        let id = plan.snapshot["id"].as_i64().ok_or_else(gone)?;
+        let note = self.0.get(id).map_err(failed)?.ok_or_else(gone)?;
+        self.1.set_text(&note.text).map_err(ActionError::Failed)?;
+        let message = match self.2.paste() {
+            Ok(()) => "Pasted",
+            Err(_) => crate::toast::PASTE_FAILED,
+        };
+        Ok(Executed {
+            message: message.into(),
             undo_token: None,
         })
     }

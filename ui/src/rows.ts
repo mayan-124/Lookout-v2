@@ -15,7 +15,7 @@ export interface Keys {
   copy?: { action: string; label: string };
   /** Ctrl+Shift+C */
   copyFile?: string;
-  /** Shift+Enter: paste a clip into the app that was in front. */
+  /** Pastes a clip or a note into the app that was in front. */
   paste?: string;
   /** Ctrl+Enter or Ctrl+E */
   reveal?: string;
@@ -80,7 +80,11 @@ export function rowKeys(i: RowItem, pinned = false): Keys {
     };
   }
   if (kind === "note") {
-    return { copy: { action: "note_copy", label: "Copy" }, remove: { action: "note_delete", label: "Delete" } };
+    return {
+      paste: "note_paste",
+      copy: { action: "note_copy", label: "Copy" },
+      remove: { action: "note_delete", label: "Delete" },
+    };
   }
   if (kind === "timer") return { remove: { action: "timer_cancel", label: "Cancel timer" } };
   if (kind === "clipboard") {
@@ -96,21 +100,56 @@ export function rowKeys(i: RowItem, pinned = false): Keys {
   return pin;
 }
 
-/** The clipboard add-on's answer when a clip was copied but could not be pasted. */
-export const PASTE_FAILED = "Copied. Press Ctrl+V";
+/**
+ * What a click or Enter starts: a clip or a note is pasted while "Clicking a
+ * clip pastes it" is on; everything else keeps the action it came with.
+ */
+export const mainAction = (i: RowItem, own: string, pasteOnClick: boolean): string =>
+  (pasteOnClick ? rowKeys(i).paste : undefined) ?? own;
+
+/** Shift+Enter: the other one of copy and paste. */
+export function shiftAction(keys: Keys, main: string | null): { action: string; label: string } | undefined {
+  if (!keys.paste) return undefined;
+  return main === keys.paste ? keys.copy : { action: keys.paste, label: "Paste" };
+}
+
+const PASTES = ["paste_clip", "paste_plain", "note_paste"];
+const COPIES = ["copy_path", "copy_file", "copy_clip", "copy_pretty", "answer_copy", "note_copy"];
+const KEEPS = ["note_save", "saved_add", "pin_clip"];
+/** A copy, a save or a pin: each is told in a small notice. */
+const copiesOrSaves = (verb: string) => COPIES.includes(verb) || KEEPS.includes(verb) || verb.startsWith("txt_");
 
 /**
- * Whether a finished action puts the bar away: a paste that worked always, a
- * copy or a saved note while "Hide the bar after copy or save" is on.
+ * Whether a finished action puts the bar away: a paste always (a notice says if
+ * the keys could not be sent), a copy, save or pin while "Hide the bar after
+ * copy or save" is on.
  */
-export function hidesBar(action: string, message: string, hideAfterCopy: boolean): boolean {
+export function hidesBar(action: string, hideAfterCopy: boolean): boolean {
   const verb = verbOf(action);
-  if (verb === "paste_clip" || verb === "paste_plain") return message !== PASTE_FAILED;
+  if (PASTES.includes(verb)) return true;
   // Locked, asleep, leaving or in another window: the next show starts clean.
   const leaves = ["system_lock", "system_sleep", "system_restart", "system_sign_out", "window_focus"];
   if (leaves.includes(verb)) return true;
-  const done = ["copy_path", "copy_file", "copy_clip", "copy_pretty", "answer_copy", "note_copy", "note_save"];
-  return hideAfterCopy && done.includes(verb);
+  return hideAfterCopy && copiesOrSaves(verb);
+}
+
+/**
+ * Whether the notice window tells the result (see toast.rs), so no result card
+ * is needed.
+ */
+export const noticed = (action: string, undoable: boolean) => undoable || copiesOrSaves(verbOf(action));
+
+/** The small buttons a file, folder or app row shows under the pointer. */
+export function rowButtons(i: RowItem, pinned = false): { icon: "open" | "folder" | "clipboard" | "pin"; label: string; action: string }[] {
+  const kind = kindOf(i);
+  if (!isFileRow(kind, i.source, i.uri) && kind !== "app") return [];
+  const keys = rowKeys(i, pinned);
+  return [
+    { icon: "open" as const, label: "Open", action: "" },
+    ...(keys.reveal ? [{ icon: "folder" as const, label: "Show in folder", action: keys.reveal }] : []),
+    ...(keys.copy ? [{ icon: "clipboard" as const, label: keys.copy.label, action: keys.copy.action }] : []),
+    ...(keys.pin ? [{ icon: "pin" as const, label: keys.pin.label.slice(2), action: keys.pin.action }] : []),
+  ];
 }
 
 /** Actions after which the list on screen is out of date. */

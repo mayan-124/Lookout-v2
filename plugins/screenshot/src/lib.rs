@@ -6,6 +6,7 @@ pub mod geometry;
 pub mod handler;
 pub mod hotkey;
 pub mod image;
+pub mod marks;
 pub mod ocr;
 pub mod overlay;
 pub mod recording;

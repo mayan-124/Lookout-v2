@@ -6,7 +6,8 @@
   import ThemePicker from "./ThemePicker.svelte";
   import ModePicker from "./ModePicker.svelte";
   import { modeLabel, type Feature } from "./modes";
-  import { resetToRecommended, setAdvancedOpen, setCompactHome, setHideAfterCopy, setHideTips, setShow, ui } from "./uistate.svelte";
+  import Trail from "./Trail.svelte";
+  import { resetToRecommended, setAdvancedOpen, setCompactHome, setHideAfterCopy, setHideTips, setPasteOnClick, setShow, ui } from "./uistate.svelte";
   import { captureCombo } from "./hotkey";
   import { look, setGlass, setReduceMotion } from "./look.svelte";
   import { getVersion } from "@tauri-apps/api/app";
@@ -618,6 +619,7 @@
 {/snippet}
 
 <section class="settings" aria-labelledby="priv-title">
+  <Trail path={["Home", "Settings", section === "general" ? "General" : (ADVANCED.find(([id]) => id === section)?.[1] ?? "")]} onback={requestClose} />
   <div class="layout">
     <nav class="menu" aria-label="Settings sections">
       <button class="item" class:on={section === "general"} aria-current={section === "general" ? "page" : undefined} onclick={() => (section = "general")}
@@ -777,6 +779,12 @@
           "After Copy, Copy path, Copy file or saving a note.",
           ui.hide_after_copy,
           (el) => choose(setHideAfterCopy(el.checked)),
+        )}
+        {@render toggle(
+          "Clicking a clip pastes it",
+          "Click or Enter pastes a clip or note into the app you were using; Shift+Enter copies it. Off, they swap.",
+          ui.paste_on_click,
+          (el) => choose(setPasteOnClick(el.checked)),
         )}
         <label class="field">
           {@render field("Keep my last search", "Reopened this soon, the bar shows it again. It is never saved to disk.")}

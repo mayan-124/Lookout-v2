@@ -13,6 +13,7 @@ export interface UiState {
   hide_tips: boolean;
   advanced_open: boolean;
   hide_after_copy: boolean;
+  paste_on_click: boolean;
   compact_home: boolean;
 }
 
@@ -145,27 +146,27 @@ export function footerHints(
     enter?: string | null;
     path?: boolean;
     clears?: boolean;
-    /** The selected row is a clip that Shift+Enter pastes. */
-    paste?: boolean;
-    /** Enter on this result card, or Esc on this Settings page, hides the bar. */
-    hides?: boolean;
+    /** What Shift+Enter does on the selected clip or note: "paste" or "copy". */
+    shift?: string | null;
+    /** Esc goes back to Home from here. */
+    back?: boolean;
     /** A row on Home is selected. */
     picked?: boolean;
   },
 ): string[] {
   const jump = o.mode === "full" ? ["Ctrl+1–5 sections"] : o.hotkey ? [`${o.hotkey} opens Lookout`] : [];
-  const esc = o.clears ? "Esc clear" : "Esc hide";
+  const esc = o.back ? "Esc back" : o.clears ? "Esc clear" : "Esc hide";
   const enter = o.enter ? `Enter ${o.enter.replace("…", "").toLowerCase()}` : "↑↓ pick";
   const hints: Record<View, string[]> = {
     home: o.picked ? [enter, "→ actions", esc] : ["Type ? for help", esc, ...jump],
     history: ["Enter use", "Del delete", "Esc back"],
-    results: [enter, o.paste ? "Shift+Enter paste" : o.path ? "Tab complete" : "→ actions", esc],
+    results: [enter, o.shift ? `Shift+Enter ${o.shift.toLowerCase()}` : o.path ? "Tab complete" : "→ actions", esc],
     help: ["↑↓ pick", "Enter try", esc],
     setup: ["Tab next", "Enter choose", "Esc skip setup"],
-    settings: ["Tab next", o.hides ? "Esc hide" : "Esc close"],
-    disk: ["↑↓ move", "→ expand", "Esc close"],
+    settings: ["Tab next", "Esc back"],
+    disk: ["↑↓ move", "→ expand", "Esc back"],
     confirm: ["Tab move", "Enter choose", "Esc cancel"],
-    done: o.hides ? ["Enter close and hide", "Esc close"] : ["Esc close"],
+    done: ["Esc close"],
   };
   return hints[view].slice(0, MAX_HINTS);
 }

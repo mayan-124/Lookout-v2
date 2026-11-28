@@ -557,6 +557,10 @@ impl ClipboardIo for WindowsClipboard {
         if fg.is_null() || program.is_none_or(|p| is_lookout(&p)) {
             return Err("no suitable window to paste into".to_owned());
         }
+        // Windows drops keys sent to an administrator's window, without a word.
+        if lookout_core::paste::out_of_reach(fg as usize) {
+            return Err("that window runs as administrator".to_owned());
+        }
         std::thread::sleep(Duration::from_millis(150));
         let key = |vk: u16, flags| INPUT {
             r#type: INPUT_KEYBOARD,

@@ -98,6 +98,12 @@ pub enum Annotation {
         color: Color,
         thickness: f32,
     },
+    /// A freehand line.
+    Pen {
+        points: Vec<PointI>,
+        color: Color,
+        thickness: f32,
+    },
     Text {
         pos: PointI,
         text: String,
@@ -266,6 +272,15 @@ pub fn render_annotation(image: &mut ImageBuffer, ann: &Annotation) {
             thickness,
         } => {
             draw_highlighter_path(image, points, *color, *thickness);
+        }
+        Annotation::Pen {
+            points,
+            color,
+            thickness,
+        } => {
+            for pair in points.windows(2) {
+                draw_thick_line(image, pair[0], pair[1], *color, *thickness);
+            }
         }
         Annotation::Text {
             pos,

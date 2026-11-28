@@ -12,6 +12,7 @@ export const ui = $state<UiState>({
   hide_tips: false,
   advanced_open: false,
   hide_after_copy: true,
+  paste_on_click: true,
   compact_home: false,
 });
 
@@ -30,6 +31,7 @@ export const setMode = (mode: Mode) => apply("set_ui_mode", { mode });
 export const setShow = (feature: Feature, on: boolean) => apply("set_ui_show", { show: { ...ui.show, [feature]: on } });
 export const setHideTips = (hide: boolean) => apply("set_hide_tips", { hide });
 export const setHideAfterCopy = (hide: boolean) => apply("set_hide_after_copy", { hide });
+export const setPasteOnClick = (paste: boolean) => apply("set_paste_on_click", { paste });
 export const setCompactHome = (compact: boolean) => apply("set_compact_home", { compact });
 export const setAdvancedOpen = (open: boolean) => apply("set_advanced_open", { open });
 

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use lookout_core::plugins::sdk::Handler;
+use lookout_core::toast::{self, Toast};
 use serde_json::{json, Value};
 use windows::core::{w, PCWSTR};
 use windows::Win32::UI::Shell::ShellExecuteW;
@@ -14,12 +15,9 @@ use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
 
 use crate::editor::show_editor;
 use crate::hotkey::{parse_hotkey, HotkeyManager};
-use crate::overlay::{
-    select_capture_session, select_recording_area, select_scrolling_area, Destination,
-    OverlayAction,
-};
+use crate::overlay::{select_capture_session, CaptureOverlayOutcome, Destination, OverlayAction};
 use crate::recording::{execute_screen_recording, execute_screen_recording_gif};
-use crate::save::resolve_save_folder;
+use crate::save::{resolve_save_folder, save_screenshot};
 use crate::scrolling::execute_scrolling_capture;
 
 pub struct ScreenshotPlugin {
@@ -72,60 +70,7 @@ impl ScreenshotPlugin {
             .name("lookout-capture-flow".to_string())
             .spawn(move || {
                 if let Some(outcome) = select_capture_session() {
-                    match outcome.action {
-                        OverlayAction::Copy => {
-                            if matches!(
-                                outcome.destination,
-                                Destination::Clipboard | Destination::Both
-                            ) {
-                                let _ = crate::clipboard::copy_to_clipboard(&outcome.cropped_image);
-                            }
-                            if matches!(outcome.destination, Destination::File | Destination::Both)
-                            {
-                                if let Err(e) =
-                                    crate::save::save_screenshot(&outcome.cropped_image, &folder)
-                                {
-                                    eprintln!("Failed to save screenshot: {e}");
-                                }
-                            }
-                        }
-                        OverlayAction::Edit => {
-                            show_editor(outcome.cropped_image, outcome.is_drm_black, folder);
-                        }
-                        OverlayAction::Record => {
-                            if let Err(e) = execute_screen_recording(
-                                outcome.screen_rect,
-                                30,
-                                outcome.include_cursor,
-                                &folder,
-                            ) {
-                                eprintln!("Screen recording failed: {e}");
-                            }
-                        }
-                        OverlayAction::Scroll => {
-                            match execute_scrolling_capture(outcome.screen_rect) {
-                                Ok(img) => {
-                                    show_editor(img, false, folder);
-                                }
-                                Err(e) => {
-                                    eprintln!("Scrolling capture failed: {e}");
-                                }
-                            }
-                        }
-                        OverlayAction::Text => {
-                            match crate::ocr::execute_ocr(&outcome.cropped_image) {
-                                Ok(res) => {
-                                    let _ = crate::clipboard::copy_text_to_clipboard(
-                                        &res.formatted_text,
-                                    );
-                                    crate::ocr::show_ocr_preview_card(res, 1.0);
-                                }
-                                Err(e) => {
-                                    eprintln!("OCR failed: {e}");
-                                }
-                            }
-                        }
-                    }
+                    finish_capture(outcome, folder);
                 }
             })
             .ok();
@@ -145,7 +90,7 @@ impl ScreenshotPlugin {
         thread::Builder::new()
             .name("lookout-scrolling-capture-flow".to_string())
             .spawn(move || {
-                if let Some(rect) = select_scrolling_area() {
+                if let Some(rect) = pick_area(&folder).map(|o| o.screen_rect) {
                     match execute_scrolling_capture(rect) {
                         Ok(img) => {
                             show_editor(img, false, folder);
@@ -173,7 +118,7 @@ impl ScreenshotPlugin {
         thread::Builder::new()
             .name("lookout-recording-flow".to_string())
             .spawn(move || {
-                if let Some(rect) = select_recording_area() {
+                if let Some(rect) = pick_area(&folder).map(|o| o.screen_rect) {
                     if export_gif {
                         if let Err(e) = execute_screen_recording_gif(rect, 15, 800, true, &folder) {
                             eprintln!("Screen recording to GIF failed: {e}");
@@ -194,10 +139,15 @@ impl ScreenshotPlugin {
             return;
         }
 
+        let folder = {
+            let guard = self.save_folder.lock().unwrap_or_else(|e| e.into_inner());
+            guard.clone()
+        };
+
         thread::Builder::new()
             .name("lookout-ocr-flow".to_string())
             .spawn(move || {
-                if let Some(outcome) = select_capture_session() {
+                if let Some(outcome) = pick_area(&folder) {
                     match crate::ocr::execute_ocr(&outcome.cropped_image) {
                         Ok(res) => {
                             let _ = crate::clipboard::copy_text_to_clipboard(&res.formatted_text);
@@ -211,6 +161,75 @@ impl ScreenshotPlugin {
             })
             .ok();
     }
+}
+
+/// Carries out what was chosen on the capture overlay.
+fn finish_capture(outcome: CaptureOverlayOutcome, folder: PathBuf) {
+    match outcome.action {
+        OverlayAction::Copy => {
+            // Already on the clipboard; "File" and "Both" above also save it.
+            let mut said = "Copied";
+            if matches!(outcome.destination, Destination::File | Destination::Both) {
+                said = match save_screenshot(&outcome.cropped_image, &folder) {
+                    Ok(_) => "Copied and saved",
+                    Err(e) => {
+                        eprintln!("Failed to save screenshot: {e}");
+                        "Copied, but it could not be saved"
+                    }
+                };
+            }
+            let edit = toast::run(Toast {
+                text: said.to_owned(),
+                button: Some("Edit"),
+                ms: 6_000,
+            });
+            if edit {
+                show_editor(outcome.cropped_image, outcome.is_drm_black, folder);
+            }
+        }
+        OverlayAction::Save => {
+            let said = match save_screenshot(&outcome.cropped_image, &folder) {
+                Ok(_) => "Saved",
+                Err(e) => {
+                    eprintln!("Failed to save screenshot: {e}");
+                    "Could not save the screenshot"
+                }
+            };
+            toast::run(Toast::short(said));
+        }
+        OverlayAction::Edit => {
+            show_editor(outcome.cropped_image, outcome.is_drm_black, folder);
+        }
+        OverlayAction::Record => {
+            if let Err(e) =
+                execute_screen_recording(outcome.screen_rect, 30, outcome.include_cursor, &folder)
+            {
+                eprintln!("Screen recording failed: {e}");
+            }
+        }
+        OverlayAction::Scroll => match execute_scrolling_capture(outcome.screen_rect) {
+            Ok(img) => show_editor(img, false, folder),
+            Err(e) => eprintln!("Scrolling capture failed: {e}"),
+        },
+        OverlayAction::Text => match crate::ocr::execute_ocr(&outcome.cropped_image) {
+            Ok(res) => {
+                let _ = crate::clipboard::copy_text_to_clipboard(&res.formatted_text);
+                crate::ocr::show_ocr_preview_card(res, 1.0);
+            }
+            Err(e) => eprintln!("OCR failed: {e}"),
+        },
+    }
+}
+
+/// An area for scrolling, recording or reading text. Copy and Save pressed on
+/// the toolbar do what they say instead, and nothing more happens.
+fn pick_area(folder: &std::path::Path) -> Option<CaptureOverlayOutcome> {
+    let outcome = select_capture_session()?;
+    if matches!(outcome.action, OverlayAction::Copy | OverlayAction::Save) {
+        finish_capture(outcome, folder.to_path_buf());
+        return None;
+    }
+    Some(outcome)
 }
 
 impl Default for ScreenshotPlugin {
@@ -339,6 +358,7 @@ impl Handler for ScreenshotPlugin {
                     let paused_clone3 = Arc::clone(&self.paused);
                     let folder_clone3 = Arc::clone(&self.save_folder);
                     let paused_clone4 = Arc::clone(&self.paused);
+                    let folder_clone4 = Arc::clone(&self.save_folder);
                     let data_dir_opt = {
                         let d = self.data_dir.lock().unwrap_or_else(|e| e.into_inner());
                         if d.as_os_str().is_empty() {
@@ -366,60 +386,7 @@ impl Handler for ScreenshotPlugin {
                                 .name("lookout-hotkey-capture".to_string())
                                 .spawn(move || {
                                     if let Some(outcome) = select_capture_session() {
-                                        match outcome.action {
-                                            OverlayAction::Copy => {
-                                                if matches!(
-                                                    outcome.destination,
-                                                    Destination::Clipboard | Destination::Both
-                                                ) {
-                                                    let _ = crate::clipboard::copy_to_clipboard(
-                                                        &outcome.cropped_image,
-                                                    );
-                                                }
-                                                if matches!(
-                                                    outcome.destination,
-                                                    Destination::File | Destination::Both
-                                                ) {
-                                                    let _ = crate::save::save_screenshot(
-                                                        &outcome.cropped_image,
-                                                        &folder,
-                                                    );
-                                                }
-                                            }
-                                            OverlayAction::Edit => {
-                                                show_editor(
-                                                    outcome.cropped_image,
-                                                    outcome.is_drm_black,
-                                                    folder,
-                                                );
-                                            }
-                                            OverlayAction::Record => {
-                                                let _ = execute_screen_recording(
-                                                    outcome.screen_rect,
-                                                    30,
-                                                    outcome.include_cursor,
-                                                    &folder,
-                                                );
-                                            }
-                                            OverlayAction::Scroll => {
-                                                if let Ok(img) =
-                                                    execute_scrolling_capture(outcome.screen_rect)
-                                                {
-                                                    show_editor(img, false, folder);
-                                                }
-                                            }
-                                            OverlayAction::Text => {
-                                                if let Ok(res) =
-                                                    crate::ocr::execute_ocr(&outcome.cropped_image)
-                                                {
-                                                    let _ =
-                                                        crate::clipboard::copy_text_to_clipboard(
-                                                            &res.formatted_text,
-                                                        );
-                                                    crate::ocr::show_ocr_preview_card(res, 1.0);
-                                                }
-                                            }
-                                        }
+                                        finish_capture(outcome, folder);
                                     }
                                 })
                                 .ok();
@@ -435,7 +402,7 @@ impl Handler for ScreenshotPlugin {
                             thread::Builder::new()
                                 .name("lookout-hotkey-scrolling".to_string())
                                 .spawn(move || {
-                                    if let Some(rect) = select_scrolling_area() {
+                                    if let Some(rect) = pick_area(&folder).map(|o| o.screen_rect) {
                                         if let Ok(img) = execute_scrolling_capture(rect) {
                                             show_editor(img, false, folder);
                                         }
@@ -454,7 +421,7 @@ impl Handler for ScreenshotPlugin {
                             thread::Builder::new()
                                 .name("lookout-hotkey-recording".to_string())
                                 .spawn(move || {
-                                    if let Some(rect) = select_recording_area() {
+                                    if let Some(rect) = pick_area(&folder).map(|o| o.screen_rect) {
                                         if let Err(e) =
                                             execute_screen_recording(rect, 30, true, &folder)
                                         {
@@ -468,10 +435,14 @@ impl Handler for ScreenshotPlugin {
                             if paused_clone4.load(Ordering::Acquire) {
                                 return;
                             }
+                            let folder = {
+                                let g = folder_clone4.lock().unwrap_or_else(|e| e.into_inner());
+                                g.clone()
+                            };
                             thread::Builder::new()
                                 .name("lookout-hotkey-text".to_string())
                                 .spawn(move || {
-                                    if let Some(outcome) = select_capture_session() {
+                                    if let Some(outcome) = pick_area(&folder) {
                                         if let Ok(res) =
                                             crate::ocr::execute_ocr(&outcome.cropped_image)
                                         {

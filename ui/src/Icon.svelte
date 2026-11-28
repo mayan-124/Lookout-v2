@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export type Ico = "app" | "folder" | "image" | "clipboard" | "file" | "rec" | "gif" | "scan" | "timer" | "moon" | "sun" | "gear" | "globe" | "network" | "key" | "warn" | "dot" | "calendar" | "clock" | "note" | "search" | "disk";
+  export type Ico = "app" | "folder" | "image" | "clipboard" | "file" | "rec" | "gif" | "scan" | "timer" | "moon" | "sun" | "gear" | "globe" | "network" | "key" | "warn" | "dot" | "calendar" | "clock" | "note" | "search" | "disk" | "open" | "pin";
 </script>
 
 <script lang="ts">
@@ -48,6 +48,10 @@
     <rect x="3.5" y="3" width="9" height="10.5" rx="1.5" /><path d="M6 3V2h4v1M5.8 7h4.4M5.8 9.5h4.4" />
   {:else if name === "search"}
     <circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5L14 14" />
+  {:else if name === "open"}
+    <path d="M6.5 3.5H3.5v9h9v-3M9.5 3h3.5v3.5M13 3L7.8 8.2" />
+  {:else if name === "pin"}
+    <path d="M8 2.3l1.7 3.6 3.9.5-2.9 2.7.8 3.9L8 11.1 4.5 13l.8-3.9-2.9-2.7 3.9-.5z" />
   {:else if name === "disk"}
     <circle cx="8" cy="8" r="5.5" /><path d="M8 8V2.5M8 8l4 3" />
   {:else}
