@@ -1725,6 +1725,30 @@ async fn plugin_set_enabled(
     Ok(host.list())
 }
 
+/// "Turn on" in the setup and under an empty Clipboard or Capture search: the
+/// button is the approval of that add-on's permissions, shown beside it.
+#[tauri::command]
+async fn plugin_turn_on(
+    id: String,
+    services: State<'_, Services>,
+) -> Result<Vec<lookout_core::plugins::PluginInfo>, String> {
+    let lookout = services_of(&services)?;
+    let worker = lookout.clone();
+    let wanted = id.clone();
+    // Off the async runtime: starting an add-on can take seconds.
+    tauri::async_runtime::spawn_blocking(move || {
+        let host = worker.plugins().ok_or("add-ons are not available")?;
+        host.turn_on(&wanted).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if id == lookout_core::content::office::PLUGIN_ID {
+        lookout.rescan_contents();
+    }
+    let host = lookout.plugins().ok_or("add-ons are not available")?;
+    Ok(host.list())
+}
+
 #[tauri::command]
 async fn plugin_set_config(
     id: String,
@@ -2889,6 +2913,7 @@ pub fn run() {
             delete_index,
             plugins_list,
             plugin_set_enabled,
+            plugin_turn_on,
             plugin_set_config,
             health,
             index_now,

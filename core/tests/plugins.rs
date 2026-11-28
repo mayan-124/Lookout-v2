@@ -241,6 +241,22 @@ fn the_job_object_stops_a_plugin_from_starting_programs_unless_allowed() {
 }
 
 #[test]
+fn turning_on_in_one_step_starts_a_background_plugin_or_leaves_it_off() {
+    for (mode, starts) in [("good", true), ("crash_init", false)] {
+        let e = env(mode, WRITES);
+        let path = e.dir.path().join("plugins").join("p").join("plugin.json");
+        let mut m: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        m["background"] = true.into();
+        fs::write(&path, m.to_string()).unwrap();
+        let h = PluginHost::start(config(&e), PauseState::new());
+        assert_eq!(h.turn_on(ID).is_ok(), starts, "{mode}");
+        assert_eq!(h.is_usable(ID), starts, "{mode}");
+        assert_eq!(h.is_running(ID), starts, "{mode}");
+    }
+}
+
+#[test]
 fn a_disabled_or_unapproved_plugin_is_never_started() {
     let e = env("good", WRITES);
     let h = PluginHost::start(config(&e), PauseState::new());

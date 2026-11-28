@@ -1,9 +1,12 @@
 // When the first-run setup is open, and on which step.
 import { actionById } from "./registry.ts";
 
-export const STEPS = ["Welcome", "Folders", "Shortcuts", "Theme", "Try it"] as const;
+export const STEPS = ["Welcome", "Folders", "Daily features", "Shortcuts", "Theme", "Try it"] as const;
 /** Step numbers start at 1; "Choose folders to search" opens this one. */
 export const FOLDER_STEP = 2;
+export const DAILY_STEP = 3;
+export const SHORTCUT_STEP = 4;
+export const THEME_STEP = 5;
 
 /**
  * The step to show when the bar appears; null means no setup.

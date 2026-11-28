@@ -21,6 +21,7 @@
   import { FOLDER_STEP, chooseFoldersTarget, isHelpQuery, stepOnShow } from "./setupflow";
   import { dockItems, footerHints, helpEntries, isDiskCommand, tipsFor, typedSection, type Action, type View } from "./modes";
   import { ACTIONS, ICONS, actionById, homeActions } from "./registry";
+  import { CANNOT_TURN_ON, sectionOffer, type Offer } from "./addons";
   import { didYouMean, ghostFor, isListCommand, isNoteText, opensHistory, placeSuggestions, placeWindows, readLine, suggest, worthRemembering } from "./discover";
   import { homeRows } from "./home";
   import { NO_VALUES, OPERATOR_HINT, completions, operatorGhost, removeOperator, type OperatorValues } from "./operators";
@@ -645,11 +646,13 @@
 
   // The first-run setup: the open step, or null. It never blocks the bar.
   let setup: number | null = $state(null);
+  let setupRerun = $state(false);
   let setupView: ReturnType<typeof Setup> | undefined = $state();
   const showSetup = $derived(setup !== null && query.trim() === "" && !panel && !disk && !card);
 
   function endSetup() {
     setup = null;
+    setupRerun = false;
     if (status) status.needs_setup = false;
     invoke("setup_finish").catch((e) => (notice = errorText(e)));
     tick().then(() => input?.focus());
@@ -664,6 +667,7 @@
   }
   function runSetupAgain() {
     panel = false;
+    setupRerun = true;
     setup = 1;
   }
 
@@ -1740,35 +1744,52 @@
     if (query.trim() !== "") return "results";
     return earlier === null ? "home" : "history";
   });
-  // An empty Clipboard or Capture search says whether the add-on is off.
-  const ADDONS: Record<number, [string, string]> = {
-    2: ["com.lookout.clipboard", "Clipboard needs the Clipboard add-on. Turn it on in Settings > Advanced > Add-ons."],
-    3: ["dev.lookout.screenshot", "Capture needs the Screenshot add-on. Turn it on in Settings > Advanced > Add-ons."],
-  };
+  // A Clipboard or Capture search whose add-on is off offers "Turn on" instead.
   // Apps may match "clip " too, so an empty history is judged by its own rows.
   const fromClipboard = $derived(all.some(isFromClipboard));
   const noClips = $derived(typedSection(query) === 2 && !fromClipboard);
   const emptySection = $derived(view === "results" && done && (all.length === 0 || noClips) ? typedSection(query) : 0);
-  let addonOff = $state("");
+  const offerSection = $derived(view === "results" ? typedSection(query) : 0);
+  let offer: (Offer & { permissions: string[] }) | null = $state(null);
+  let offerOpen = $state(false);
+  let offerBusy = $state(false);
+  let offerError = $state("");
   $effect(() => {
-    const wanted = ADDONS[emptySection];
-    addonOff = "";
+    const wanted = sectionOffer(offerSection);
+    offer = null;
+    offerOpen = false;
+    offerError = "";
     if (!wanted) return;
     let live = true;
-    invoke<{ id: string; enabled: boolean }[]>("plugins_list")
+    invoke<{ id: string; enabled: boolean; approved: boolean; permissions: string[] }[]>("plugins_list")
       .then((list) => {
-        if (live && !list.some((p) => p.id === wanted[0] && p.enabled)) addonOff = wanted[1];
+        const found = list.find((p) => p.id === wanted.id);
+        if (live && found && !(found.enabled && found.approved)) offer = { ...wanted, permissions: found.permissions };
       })
       .catch(() => {});
     return () => {
       live = false;
     };
   });
+  /** One click allows this add-on, turns it on and searches again. */
+  async function turnOnOffer() {
+    if (!offer) return;
+    offerBusy = true;
+    offerError = "";
+    try {
+      await invoke("plugin_turn_on", { id: offer.id });
+      offer = null;
+      run(query);
+    } catch {
+      offerError = CANNOT_TURN_ON;
+    }
+    offerBusy = false;
+    input?.focus();
+  }
   /** What an empty result list says: what happened and what to do next. */
   const emptyText = $derived.by(() => {
     const typed = query.trim();
     if (all.length > 0 && emptySection !== 2) return `Nothing under ${LANES[lane].name}. Press Tab to see other results.`;
-    if (addonOff) return addonOff;
     const section = typedSection(query);
     const rest = typed.replace(/^\S+\s*/, "");
     if (isListCommand(query)) {
@@ -1996,7 +2017,7 @@
       {#if setup !== null && !panel}
         <!-- Stays while a search is typed, so ticked folders are not lost. -->
         <div class="setupwrap glass" hidden={!showSetup}>
-          <Setup bind:this={setupView} bind:step={setup} onclose={endSetup} ontry={trySetupExample} onchanged={setupChanged} />
+          <Setup bind:this={setupView} bind:step={setup} rerun={setupRerun} onclose={endSetup} ontry={trySetupExample} onchanged={setupChanged} />
         </div>
       {/if}
       {#if showSetup}
@@ -2289,7 +2310,7 @@
                 {/if}
               </div>
             {/if}
-            {#if fromClipboard || (emptySection === 2 && !addonOff)}
+            {#if fromClipboard || (emptySection === 2 && !offer)}
               <p class="readline trust">
                 <span>{status?.paused ? "Paused: nothing you copy is recorded." : "Clips are encrypted on this PC; text that looks like a secret is masked."}</span>
                 <button type="button" class="btn small text" title="Pauses recording and all background work" onclick={togglePause}
@@ -2302,7 +2323,25 @@
             {#if meant}<p class="readline" role="status">{meant}</p>{/if}
             {#if understoodLine}<p class="readline" role="status">{understoodLine}</p>{/if}
             {#if corrected}<p class="note">Showing results for <b>{corrected}</b></p>{/if}
-            {#if items.length > 0 && emptySection === 2}<p class="empty" role="status">{emptyText}</p>{/if}
+            {#if offer}
+              <div class="nofolders offer" role="status">
+                <span>{offer.name} is off. {offer.privacy}</span>
+                <button type="button" class="btn primary" disabled={offerBusy} onclick={turnOnOffer}>Turn on</button>
+              </div>
+              <p class="readline">
+                <button type="button" class="btn small text" aria-expanded={offerOpen} onclick={() => (offerOpen = !offerOpen)}
+                  >{offerOpen ? "▾" : "▸"} What it can do</button
+                >
+              </p>
+              {#if offerOpen}
+                <ul class="offerperms">
+                  {#each offer.permissions as perm}<li>{perm}</li>{/each}
+                </ul>
+              {/if}
+              {#if offerError}<p class="note" role="alert">{offerError}</p>{/if}
+            {:else if items.length > 0 && emptySection === 2}
+              <p class="empty" role="status">{emptyText}</p>
+            {/if}
             {#if items.length > 0}
               <ul id="results" class="results" role="listbox" bind:this={list}>
                 {#each items as item, i (item.id)}
@@ -2397,7 +2436,7 @@
                 <ul id="results" class="results" role="listbox">{@render exactRow()}</ul>
               {/if}
               {#if done}
-                <p class="empty" role="status">{emptyText}</p>
+                {#if !offer}<p class="empty" role="status">{emptyText}</p>{/if}
                 {#if offersFolders && all.length === 0}
                   <div class="nofolders">
                     <span>Lookout has no folders to search yet.</span>
@@ -3065,6 +3104,15 @@
   .fchip:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
+  }
+  .nofolders.offer {
+    padding: 14px 22px 4px;
+  }
+  .offerperms {
+    margin: 4px 0 0;
+    padding: 0 22px 0 40px;
+    color: var(--text-soft);
+    font-size: var(--fs-sm);
   }
   .trust {
     display: flex;

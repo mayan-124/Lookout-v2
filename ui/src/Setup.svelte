@@ -1,12 +1,13 @@
 <script lang="ts">
-  // First-run setup: five short steps, each skippable. The bar stays usable;
+  // First-run setup: six short steps, each skippable. The bar stays usable;
   // typing in the search box puts this panel aside until the box is empty again.
   import { invoke } from "@tauri-apps/api/core";
   import { onMount, tick } from "svelte";
   import ThemePicker from "./ThemePicker.svelte";
   import ModePicker from "./ModePicker.svelte";
   import { captureCombo } from "./hotkey";
-  import { STEPS, TRY_EXAMPLES } from "./setupflow";
+  import DailyFeatures from "./DailyFeatures.svelte";
+  import { DAILY_STEP, SHORTCUT_STEP, STEPS, THEME_STEP, TRY_EXAMPLES } from "./setupflow";
   import { plain as errorText } from "./errors";
 
   interface FolderChoice {
@@ -23,11 +24,14 @@
 
   let {
     step = $bindable(),
+    rerun = false,
     onclose,
     ontry,
     onchanged,
   }: {
     step: number;
+    /** Run again from Settings, not the first run. */
+    rerun?: boolean;
     /** Finished or skipped. */
     onclose: () => void;
     /** An example was picked: close and search for it. */
@@ -48,6 +52,8 @@
   let hotkeyMessage = $state("");
   let panel: HTMLElement | undefined = $state();
   let primary: HTMLButtonElement | undefined = $state();
+  let daily: ReturnType<typeof DailyFeatures> | undefined = $state();
+  let dailyReady = $state(false);
 
   const anyFolder = $derived(folders.some((f) => f.checked));
 
@@ -77,6 +83,7 @@
   $effect(() => {
     step;
     loaded;
+    dailyReady;
     tick().then(focus);
   });
 
@@ -128,9 +135,19 @@
     }
   }
 
+  /** Stays on the step if something failed; its row says what. */
+  async function turnOnTicked() {
+    busy = true;
+    message = "";
+    const ok = await daily?.turnOn();
+    onchanged();
+    busy = false;
+    if (ok) go(step + 1);
+  }
+
   // "Next" on the shortcuts step also applies a tick that was left as offered.
   async function next() {
-    if (step === 3) {
+    if (step === SHORTCUT_STEP) {
       busy = true;
       const ok = await saveStartup();
       busy = false;
@@ -211,7 +228,11 @@
         </span>
       </label>
       {#if loaded && !anyFolder}<p class="hint" role="status">Tick or add a folder to start.</p>{/if}
-    {:else if step === 3}
+    {:else if step === DAILY_STEP}
+      <h2 id="setup-title">Daily features</h2>
+      <p class="hint">Tick what you want. You can change this later in Settings.</p>
+      <DailyFeatures bind:this={daily} bind:ready={dailyReady} {rerun} {busy} />
+    {:else if step === SHORTCUT_STEP}
       <h2 id="setup-title">Shortcuts</h2>
       <label class="field">
         <span class="fl">
@@ -231,7 +252,7 @@
           <span class="track"></span>
         </span>
       </label>
-    {:else if step === 4}
+    {:else if step === THEME_STEP}
       <h2 id="setup-title">Make it yours</h2>
       <ModePicker />
       <ThemePicker />
@@ -257,12 +278,15 @@
       <button type="button" class="btn text" onclick={onclose}>Skip setup <kbd>Esc</kbd></button>
     {/if}
     <span class="msg" role="status">{message}</span>
-    {#if step > 1}<button type="button" class="btn" onclick={() => go(step - 1)}>Back</button>{/if}
+    {#if step > 1}<button type="button" class="btn" disabled={busy} onclick={() => go(step - 1)}>Back</button>{/if}
     {#if step === 1}
       <button bind:this={primary} type="button" class="btn primary" onclick={() => go(2)}>Start setup</button>
     {:else if step === 2}
       <button type="button" class="btn" onclick={() => go(3)}>Skip this step</button>
       <button bind:this={primary} type="button" class="btn primary" disabled={busy || !anyFolder} onclick={startIndexing}>Use these folders</button>
+    {:else if step === DAILY_STEP}
+      <button type="button" class="btn" disabled={busy} onclick={() => go(step + 1)}>Skip</button>
+      <button bind:this={primary} type="button" class="btn primary" disabled={busy || !dailyReady} onclick={turnOnTicked}>Turn on ticked</button>
     {:else if step < STEPS.length}
       <button bind:this={primary} type="button" class="btn primary" disabled={busy || !loaded} onclick={next}>Next</button>
     {:else}

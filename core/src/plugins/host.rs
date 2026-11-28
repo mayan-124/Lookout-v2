@@ -465,6 +465,22 @@ impl PluginHost {
         self.save()
     }
 
+    /// "Turn on" in one click: allows exactly the current permissions, and
+    /// starts a background add-on at once so a failure can be told. One that
+    /// does not start is turned off again.
+    pub fn turn_on(&self, id: &str) -> Result<(), HostError> {
+        self.set_enabled(id, true, true)?;
+        let p = self.find(id)?;
+        if !p.manifest.background {
+            return Ok(());
+        }
+        let started = self.ensure(p, &mut lock(&p.run));
+        if started.is_err() {
+            self.set_enabled(id, false, false)?;
+        }
+        started
+    }
+
     fn forget_failures(rt: &mut Runtime) {
         rt.failures = 0;
         rt.retry_at = None;
