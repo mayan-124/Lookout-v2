@@ -198,13 +198,26 @@ test("the quick actions follow the mode", () => {
 test("every registry action appears in help", () => {
   const listed = helpEntries(ACTIONS, "full", SHOW.full, false).map((e) => e.row.id);
   assert.deepEqual(listed, ACTIONS.map((a) => a.id));
-  // Outside Full the advanced ones are one click away; Disk waits for its switch.
+  // Outside Full the advanced ones are one click away; Disk waits for its switch,
+  // and rows that are only a word to type are left out.
   const open = helpEntries(ACTIONS, "standard", { ...SHOW.standard, disk: true }, true).flatMap((e) => ("row" in e ? [e.row.id] : []));
-  assert.deepEqual([...open].sort(), ACTIONS.map((a) => a.id).sort());
+  assert.deepEqual([...open].sort(), ACTIONS.filter((a) => a.word !== "hide").map((a) => a.id).sort());
   // Each category stays together, so it is headed once.
   const groups = ACTIONS.map((a) => a.category).filter((c, i, all) => c !== all[i - 1]);
   assert.equal(new Set(groups).size, groups.length);
   assert.equal(tipsFor(ACTIONS, "full", SHOW.full).length, ACTIONS.filter((a) => a.tip !== false).length);
+});
+
+test("Simple and Standard help teach no command word; Full still lists them", () => {
+  const listed = (mode) => helpEntries(ACTIONS, mode, SHOW.full, true).flatMap((e) => ("row" in e ? [e.row.id] : []));
+  for (const id of ["windowswitch", "saved", "lock", "sleep", "restart", "signout", "emptybin", "killport", "websearch"]) {
+    for (const mode of ["simple", "standard"]) assert.ok(!listed(mode).includes(id), `${mode} ${id}`);
+    assert.ok(listed("full").includes(id), id);
+  }
+  // A row that stays without its word is still there to choose.
+  assert.ok(listed("standard").includes("screenshot") && actionById("screenshot").word === "quiet");
+  const help = readFileSync(new URL("../src/Help.svelte", import.meta.url), "utf8");
+  assert.ok(help.includes("{#if words || !e.row.word}"));
 });
 
 test("help, tips and the quick actions read the one registry", () => {

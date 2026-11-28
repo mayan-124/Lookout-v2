@@ -36,6 +36,17 @@ fn power_action(what: Power) -> &'static str {
     }
 }
 
+/// The action Enter runs on a system entry.
+pub fn system_action(what: What) -> &'static str {
+    match what {
+        What::Theme => SYSTEM_THEME,
+        What::Page(_) | What::Control(_) => SYSTEM_PAGE,
+        What::Lock => SYSTEM_LOCK,
+        What::EmptyBin => SYSTEM_EMPTY_BIN,
+        What::Power(p) => power_action(p),
+    }
+}
+
 /// `Kind::Custom` names used by the results of this module.
 pub const KIND_URL: &str = "url";
 pub const KIND_SYSTEM: &str = "system";
@@ -613,20 +624,12 @@ impl Source for QuickSource {
             items.push(item);
         }
         for (entry, score) in quick::match_entries(&q.raw) {
-            let (title, action) = match entry.what {
-                What::Theme => (
-                    if self.theme.read().is_dark() {
-                        "Switch to light mode".to_owned()
-                    } else {
-                        "Switch to dark mode".to_owned()
-                    },
-                    SYSTEM_THEME,
-                ),
-                What::Page(_) | What::Control(_) => (entry.title.to_owned(), SYSTEM_PAGE),
-                What::Lock => (entry.title.to_owned(), SYSTEM_LOCK),
-                What::EmptyBin => (entry.title.to_owned(), SYSTEM_EMPTY_BIN),
-                What::Power(p) => (entry.title.to_owned(), power_action(p)),
+            let title = match entry.what {
+                What::Theme if self.theme.read().is_dark() => "Switch to light mode".to_owned(),
+                What::Theme => "Switch to dark mode".to_owned(),
+                _ => entry.title.to_owned(),
             };
+            let action = system_action(entry.what);
             let mut item = Item::new(
                 format!("system:{}", entry.id),
                 Kind::Custom(KIND_SYSTEM.into()),

@@ -67,6 +67,8 @@ pub struct Ui {
     pub disk_notice: bool,
     /// The bar stays open after a copy or a saved note.
     pub keep_open_after_copy: bool,
+    /// Home is only the search box until something is typed.
+    pub compact_home: bool,
 }
 
 /// What the window reads.
@@ -80,6 +82,7 @@ pub struct UiState {
     pub advanced_open: bool,
     pub disk_notice: bool,
     pub hide_after_copy: bool,
+    pub compact_home: bool,
 }
 
 impl Ui {
@@ -104,6 +107,7 @@ impl Ui {
             advanced_open: self.advanced_open,
             disk_notice: self.disk_notice,
             hide_after_copy: !self.keep_open_after_copy,
+            compact_home: self.compact_home,
         }
     }
 
@@ -314,6 +318,7 @@ mod tests {
             advanced_open: true,
             disk_notice: true,
             keep_open_after_copy: true,
+            compact_home: true,
         };
         s.reset_ui(&path).unwrap();
         assert_eq!(s.ui.mode(), Mode::Standard);

@@ -1,7 +1,9 @@
-//! The window switcher: `win ` and some words list open windows by title, and
-//! Enter brings the chosen one to the front. Titles live in the results on
-//! screen only: they are never stored, never written to a log and never given
-//! to the command line. The action knows a window by handle and process alone.
+//! The window switcher. A search whose words are in an open window's title
+//! offers up to two "switch to" results; `win ` and some words list every
+//! match, and Home lists the front ones. Enter brings a window to the front;
+//! it can also be minimized or closed. Titles live in the results on screen
+//! only: they are never stored, never written to a log and never given to the
+//! command line. The actions know a window by handle and process alone.
 
 use std::sync::Arc;
 
@@ -13,12 +15,38 @@ use crate::sources::{QueryContext, Source, Tier, ANSWER_SCORE};
 pub const SOURCE: &str = "windows";
 pub const KIND: &str = "window";
 pub const FOCUS: &str = "window_focus";
+pub const MINIMIZE: &str = "window_minimize";
+pub const CLOSE: &str = "window_close";
 const PREFIX: &str = "win ";
 
 /// One plain line for a window that will not come forward.
 pub const REFUSED: &str = "Windows did not switch to that window. If it runs as administrator, \
                            click it on the taskbar.";
 const CLOSED: &str = "That window has closed. Search again.";
+const NOT_MINIMIZED: &str = "Windows did not minimize that window. If it runs as \
+                             administrator, use its own button.";
+const STILL_OPEN: &str = "That window is still open. It may be asking you something: \
+                          switch to it.";
+/// Most "switch to" results an ordinary search offers.
+pub const MAX_MATCHES: usize = 2;
+/// Above files and apps whose names only contain the words, and below an exact
+/// name (`ranking::TIER_STEP` and up) or a Settings page's own name.
+pub const MATCH_SCORE: f32 = 1.15;
+/// Searches that belong to a command, not to window titles.
+const COMMAND_WORDS: &[&str] = &[
+    "clip",
+    "clips",
+    "clipboard",
+    "shot",
+    "screenshot",
+    "scrolling",
+    "scroll",
+    "record",
+    "extract",
+    "timer",
+    "kill",
+    "fav",
+];
 
 /// The words to filter by, if the text begins `win ` (the space is part of it,
 /// so a plain search for "win" stays a search).
@@ -68,6 +96,73 @@ pub trait Windows: Send + Sync {
     fn is_same(&self, id: WindowId) -> bool;
     /// Restores the window and gives it the focus; false if it did not get it.
     fn focus(&self, id: WindowId) -> bool;
+    /// Minimizes without taking the focus; false if it stayed.
+    fn minimize(&self, id: WindowId) -> bool;
+    /// Asks the window to close, as its own close button does; false if it is
+    /// still there a moment later.
+    fn close(&self, id: WindowId) -> bool;
+}
+
+/// One window as a result. `how` is its second line.
+pub fn item(w: OpenWindow, how: &str, score: f32) -> Item {
+    // The id reaches the action log, so it holds no part of the title.
+    let mut item = Item::new(
+        format!("window:{}:{}", w.id.handle, w.id.pid),
+        Kind::Custom(KIND.into()),
+        w.title,
+        SOURCE,
+    );
+    item.subtitle = Some(how.into());
+    item.uri = Some(w.id.encode());
+    item.score = score;
+    item.score_features.match_quality = 1.0;
+    item.metadata.insert("default_action".into(), FOCUS.into());
+    item
+}
+
+/// Whether an ordinary search offers this window: every typed word is a whole
+/// word of its title, or the title begins with the typed text.
+fn title_matches(title: &str, typed: &str) -> bool {
+    let (title, typed) = (title.to_lowercase(), typed.to_lowercase());
+    let words: Vec<&str> = title
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    title.starts_with(&typed) || typed.split_whitespace().all(|t| words.contains(&t))
+}
+
+/// The typed text to match titles with, if this is an ordinary search.
+fn ordinary(q: &ParsedQuery) -> Option<&str> {
+    let first = q.raw.split_whitespace().next()?;
+    let command = (q.trailing_space || q.raw.split_whitespace().nth(1).is_some())
+        && COMMAND_WORDS.iter().any(|w| first.eq_ignore_ascii_case(w));
+    (q.raw.chars().count() >= 2
+        && q.kind.is_none()
+        && q.time.is_none()
+        && q.ops.is_empty()
+        && !command)
+        .then_some(q.raw.as_str())
+}
+
+/// A PC with nothing open.
+pub struct NoWindows;
+
+impl Windows for NoWindows {
+    fn list(&self) -> Vec<OpenWindow> {
+        Vec::new()
+    }
+    fn is_same(&self, _: WindowId) -> bool {
+        false
+    }
+    fn focus(&self, _: WindowId) -> bool {
+        false
+    }
+    fn minimize(&self, _: WindowId) -> bool {
+        false
+    }
+    fn close(&self, _: WindowId) -> bool {
+        false
+    }
 }
 
 pub struct WindowSource(pub Arc<dyn Windows>);
@@ -88,42 +183,44 @@ impl Source for WindowSource {
         } else {
             q.raw.clone()
         };
-        let Some(filter) = command(&typed) else {
-            return;
-        };
-        let words: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
-        let items: Vec<Item> = self
-            .0
-            .list()
-            .into_iter()
-            .filter(|w| {
-                let title = w.title.to_lowercase();
-                words.iter().all(|word| title.contains(word))
-            })
-            .enumerate()
-            .map(|(n, w)| {
-                // The id reaches the action log, so it holds no part of the title.
-                let mut item = Item::new(
-                    format!("window:{}:{}", w.id.handle, w.id.pid),
-                    Kind::Custom(KIND.into()),
-                    w.title,
-                    SOURCE,
-                );
-                item.subtitle = Some(
-                    if w.minimized {
+        let items: Vec<Item> = if let Some(filter) = command(&typed) {
+            let words: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
+            self.0
+                .list()
+                .into_iter()
+                .filter(|w| {
+                    let title = w.title.to_lowercase();
+                    words.iter().all(|word| title.contains(word))
+                })
+                .enumerate()
+                .map(|(n, w)| {
+                    let how = if w.minimized {
                         "Minimized window"
                     } else {
                         "Open window"
-                    }
-                    .into(),
-                );
-                item.uri = Some(w.id.encode());
-                item.score = ANSWER_SCORE - n as f32 * 0.001;
-                item.score_features.match_quality = 1.0;
-                item.metadata.insert("default_action".into(), FOCUS.into());
-                item
-            })
-            .collect();
+                    };
+                    item(w, how, ANSWER_SCORE - n as f32 * 0.001)
+                })
+                .collect()
+        } else if let Some(typed) = ordinary(q) {
+            self.0
+                .list()
+                .into_iter()
+                .filter(|w| title_matches(&w.title, typed))
+                .take(MAX_MATCHES)
+                .enumerate()
+                .map(|(n, w)| {
+                    let how = if w.minimized {
+                        "Switch to minimized window"
+                    } else {
+                        "Switch to window"
+                    };
+                    item(w, how, MATCH_SCORE - n as f32 * 0.001)
+                })
+                .collect()
+        } else {
+            return;
+        };
         if !items.is_empty() {
             emit(items);
         }
@@ -186,6 +283,79 @@ impl Action for FocusAction {
     }
 }
 
+/// "Minimize" and "Close" on a window result.
+pub struct ShowAction {
+    pub windows: Arc<dyn Windows>,
+    pub close: bool,
+}
+
+impl Action for ShowAction {
+    fn id(&self) -> &str {
+        if self.close {
+            CLOSE
+        } else {
+            MINIMIZE
+        }
+    }
+
+    fn label(&self) -> &str {
+        if self.close {
+            "Close window"
+        } else {
+            "Minimize window"
+        }
+    }
+
+    fn applies_to(&self, kind: &Kind) -> bool {
+        matches!(kind, Kind::Custom(n) if n == KIND)
+    }
+
+    fn plan(&self, target: &Target) -> Result<Plan, ActionError> {
+        if target.origin.is_some() {
+            return Err(ActionError::NotApplicable {
+                action: self.id().into(),
+            });
+        }
+        let id = FocusAction(self.windows.clone())
+            .check(target.uri.as_deref().and_then(WindowId::decode))?;
+        let uri = id.encode();
+        Ok(Plan {
+            // The program itself asks about unsaved work, as with its own button.
+            risk: Risk::Safe,
+            preview: Preview {
+                from: None,
+                title: self.label().into(),
+                lines: Vec::new(),
+                warnings: Vec::new(),
+            },
+            undoable: false,
+            snapshot: serde_json::json!({ "window": uri }),
+            fingerprint: uri,
+        })
+    }
+
+    fn execute(&self, plan: &Plan, _proof: &Authorized) -> Result<Executed, ActionError> {
+        let id = FocusAction(self.windows.clone())
+            .check(plan.snapshot["window"].as_str().and_then(WindowId::decode))?;
+        let (worked, refused, message) = if self.close {
+            (self.windows.close(id), STILL_OPEN, "Closed the window")
+        } else {
+            (
+                self.windows.minimize(id),
+                NOT_MINIMIZED,
+                "Minimized the window",
+            )
+        };
+        if !worked {
+            return Err(ActionError::Refused(refused.into()));
+        }
+        Ok(Executed {
+            message: message.into(),
+            undo_token: None,
+        })
+    }
+}
+
 #[cfg(windows)]
 pub use real::SystemWindows;
 
@@ -201,8 +371,8 @@ mod real {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetAncestor, GetForegroundWindow, GetLastActivePopup, GetShellWindow,
         GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-        SetForegroundWindow, ShowWindowAsync, GA_ROOTOWNER, GWL_EXSTYLE, SW_RESTORE,
-        WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        PostMessageW, SetForegroundWindow, ShowWindowAsync, GA_ROOTOWNER, GWL_EXSTYLE, SW_RESTORE,
+        SW_SHOWMINNOACTIVE, WM_CLOSE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
     };
 
     use super::{OpenWindow, WindowId, Windows};
@@ -351,6 +521,30 @@ mod real {
             }
             false
         }
+
+        fn minimize(&self, id: WindowId) -> bool {
+            let hwnd = id.handle as HWND;
+            // SAFETY: a call on a window handle; a closed one makes it fail.
+            unsafe { ShowWindowAsync(hwnd, SW_SHOWMINNOACTIVE) };
+            // SAFETY: reads window state.
+            wait_for(|| unsafe { IsIconic(hwnd) } != 0)
+        }
+
+        fn close(&self, id: WindowId) -> bool {
+            // SAFETY: posts the message the close button sends; it carries no data.
+            unsafe { PostMessageW(id.handle as HWND, WM_CLOSE, 0, 0) };
+            wait_for(|| !self.is_same(id))
+        }
+    }
+
+    /// Whether `done` became true within a second.
+    fn wait_for(done: impl Fn() -> bool) -> bool {
+        (0..50).any(|_| {
+            done() || {
+                std::thread::sleep(Duration::from_millis(20));
+                false
+            }
+        })
     }
 }
 
@@ -404,6 +598,15 @@ mod tests {
             self.focused.lock().unwrap().push(w.pid);
             !self.refuse
         }
+        fn minimize(&self, w: WindowId) -> bool {
+            self.focus(w)
+        }
+        fn close(&self, w: WindowId) -> bool {
+            if !self.refuse {
+                self.open.lock().unwrap().retain(|&(p, _)| id(p) != w);
+            }
+            !self.refuse
+        }
     }
 
     fn ask(f: &Arc<Fake>, text: &str) -> Vec<Item> {
@@ -425,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_prefix_with_its_space_lists_windows() {
+    fn the_prefix_with_its_space_lists_windows() {
         let f = Fake::new(false);
         assert_eq!(ask(&f, "win ").len(), 2);
         assert_eq!(ask(&f, "WIN  excel budget")[0].title, "Budget.xlsx - Excel");
@@ -435,9 +638,63 @@ mod tests {
         );
         // Words that mean a date elsewhere are only title words here.
         assert!(ask(&f, "win today").is_empty());
-        for no in ["win", "window", "winmail", "mail"] {
+        for no in ["win", "window", "winmail"] {
             assert!(ask(&f, no).is_empty(), "{no}");
         }
+    }
+
+    #[test]
+    fn an_ordinary_search_offers_titles_by_whole_word_or_start() {
+        let f = Fake::new(false);
+        for yes in ["excel", "Budget", "bud", "excel budget", "budget.xlsx - ex"] {
+            let found = ask(&f, yes);
+            assert_eq!(found.len(), 1, "{yes}");
+            assert_eq!(found[0].subtitle.as_deref(), Some("Switch to window"));
+            assert!(found[0].score < crate::ranking::TIER_STEP);
+        }
+        // Part of a word, one letter, filters and other commands offer nothing.
+        for no in [
+            "udget",
+            "xce",
+            "b",
+            "clip excel",
+            "shot excel",
+            "excel ext:pdf",
+        ] {
+            assert!(ask(&f, no).is_empty(), "{no}");
+        }
+        // Never more than two, front first.
+        f.open
+            .lock()
+            .unwrap()
+            .extend([(3, "Excel two"), (4, "Excel three")]);
+        let titles: Vec<String> = ask(&f, "excel").into_iter().map(|i| i.title).collect();
+        assert_eq!(titles, ["Budget.xlsx - Excel", "Excel two"]);
+    }
+
+    #[test]
+    fn a_window_can_be_minimized_or_closed_and_a_refusal_is_one_line() {
+        let f = Fake::new(false);
+        let item = ask(&f, "win budget").remove(0);
+        for close in [false, true] {
+            let act = ShowAction {
+                windows: f.clone(),
+                close,
+            };
+            let plan = act.plan(&target(&item)).unwrap();
+            act.execute(&plan, &Authorized::for_tests()).unwrap();
+        }
+        assert!(ask(&f, "win budget").is_empty(), "closed");
+        let f = Fake::new(true);
+        let item = ask(&f, "win budget").remove(0);
+        let act = ShowAction {
+            windows: f.clone(),
+            close: true,
+        };
+        let plan = act.plan(&target(&item)).unwrap();
+        let err = act.execute(&plan, &Authorized::for_tests()).unwrap_err();
+        assert_eq!(err.to_string(), STILL_OPEN);
+        assert!(!STILL_OPEN.contains('\n') && !NOT_MINIMIZED.contains('\n'));
     }
 
     #[test]

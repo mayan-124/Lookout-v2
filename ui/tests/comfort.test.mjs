@@ -32,6 +32,9 @@ test("the search comes back within 30 seconds and not after", () => {
   assert.equal(keepsSearch(c.hiddenSecs(), true, "report"), true, "each hide starts the 30 seconds again");
   assert.equal(keepsSearch(c.hiddenSecs(), false, "report"), false, "switched off");
   assert.equal(keepsSearch(c.hiddenSecs(), true, "  "), false, "nothing was typed");
+  // The time is a setting.
+  assert.equal(keepsSearch(45, true, "report", 60), true);
+  assert.equal(keepsSearch(11, true, "report", 10), false);
 });
 
 test("open pages keep their five minutes unless the user closed the bar", () => {

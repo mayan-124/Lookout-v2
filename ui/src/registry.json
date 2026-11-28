@@ -14,6 +14,7 @@
   },
   {
     "id": "picturetext",
+    "word": "hide",
     "name": "Text in pictures",
     "category": "Find",
     "icon": "Search",
@@ -55,6 +56,7 @@
   },
   {
     "id": "websearch",
+    "word": "hide",
     "name": "Web search",
     "category": "Find",
     "icon": "Search",
@@ -68,19 +70,21 @@
   },
   {
     "id": "saved",
-    "name": "Saved files and folders",
+    "word": "hide",
+    "name": "Pinned items",
     "category": "Find",
     "icon": "Search",
     "mode": "simple",
-    "synonyms": ["saved", "saved files", "saved folders", "favorites", "favourites", "bookmarks", "pinned folders"],
+    "synonyms": ["pin", "pinned", "saved", "saved files", "saved folders", "favorites", "favourites", "bookmarks", "pinned folders"],
     "example": "fav ",
-    "description": "Choose Save in a row's menu, then type fav",
+    "description": "Ctrl+D pins a result to Home; fav lists them",
     "run": "fill",
     "stem": "fav ",
     "tip": false
   },
   {
     "id": "op_ext",
+    "word": "hide",
     "name": "Search by extension",
     "category": "Find",
     "icon": "Search",
@@ -93,6 +97,7 @@
   },
   {
     "id": "op_size",
+    "word": "hide",
     "name": "Search by size",
     "category": "Find",
     "icon": "Search",
@@ -106,6 +111,7 @@
   },
   {
     "id": "op_in",
+    "word": "hide",
     "name": "Search in a folder",
     "category": "Find",
     "icon": "Search",
@@ -119,6 +125,7 @@
   },
   {
     "id": "op_name",
+    "word": "hide",
     "name": "Search by file name",
     "category": "Find",
     "icon": "Search",
@@ -209,6 +216,7 @@
   },
   {
     "id": "screenshot",
+    "word": "quiet",
     "name": "Screenshot",
     "category": "Capture",
     "feature": "capture",
@@ -225,6 +233,7 @@
   },
   {
     "id": "scrolling",
+    "word": "quiet",
     "name": "Scrolling capture",
     "category": "Capture",
     "feature": "capture",
@@ -241,6 +250,7 @@
   },
   {
     "id": "record",
+    "word": "quiet",
     "name": "Screen recording",
     "category": "Capture",
     "feature": "capture",
@@ -257,6 +267,7 @@
   },
   {
     "id": "extracttext",
+    "word": "quiet",
     "name": "Text from screen",
     "category": "Capture",
     "feature": "capture",
@@ -273,6 +284,7 @@
   },
   {
     "id": "clipboard",
+    "word": "quiet",
     "name": "Clipboard",
     "category": "Capture",
     "icon": "Clipboard",
@@ -344,6 +356,7 @@
   },
   {
     "id": "timer",
+    "word": "quiet",
     "name": "Timer",
     "category": "Everyday",
     "icon": "Timers",
@@ -360,6 +373,7 @@
   },
   {
     "id": "timers",
+    "word": "quiet",
     "name": "Running timers",
     "category": "Everyday",
     "icon": "Timers",
@@ -377,6 +391,7 @@
   },
   {
     "id": "note",
+    "word": "quiet",
     "name": "Save a note",
     "category": "Everyday",
     "icon": "Notes",
@@ -397,6 +412,7 @@
   },
   {
     "id": "notes",
+    "word": "quiet",
     "name": "Recent notes",
     "category": "Everyday",
     "icon": "Notes",
@@ -414,6 +430,7 @@
   },
   {
     "id": "disk",
+    "word": "quiet",
     "name": "Disk analyzer",
     "category": "This PC",
     "icon": "Disk",
@@ -429,6 +446,7 @@
   },
   {
     "id": "killport",
+    "word": "hide",
     "name": "Free a port",
     "category": "This PC",
     "icon": "System",
@@ -461,6 +479,7 @@
   },
   {
     "id": "lock",
+    "word": "hide",
     "name": "Lock this PC",
     "category": "This PC",
     "icon": "System",
@@ -476,6 +495,7 @@
   },
   {
     "id": "sleep",
+    "word": "hide",
     "name": "Sleep",
     "category": "This PC",
     "icon": "System",
@@ -491,6 +511,7 @@
   },
   {
     "id": "restart",
+    "word": "hide",
     "name": "Restart this PC",
     "category": "This PC",
     "icon": "System",
@@ -506,6 +527,7 @@
   },
   {
     "id": "signout",
+    "word": "hide",
     "name": "Sign out",
     "category": "This PC",
     "icon": "System",
@@ -521,6 +543,7 @@
   },
   {
     "id": "emptybin",
+    "word": "hide",
     "name": "Empty Recycle Bin",
     "category": "This PC",
     "icon": "System",
@@ -536,13 +559,14 @@
   },
   {
     "id": "windowswitch",
+    "word": "hide",
     "name": "Switch window",
     "category": "This PC",
     "icon": "System",
     "mode": "simple",
     "synonyms": ["switch window", "open windows", "window switcher", "find window", "alt tab", "running windows"],
     "example": "win notepad",
-    "description": "Type win and part of a window's title",
+    "description": "Type part of a window's title, or win first",
     "run": "fill",
     "stem": "win ",
     "covered": "windows",
@@ -550,6 +574,7 @@
   },
   {
     "id": "darkmode",
+    "word": "quiet",
     "name": "Dark mode",
     "category": "This PC",
     "icon": "Settings",
@@ -582,6 +607,7 @@
   },
   {
     "id": "settings",
+    "word": "quiet",
     "name": "Lookout settings",
     "category": "Lookout",
     "icon": "Settings",
@@ -608,6 +634,7 @@
   },
   {
     "id": "appearance",
+    "word": "quiet",
     "name": "Theme and appearance",
     "category": "Lookout",
     "icon": "Settings",
@@ -639,6 +666,7 @@
   },
   {
     "id": "setup",
+    "word": "quiet",
     "name": "Run setup again",
     "category": "Lookout",
     "icon": "Settings",

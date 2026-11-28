@@ -144,9 +144,11 @@ pub struct Settings {
     pub pinned: bool,
     /// Keeps the text of recent searches (encrypted) for the Up arrow.
     pub remember_searches: bool,
-    /// A bar reopened within 30 seconds shows the last search again. The
-    /// window holds it in memory; it is never saved.
+    /// A bar reopened soon shows the last search again. The window holds it in
+    /// memory; it is never saved.
     pub remember_last_search: bool,
+    /// How soon is soon, in seconds.
+    pub last_search_secs: u32,
     /// Lets programs running as this Windows user search through the `lookout`
     /// command (a local named pipe). Off unless the user turns it on.
     pub cli_access: bool,
@@ -199,6 +201,9 @@ fn in_range(v: i64, lo: u64, hi: u64) -> bool {
     u64::try_from(v).is_ok_and(|v| (lo..=hi).contains(&v))
 }
 
+pub const DEFAULT_LAST_SEARCH_SECS: u32 = 30;
+pub const MAX_LAST_SEARCH_SECS: u32 = 3600;
+
 /// Disk chart colour modes; the first is the default.
 pub const CHART_COLORS: [&str; 3] = ["folder", "type", "age"];
 
@@ -229,6 +234,7 @@ impl Default for Settings {
             chart_colors: CHART_COLORS[0].to_owned(),
             remember_searches: true,
             remember_last_search: true,
+            last_search_secs: DEFAULT_LAST_SEARCH_SECS,
             cli_access: false,
             start_with_windows: None,
             pinned: false,
@@ -272,10 +278,19 @@ impl Settings {
         Ok(())
     }
 
-    /// Saves the "Remember my last search" switch; on any error nothing changes.
-    pub fn set_remember_last_search(&mut self, on: bool, path: &Path) -> Result<(), String> {
+    /// Saves how long the last search is kept; 0 switches that off and keeps
+    /// the time. On any error nothing changes.
+    pub fn set_last_search_keep(&mut self, secs: u32, path: &Path) -> Result<(), String> {
+        if secs > MAX_LAST_SEARCH_SECS {
+            return Err(format!(
+                "Choose at most {MAX_LAST_SEARCH_SECS} seconds for the last search."
+            ));
+        }
         let mut next = self.clone();
-        next.remember_last_search = on;
+        next.remember_last_search = secs > 0;
+        if secs > 0 {
+            next.last_search_secs = secs;
+        }
         next.save(path)
             .map_err(|e| format!("Could not save settings: {e}"))?;
         *self = next;
@@ -663,7 +678,7 @@ mod tests {
         s.window_positions
             .insert(monitor_key("DISPLAY1", 0, 0, 1920, 1080), (300, 120));
         s.pinned = true;
-        s.set_remember_last_search(false, &path).unwrap();
+        s.set_last_search_keep(0, &path).unwrap();
         s.reset_window_positions(&path).unwrap();
         let back = Settings::load(&path).unwrap();
         assert!(!back.remember_last_search && back.window_positions.is_empty());
@@ -862,6 +877,7 @@ mod tests {
             pinned: true,
             remember_searches: false,
             remember_last_search: false,
+            last_search_secs: 60,
             cli_access: true,
             start_with_windows: Some(true),
             window_positions: [("M|0,0|1x1".to_owned(), (5, 6))].into(),

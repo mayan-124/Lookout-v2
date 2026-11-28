@@ -14,6 +14,7 @@ export interface UiState {
   advanced_open: boolean;
   disk_notice: boolean;
   hide_after_copy: boolean;
+  compact_home: boolean;
 }
 
 export const MODES: readonly { id: Mode; name: string; what: string }[] = [
@@ -86,6 +87,11 @@ export interface Action {
   homeMin?: Mode;
   /** A shorter name for the grid button. */
   label?: string;
+  /**
+   * Its example is a word to type. Outside Full, help leaves the whole row out
+   * ("hide") or shows what it does without the word ("quiet").
+   */
+  word?: "hide" | "quiet";
 }
 
 export const RANK: Record<Mode, number> = { simple: 0, standard: 1, full: 2 };
@@ -110,7 +116,7 @@ const shown = (rows: Action[], mode: Mode, show: Show) => rows.filter((r) => adv
 
 /** Full lists everything in table order; else the basic groups, then "Advanced". */
 export function helpEntries(rows: Action[], mode: Mode, show: Show, open: boolean): HelpEntry[] {
-  const list = shown(rows, mode, show);
+  const list = shown(rows, mode, show).filter((r) => mode === "full" || r.word !== "hide");
   const entry = (row: Action): HelpEntry => ({ row });
   if (mode === "full") return list.map(entry);
   const advanced = list.filter((r) => r.advanced);
@@ -144,15 +150,17 @@ export function footerHints(
     paste?: boolean;
     /** Enter on this result card, or Esc on this Settings page, hides the bar. */
     hides?: boolean;
+    /** A row on Home is selected. */
+    picked?: boolean;
   },
 ): string[] {
   const jump = o.mode === "full" ? ["Ctrl+1–5 sections"] : o.hotkey ? [`${o.hotkey} opens Lookout`] : [];
   const esc = o.clears ? "Esc clear" : "Esc hide";
   const enter = o.enter ? `Enter ${o.enter.replace("…", "").toLowerCase()}` : "↑↓ pick";
   const hints: Record<View, string[]> = {
-    home: ["Type ? for help", esc, ...jump],
+    home: o.picked ? [enter, "→ actions", esc] : ["Type ? for help", esc, ...jump],
     history: ["Enter use", "Del delete", "Esc back"],
-    results: [enter, o.paste ? "Shift+Enter paste" : o.path ? "Tab complete" : "Tab filter", esc],
+    results: [enter, o.paste ? "Shift+Enter paste" : o.path ? "Tab complete" : "→ actions", esc],
     help: ["↑↓ pick", "Enter try", esc],
     setup: ["Tab next", "Enter choose", "Esc skip setup"],
     settings: ["Tab next", o.hides ? "Esc hide" : "Esc close"],

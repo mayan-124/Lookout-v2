@@ -18,10 +18,9 @@ use lookout_core::content::ocr::WindowsOcr;
 use lookout_core::diagnostics::{self, Facts};
 use lookout_core::engine::Sink;
 use lookout_core::guard::{self, contain};
-use lookout_core::item::Item;
 use lookout_core::latency::{self, Sample};
 use lookout_core::log;
-use lookout_core::lookout::{Lookout, RebuildProgress, StartOptions, Status};
+use lookout_core::lookout::{Home, Lookout, RebuildProgress, StartOptions, Status};
 use lookout_core::pause::PauseState;
 use lookout_core::placement::{self, Rect, Screen};
 use lookout_core::settings::{monitor_key, Appearance, Settings, DEFAULT_HOTKEY};
@@ -365,6 +364,7 @@ struct Shown {
     hidden_secs: Option<u64>,
     /// The "Remember my last search" setting.
     remember_last_search: bool,
+    last_search_secs: u32,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -537,12 +537,12 @@ fn reset_window_position(app: AppHandle, services: State<Services>) -> Result<()
 }
 
 #[tauri::command]
-fn set_remember_last_search(
-    on: bool,
+fn set_last_search_keep(
+    secs: u32,
     services: State<Services>,
     shared: State<Shared>,
 ) -> Result<PrivacyState, String> {
-    lock(&services.settings).set_remember_last_search(on, &services.paths.settings())?;
+    lock(&services.settings).set_last_search_keep(secs, &services.paths.settings())?;
     Ok(privacy_of(&services, &shared))
 }
 
@@ -671,9 +671,11 @@ fn show_bar(app: &AppHandle) -> Result<(), BarError> {
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     *lock(&shared.pending) = Some(Pending { id, t0, native_ms });
     let hidden_secs = lock(&shared.hidden_at).map(|t| t.elapsed().as_secs());
-    let remember_last_search = app
-        .try_state::<Services>()
-        .is_some_and(|s| lock(&s.settings).remember_last_search);
+    let (remember_last_search, last_search_secs) =
+        app.try_state::<Services>().map_or((false, 0), |s| {
+            let s = lock(&s.settings);
+            (s.remember_last_search, s.last_search_secs)
+        });
     app.emit_to(
         BAR,
         "bar-shown",
@@ -681,6 +683,7 @@ fn show_bar(app: &AppHandle) -> Result<(), BarError> {
             id,
             hidden_secs,
             remember_last_search,
+            last_search_secs,
         },
     )?;
     Ok(())
@@ -1066,12 +1069,10 @@ fn index_status(services: State<Services>) -> Option<Status> {
     Some(status)
 }
 
-/// The Home "Recent" files. Async: it looks at each file on disk.
+/// The Home lists. Async: it looks at each recent file on disk.
 #[tauri::command]
-async fn recent_files(services: State<'_, Services>) -> Result<Vec<Item>, String> {
-    Ok(services
-        .current()
-        .map_or_else(Vec::new, |l| l.recent_files(6)))
+async fn home_lists(services: State<'_, Services>) -> Result<Home, String> {
+    Ok(services.current().map(|l| l.home()).unwrap_or_default())
 }
 
 // ----------------------------------------------------------- search history
@@ -1811,6 +1812,7 @@ struct PrivacyState {
     cli_access: bool,
     remember_searches: bool,
     remember_last_search: bool,
+    last_search_secs: u32,
     start_with_windows: bool,
     web_search: lookout_core::websearch::SearchEngine,
     ignore_hotkey_in_fullscreen: bool,
@@ -1842,6 +1844,7 @@ fn privacy_of(services: &Services, shared: &Shared) -> PrivacyState {
         cli_access: s.cli_access,
         remember_searches: s.remember_searches,
         remember_last_search: s.remember_last_search,
+        last_search_secs: s.last_search_secs,
         start_with_windows: s.starts_with_windows(),
         web_search: s.web_search,
         ignore_hotkey_in_fullscreen: s.ignore_hotkey_in_fullscreen,
@@ -1895,6 +1898,11 @@ fn set_ui_show(show: Show, services: State<Services>) -> Result<UiState, String>
 #[tauri::command]
 fn set_hide_tips(hide: bool, services: State<Services>) -> Result<UiState, String> {
     change_ui(&services, |ui| ui.hide_tips = hide)
+}
+
+#[tauri::command]
+fn set_compact_home(compact: bool, services: State<Services>) -> Result<UiState, String> {
+    change_ui(&services, |ui| ui.compact_home = compact)
 }
 
 #[tauri::command]
@@ -2339,6 +2347,7 @@ fn start_lookout(app: &AppHandle, services: &Services) -> Option<Lookout> {
         synthetic_uses_folders: services.flags.synthetic_with_folders,
         start_menu_dirs: default_start_menu_dirs(),
         store_apps: true,
+        windows: Some(Arc::new(lookout_core::winswitch::SystemWindows)),
         storage,
         idle: Arc::new(SystemIdle),
         ocr: Arc::new(WindowsOcr),
@@ -2840,7 +2849,7 @@ pub fn run() {
             quickkey_rename,
             quickkey_delete,
             index_status,
-            recent_files,
+            home_lists,
             remove_search,
             privacy_state,
             get_appearance,
@@ -2850,6 +2859,7 @@ pub fn run() {
             set_ui_show,
             set_hide_tips,
             set_hide_after_copy,
+            set_compact_home,
             set_advanced_open,
             dismiss_disk_notice,
             reset_ui,
@@ -2920,7 +2930,7 @@ pub fn run() {
             skip_list,
             missing_folders,
             reset_window_position,
-            set_remember_last_search,
+            set_last_search_keep,
             drag_check,
             clip_thumbnail,
             set_keep_images,

@@ -13,6 +13,7 @@ export const ui = $state<UiState>({
   advanced_open: false,
   disk_notice: false,
   hide_after_copy: true,
+  compact_home: false,
 });
 
 /** Runs a command that answers with the new state. Returns the error, or "". */
@@ -30,6 +31,7 @@ export const setMode = (mode: Mode) => apply("set_ui_mode", { mode });
 export const setShow = (feature: Feature, on: boolean) => apply("set_ui_show", { show: { ...ui.show, [feature]: on } });
 export const setHideTips = (hide: boolean) => apply("set_hide_tips", { hide });
 export const setHideAfterCopy = (hide: boolean) => apply("set_hide_after_copy", { hide });
+export const setCompactHome = (compact: boolean) => apply("set_compact_home", { compact });
 export const setAdvancedOpen = (open: boolean) => apply("set_advanced_open", { open });
 export const dismissDiskNotice = () => apply("dismiss_disk_notice");
 

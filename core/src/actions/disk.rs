@@ -2,6 +2,7 @@
 //! copy its path and Move to Recycle Bin. They run through the same gate as
 //! every other action; the path always comes from the scan held by the backend.
 
+use crate::actions::open::Launcher;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -13,6 +14,7 @@ use crate::share::Rules;
 pub const REVEAL: &str = "reveal";
 pub const COPY_PATH: &str = "copy_path";
 pub const COPY_FILE: &str = "copy_file";
+pub const OPEN_FOLDER: &str = "open_folder";
 pub const RECYCLE: &str = "recycle";
 /// Said by every Disk confirmation that moves something to the Recycle Bin.
 const RECYCLE_NOTE: &str = "What you move goes to the Windows Recycle Bin and can be restored from there. Lookout has no in-app undo.";
@@ -34,6 +36,12 @@ fn existing_path(target: &Target) -> Result<PathBuf, ActionError> {
 
 fn file_or_folder(kind: &Kind) -> bool {
     matches!(kind, Kind::File | Kind::Folder)
+}
+
+/// What has a place on disk to point at: an app counts when it is a file (a
+/// Store app is refused later, as it has no full path).
+fn has_place(kind: &Kind) -> bool {
+    file_or_folder(kind) || *kind == Kind::App
 }
 
 pub fn human(bytes: u64) -> String {
@@ -88,7 +96,7 @@ impl Action for RevealAction {
         "Show in folder"
     }
     fn applies_to(&self, kind: &Kind) -> bool {
-        file_or_folder(kind)
+        has_place(kind)
     }
     fn plan(&self, target: &Target) -> Result<Plan, ActionError> {
         let path = existing_path(target)?;
@@ -112,6 +120,57 @@ impl Action for RevealAction {
             .map_err(|e| ActionError::Failed(format!("could not open Explorer: {e}")))?;
         Ok(Executed {
             message: "Shown in Explorer".into(),
+            undo_token: None,
+        })
+    }
+}
+
+// ----------------------------------------------------------- open folder
+
+/// Opens the folder a file, folder or app sits in.
+pub struct OpenFolderAction(pub Arc<dyn Launcher>);
+
+impl Action for OpenFolderAction {
+    fn id(&self) -> &str {
+        OPEN_FOLDER
+    }
+    fn label(&self) -> &str {
+        "Open folder"
+    }
+    fn applies_to(&self, kind: &Kind) -> bool {
+        has_place(kind)
+    }
+    fn plan(&self, target: &Target) -> Result<Plan, ActionError> {
+        let path = existing_path(target)?;
+        // A drive's root has nothing above it.
+        let folder = path
+            .parent()
+            .filter(|p| p.is_dir())
+            .ok_or_else(|| ActionError::NothingToDo("there is no folder above this".into()))?;
+        Ok(Plan {
+            risk: Risk::Safe,
+            preview: Preview {
+                from: None,
+                title: "Open folder".into(),
+                lines: vec![folder.display().to_string()],
+                warnings: vec![],
+            },
+            undoable: false,
+            snapshot: serde_json::json!({ "path": folder }),
+            fingerprint: format!("open_folder|{}", folder.display()),
+        })
+    }
+    fn execute(&self, plan: &Plan, _: &Authorized) -> Result<Executed, ActionError> {
+        let path = snapshot_path(plan)?;
+        // Only ever a folder: nothing here can start a program.
+        if !path.is_dir() {
+            return Err(ActionError::Stale("that folder is no longer there".into()));
+        }
+        self.0
+            .open(&path)
+            .map_err(|e| ActionError::Failed(format!("could not open Explorer: {e}")))?;
+        Ok(Executed {
+            message: "Opened the folder".into(),
             undo_token: None,
         })
     }
@@ -141,7 +200,7 @@ impl Action for CopyPathAction {
         "Copy path"
     }
     fn applies_to(&self, kind: &Kind) -> bool {
-        file_or_folder(kind)
+        has_place(kind)
     }
     fn plan(&self, target: &Target) -> Result<Plan, ActionError> {
         // A path is text: copying it works even if the item has since gone.

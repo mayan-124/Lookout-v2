@@ -5,11 +5,14 @@
 
   let {
     entries,
+    words,
     selected = $bindable(),
     onpick,
     ontoggle,
   }: {
     entries: HelpEntry[];
+    /** Show the words to type for commands (Full mode). */
+    words: boolean;
     selected: number;
     onpick: (action: Action) => void;
     ontoggle: () => void;
@@ -46,7 +49,7 @@
     >
       {#if "row" in e}
         <span class="what">{e.row.description}</span>
-        <span class="code example">{e.row.example}</span>
+        {#if words || !e.row.word}<span class="code example">{e.row.example}</span>{/if}
       {:else}
         <span class="label-caps">{e.open ? "▾" : "▸"} Advanced</span>
       {/if}

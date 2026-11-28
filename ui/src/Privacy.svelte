@@ -6,7 +6,7 @@
   import ThemePicker from "./ThemePicker.svelte";
   import ModePicker from "./ModePicker.svelte";
   import { modeLabel, type Feature } from "./modes";
-  import { resetToRecommended, setAdvancedOpen, setHideAfterCopy, setHideTips, setShow, ui } from "./uistate.svelte";
+  import { resetToRecommended, setAdvancedOpen, setCompactHome, setHideAfterCopy, setHideTips, setShow, ui } from "./uistate.svelte";
   import { captureCombo } from "./hotkey";
   import { look, setGlass, setReduceMotion } from "./look.svelte";
   import { getVersion } from "@tauri-apps/api/app";
@@ -31,6 +31,7 @@
     start_with_windows: boolean;
     remember_searches: boolean;
     remember_last_search: boolean;
+    last_search_secs: number;
     web_search: "off" | "duckduckgo" | "google" | "bing";
     ignore_hotkey_in_fullscreen: boolean;
   }
@@ -460,13 +461,21 @@
   }
 
   let windowMessage = $state("");
-  async function setRememberLast(el: HTMLInputElement) {
+  /** Seconds the last search is kept; 0 is off. A hand-set time is offered too. */
+  const keepSecs = $derived.by(() => (info?.remember_last_search === false ? 0 : (info?.last_search_secs ?? 30)));
+  const KEEP_CHOICES = $derived([...new Set([0, 10, 30, 60, 300, keepSecs])].sort((a, b) => a - b));
+  const keepLabel = (secs: number) =>
+    secs === 0 ? "Off" : secs < 60 || secs % 60 ? `${secs} seconds` : secs === 60 ? "1 minute" : `${secs / 60} minutes`;
+  async function setLastSearchKeep(el: HTMLSelectElement) {
     windowMessage = "";
     try {
-      const s = await invoke<PrivacyState>("set_remember_last_search", { on: el.checked });
-      if (info) info.remember_last_search = s.remember_last_search;
+      const s = await invoke<PrivacyState>("set_last_search_keep", { secs: Number(el.value) });
+      if (info) {
+        info.remember_last_search = s.remember_last_search;
+        info.last_search_secs = s.last_search_secs;
+      }
     } catch (e) {
-      el.checked = !el.checked;
+      el.value = String(keepSecs);
       windowMessage = errorText(e);
     }
   }
@@ -700,6 +709,7 @@
           {@render toggle("Glass effect", "Tinted panels. Off makes them solid.", look.glass, (el) => setGlass(el.checked))}
           {@render toggle("Reduce motion", "Stops animations. Follows Windows until you change it.", look.reduced, (el) => setReduceMotion(el.checked))}
           {@render toggle("Tips on Home", "Short examples of what to type.", !ui.hide_tips, (el) => choose(setHideTips(!el.checked)))}
+          {@render toggle("Compact home", "Only the search box until you type.", ui.compact_home, (el) => choose(setCompactHome(el.checked)))}
         </div>
         <div class="scard">
           <h3 class="stitle">Mode</h3>
@@ -768,13 +778,14 @@
           ui.hide_after_copy,
           (el) => choose(setHideAfterCopy(el.checked)),
         )}
-        {@render toggle(
-          "Remember my last search for 30 seconds",
-          "Reopened soon, the bar shows it again. It is never saved to disk.",
-          info?.remember_last_search ?? true,
-          setRememberLast,
-          !info,
-        )}
+        <label class="field">
+          {@render field("Keep my last search", "Reopened this soon, the bar shows it again. It is never saved to disk.")}
+          <select value={String(keepSecs)} disabled={!info} onchange={(e) => setLastSearchKeep(e.currentTarget)}>
+            {#each KEEP_CHOICES as secs (secs)}
+              <option value={String(secs)}>{keepLabel(secs)}</option>
+            {/each}
+          </select>
+        </label>
         <div class="field">
           {@render field("Window position", "Forgets where you dragged the window, on every screen.")}
           <button class="btn" onclick={resetWindowPosition}>Reset window position</button>

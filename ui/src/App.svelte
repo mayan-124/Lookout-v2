@@ -14,15 +14,15 @@
   import Help from "./Help.svelte";
   import Row from "./Row.svelte";
   import Icon, { type Ico } from "./Icon.svelte";
-  import { ageLabel, changesList, hidesBar, rowKeys, verbOf } from "./rows";
+  import { ageLabel, changesList, changesPins, hidesBar, isQuiet, rowKeys, verbOf } from "./rows";
   import { isClipRow, isFileRow, movedEnough } from "./dragout";
   import { iconLoader, iconTarget, rowWatcher } from "./appicons";
   import { keepsPage, keepsSearch } from "./lastsearch";
   import { FOLDER_STEP, chooseFoldersTarget, isHelpQuery, stepOnShow } from "./setupflow";
   import { dockItems, footerHints, helpEntries, isDiskCommand, tipsFor, typedSection, type Action, type View } from "./modes";
   import { ACTIONS, ICONS, actionById, homeActions } from "./registry";
-  import { didYouMean, ghostFor, isListCommand, isNoteText, opensHistory, placeSuggestions, readLine, suggest, worthRemembering } from "./discover";
-  import { isFreshClip, recentRows } from "./home";
+  import { didYouMean, ghostFor, isListCommand, isNoteText, opensHistory, placeSuggestions, placeWindows, readLine, suggest, worthRemembering } from "./discover";
+  import { homeRows } from "./home";
   import { NO_VALUES, OPERATOR_HINT, completions, operatorGhost, removeOperator, type OperatorValues } from "./operators";
   import { dismissDiskNotice, loadUi, setHideTips, setShow, ui } from "./uistate.svelte";
   import { footerStatus, indexLine, type IndexCounts } from "./indexstatus";
@@ -74,6 +74,7 @@
     id: number;
     hidden_secs: number | null;
     remember_last_search: boolean;
+    last_search_secs: number;
   }
   interface Status extends IndexCounts {
     folders: number;
@@ -137,21 +138,33 @@
     const g = LANES[lane].groups;
     return g ? all.filter((i) => (g as readonly string[]).includes(groupOf(i))) : all;
   });
-  // Home list: the latest clips (an ordinary "clip " query), then the recently
-  // changed files the backend picked. Nothing is stored.
+  // Home: the latest clips (an ordinary "clip " query), then the lists the
+  // backend picks. Window titles stay in memory; nothing here is stored.
+  interface HomeLists {
+    windows: Item[];
+    pinned: Item[];
+    files: Item[];
+    apps: Item[];
+  }
   let homeGen = 0;
+  let listsAsked = 0;
   let homeClips: Item[] = $state([]);
-  let homeFiles: Item[] = $state([]);
+  let lists = $state<HomeLists>({ windows: [], pinned: [], files: [], apps: [] });
+  const pinnedIds = $derived(new Set(lists.pinned.map((i) => i.id)));
   const mask = (t: string) => t.replaceAll("[masked]", "\u2022\u2022\u2022\u2022");
-  function loadHome() {
-    generation += 1;
-    const asked = (homeGen = generation);
-    invoke("query", { generation, text: "clip " }).catch(() => {});
-    invoke<Item[]>("recent_files")
-      .then((files) => {
-        if (asked === homeGen) homeFiles = files;
+  function loadLists() {
+    const asked = ++listsAsked;
+    invoke<HomeLists>("home_lists")
+      .then((found) => {
+        if (asked === listsAsked && found) lists = found;
       })
       .catch(() => {});
+  }
+  function loadHome() {
+    generation += 1;
+    homeGen = generation;
+    invoke("query", { generation, text: "clip " }).catch(() => {});
+    loadLists();
   }
   // A clip says when it was copied, and whether it is code.
   const clipParams = (i: Item) =>
@@ -160,24 +173,16 @@
   const isCode = (i: Item) => kindName(i.kind) === "clipboard" && !!clipParams(i).code;
   // A clip of a temp-folder path is noise in the recent list.
   const TEMPISH = /[\\/]temp[\\/]/i;
-  interface Recent {
-    item: Item;
-    ts: number;
-    clip: boolean;
-    /** Copied in the last few minutes. */
-    fresh?: boolean;
-  }
-  const recent = $derived.by<Recent[]>(() => {
-    const now = Math.floor(Date.now() / 1000);
-    const clips = homeClips
-      .filter((i) => !TEMPISH.test(i.title))
-      .map((item) => ({ item, ts: clipTime(item), clip: true }))
-      // Newest first: pinned clips lead the query's own order, however old.
-      .sort((a, b) => b.ts - a.ts)
-      .slice(0, 3);
-    const files = homeFiles.map((item) => ({ item, ts: item.modified_at ?? 0, clip: false }));
-    return recentRows<Recent>([...clips, ...files], now).map((r) => ({ ...r, fresh: isFreshClip(r, now) }));
-  });
+  const homeEntries = $derived(
+    homeRows(
+      lists,
+      homeClips.filter((i) => !TEMPISH.test(i.title)).map((item) => ({ item, ts: clipTime(item) })),
+      Math.floor(Date.now() / 1000),
+    ),
+  );
+  // The selected Home row, by its result, so it follows a pinned item that moves.
+  let homeId = $state<string | null>(null);
+  let homeList: HTMLElement | undefined = $state();
   // Matched words in a content snippet sit between  and .
   function snippetParts(snippet: string): { text: string; hit: boolean }[] {
     return snippet
@@ -384,8 +389,8 @@
     dates: "Answer",
     zones: "Answer",
     notes: "Notes",
-    saved: "Saved",
-    windows: "Open windows",
+    saved: "Pinned",
+    windows: "Switch to",
   };
   // Plugin results carry messages (a rename preview, an error): wrap, never cut off.
   const isPlugin = (i: Item) => !(i.source in GROUPS);
@@ -521,6 +526,11 @@
   function pickAction(a: Action) {
     if (a.try === undefined && ["settings", "appearance", "privacy", "setup"].includes(a.run)) runAction(a);
     else tryExample(a.try ?? a.example);
+  }
+  /** A help row. Outside Full a command is run, not shown as a word to type. */
+  function pickHelp(a: Action) {
+    if (ui.mode !== "full" && a.word) runAction(a);
+    else pickAction(a);
   }
   const actionItem = (a: Action): Item => ({
     id: `action:${a.id}`,
@@ -720,6 +730,7 @@
     notice = "";
     pending = null;
     understoodLine = "";
+    if (text.trim() !== "") homeId = null;
     if (text.trim() === "") {
       all = [];
       filters = null;
@@ -791,6 +802,7 @@
     const found = quiet ? [] : suggest(query, ACTIONS, ui.mode, ui.show);
     // A suggested action counts as a match: no web search beside it.
     if (found.length > 0) results = results.filter((i) => !i.metadata?.fallback);
+    results = placeWindows(results, query);
     const intent = found.some((s) => s.exact);
     const ready = u.done || results.length > 0 || intent;
     all = ready ? placeSuggestions(results, found, query, actionItem) : results;
@@ -866,7 +878,8 @@
       if (typed && panel) settingsTyped = true;
       return;
     }
-    remember(query);
+    // The words that found a window come from its title: they are not kept.
+    if (kindName(item.kind) !== "window") remember(query);
     begin(() => invoke<Prepared>("prepare_action", { action, id: item.id }));
   }
 
@@ -876,11 +889,12 @@
   }
 
   function finish(done: Done) {
-    if ((done.action_id === "open" || done.action_id === "reveal") && !done.was_undo) {
+    if (["open", "reveal", "open_folder"].includes(done.action_id) && !done.was_undo) {
       cleared = true;
       hideBar(); // opened: get out of the way
       return;
     }
+    if (changesPins(done.action_id)) loadLists();
     if (changesList(done.action_id)) {
       // A saved note leaves the box, so Enter cannot save it twice; lists reload.
       if (done.action_id === "note_save" && !done.was_undo) query = "";
@@ -895,6 +909,7 @@
       tick().then(() => input?.focus());
       return;
     }
+    if (!done.was_undo && isQuiet(done.action_id)) return;
     const hides = !done.was_undo && verbOf(done.action_id) === "rename_files";
     card = { phase: "result", ok: true, message: done.message, undoable: done.undoable, hides };
   }
@@ -925,6 +940,27 @@
     input?.focus();
   }
 
+  // Windows reports a move when the bar appears under a resting pointer: only a
+  // pointer that has really moved picks a Home row.
+  let pointerAt: string | null = null;
+  function hoverHome(e: MouseEvent, id: string) {
+    const at = `${e.screenX},${e.screenY}`;
+    if (pointerAt !== null && pointerAt !== at) homeId = id;
+    pointerAt = at;
+  }
+  /** Down picks the first Home row; Up from it goes back to the box alone. */
+  function homeMove(delta: number) {
+    const n = homeEntries.length;
+    if (n === 0 || compact) return;
+    if (delta < 0 && homeAt <= 0) {
+      homeId = null;
+      return;
+    }
+    const at = homeAt < 0 ? 0 : (homeAt + delta) % n;
+    homeId = homeEntries[at].item.id;
+    tick().then(() => homeList?.querySelector<HTMLElement>(`[data-home="${at}"]`)?.scrollIntoView({ block: "nearest" }));
+  }
+
   function move(delta: number) {
     if (rows === 0) return;
     selected = (selected + delta + rows) % rows;
@@ -939,10 +975,13 @@
     loadUi();
     const unlistenShown = listen<Shown>("bar-shown", async (event) => {
       const { hidden_secs, remember_last_search } = event.payload;
-      const search = !panel && !disk && keepsSearch(hidden_secs, remember_last_search, query);
+      const search =
+        !panel && !disk && keepsSearch(hidden_secs, remember_last_search, query, event.payload.last_search_secs);
       const page = keepsPage(hidden_secs, panel || disk || setup !== null, cleared);
       notice = "";
       earlier = null;
+      homeId = null;
+      pointerAt = null;
       menu = null;
       press = null;
       refusal = null;
@@ -1093,7 +1132,7 @@
         return;
       }
     }
-    if (plain && e.key === "ArrowUp" && e.target === input && opensHistory(view, query)) {
+    if (plain && e.key === "ArrowUp" && e.target === input && !homeCur && opensHistory(view, query)) {
       e.preventDefault();
       openHistory();
       return;
@@ -1163,21 +1202,13 @@
         e.preventDefault();
         const entry = helpList[helpSelected];
         if (!entry || e.repeat) return;
-        if ("row" in entry) pickAction(entry.row);
+        if ("row" in entry) pickHelp(entry.row);
         else helpAdvanced = !helpAdvanced;
         return;
       }
     }
-    // Right at the end of the search text goes to the preview's buttons; Left
-    // comes back, as do Up and Down before they move the selection.
-    if (plain && e.key === "ArrowRight" && e.target === input && caretIsAtEnd()) {
-      const first = previewButtons()[0];
-      if (first) {
-        e.preventDefault();
-        first.focus();
-        return;
-      }
-    }
+    // Left and Right move along the preview's buttons; Left from the first, and
+    // Up or Down, go back to the search box.
     if (plain && e.target instanceof HTMLButtonElement) {
       const buttons = previewButtons();
       const at = buttons.indexOf(e.target);
@@ -1190,6 +1221,8 @@
       if (at >= 0 && (e.key === "ArrowUp" || e.key === "ArrowDown")) input?.focus();
     }
     if (rowKey(e, menuAsked)) return;
+    // The webview's own bookmark key does nothing here.
+    if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === "d") e.preventDefault();
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && query === "") {
       // With text in the box, Ctrl+Z stays the text field's own undo.
       e.preventDefault();
@@ -1224,16 +1257,20 @@
         break;
       case "ArrowDown":
         e.preventDefault();
-        move(1);
+        if (home) homeMove(1);
+        else move(1);
         break;
       case "ArrowUp":
         e.preventDefault();
-        move(-1);
+        if (home) homeMove(-1);
+        else move(-1);
         break;
       case "Enter":
         if (e.target instanceof HTMLButtonElement) break; // the button's own click
         e.preventDefault();
-        if (isDiskCommand(query)) openDisk();
+        if (home) {
+          if (!e.repeat) activate(homeCur);
+        } else if (isDiskCommand(query)) openDisk();
         else if (!e.repeat && understood && selected === items.length) exactWords();
         else if (!e.repeat && offersFolders && done && items.length === 0) chooseFolders();
         else if (!e.repeat) activate(items[selected]);
@@ -1315,6 +1352,11 @@
   const subOf = (i: Item) =>
     isRunning(i) ? `${leftText(secsLeft(i))} left · ends at ${endClock(i.metadata!.end_ms as number)}` : i.subtitle;
   const home = $derived(query.trim() === "" && !panel && !disk && !card && setup === null);
+  /** "Compact home": nothing but the search box until something is typed. */
+  const compact = $derived(home && ui.compact_home && earlier === null);
+  const homeAt = $derived(compact ? -1 : homeEntries.findIndex((r) => r.item.id === homeId));
+  const homeCur = $derived(homeEntries[homeAt]?.item);
+  const firstRecent = $derived(homeEntries.findIndex((r) => r.section === "Recent"));
   const idx = $derived(indexLine(status));
   // No timer unless the tips are on screen and nobody is reading them.
   $effect(() =>
@@ -1341,7 +1383,7 @@
   const previewSource = $derived(previewable(cur) ? { path: pathOf(cur)! } : null);
 
   // Thumbnail of the top hit, through the same safe preview command.
-  const thumbItem = $derived(home ? recent[0]?.item : items[0]);
+  const thumbItem = $derived(home ? homeEntries[firstRecent]?.item : items[0]);
   let thumb = $state<{ path: string; src: string } | null>(null);
   $effect(() => {
     const p = isImage(thumbItem) ? pathOf(thumbItem) : null;
@@ -1392,7 +1434,7 @@
       clipThumbs = {};
       return;
     }
-    const wanted = [...items, ...recent.map((r) => r.item)].filter((i) => clipImageKey(i));
+    const wanted = [...items, ...homeEntries.map((r) => r.item)].filter((i) => clipImageKey(i));
     let dead = false;
     void (async () => {
       for (const i of wanted) {
@@ -1488,32 +1530,36 @@
   /** Runs one action on a result: the keys, the menu and the preview use this. */
   function doAction(action: string, i: Item | undefined) {
     if (!i || card) return;
-    remember(query);
+    if (kindName(i.kind) !== "window") remember(query);
     begin(() => invoke<Prepared>("prepare_action", { action, id: i.id }));
   }
   const isNote = (i: Item | undefined) => !!i && kindName(i.kind) === "note";
 
-  /** The row a key acts on: the focused Recent row on Home, else the selection. */
-  function keyRow(target: EventTarget | null): { item: Item; el: Element | null } | undefined {
+  /** The row a key acts on: the selected one, on Home or in the results. */
+  function keyRow(): { item: Item; el: Element | null } | undefined {
     if (home) {
-      const el = (target as Element | null)?.closest?.("[data-recent]");
-      const r = el ? recent[Number(el.getAttribute("data-recent"))] : undefined;
-      return r && { item: r.item, el: el! };
+      return homeCur && { item: homeCur, el: homeList?.querySelector(`[data-home="${homeAt}"]`) ?? null };
     }
     // The Disk analyzer row stands alone: nothing hidden behind it is acted on.
     if (isDiskCommand(query)) return;
     return cur && { item: cur, el: list?.querySelector(`[data-index="${selected}"]`) ?? null };
   }
 
-  /** Menu, Shift+Enter, Ctrl+C, Ctrl+Shift+C, Ctrl+E and Delete. True if the key was used. */
+  /**
+   * Right arrow, Menu, Shift+Enter, Ctrl+C, Ctrl+Shift+C, Ctrl+E, Ctrl+D,
+   * Ctrl+Shift+Up or Down and Delete. True if the key was used.
+   */
   function rowKey(e: KeyboardEvent, menuAsked: boolean): boolean {
-    const row = keyRow(e.target);
+    const row = keyRow();
     if (!row) return false;
-    const keys = rowKeys(row.item);
+    const keys = rowKeys(row.item, pinnedIds.has(row.item.id));
     const letter = e.key.toLowerCase();
+    const plain = !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
     const ctrl = e.ctrlKey && !e.altKey && !e.metaKey;
+    // Right at the end of the search text opens the actions list.
+    const right = plain && e.key === "ArrowRight" && e.target === input && caretIsAtEnd();
     let run: (() => void) | undefined;
-    if (menuAsked) {
+    if (menuAsked || right) {
       const r = row.el?.getBoundingClientRect();
       if (r) run = () => openMenu(rowMenu(row.item), r.left + 48, r.bottom - 8);
     } else if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
@@ -1531,7 +1577,14 @@
     } else if (ctrl && !e.shiftKey && letter === "e") {
       const action = keys.reveal;
       if (action) run = () => doAction(action, row.item);
-    } else if (e.key === "Delete" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+    } else if (ctrl && !e.shiftKey && letter === "d") {
+      const action = keys.pin?.action;
+      if (action) run = () => doAction(action, row.item);
+    } else if (ctrl && e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      // Only on Home's own pinned rows, where the move is seen.
+      const action = e.key === "ArrowUp" ? "pin_up" : "pin_down";
+      if (home && row.item.source === "saved") run = () => doAction(action, row.item);
+    } else if (e.key === "Delete" && plain) {
       // In the search box, Delete edits the text until the cursor is at its end.
       const action = e.target !== input || caretIsAtEnd() ? keys.remove?.action : undefined;
       if (action) run = () => doAction(action, row.item);
@@ -1546,20 +1599,26 @@
     label: string;
     run: () => void;
   }
-  /** Everything one result offers, Enter first. */
+  /** The actions list: everything one result offers, Enter first. */
   function rowMenu(i: Item): Entry[] {
-    const keys = rowKeys(i);
+    const keys = rowKeys(i, pinnedIds.has(i.id));
     const first = defaultAction(i);
     const entries: Entry[] = first ? [{ label: openLabel(i), run: () => activate(i) }] : [];
     const add = (action: string | undefined, label: string) => {
       if (action && action !== first) entries.push({ label, run: () => doAction(action, i) });
     };
+    add(keys.openFolder, "Open folder");
     add(keys.copy?.action, keys.copy?.label ?? "");
     add(keys.paste, "Paste");
     add(keys.copyFile, "Copy file");
+    add(keys.pin?.action, keys.pin?.label ?? "");
     add(keys.reveal, "Show in folder");
-    add(keys.save, "Save");
-    add(keys.remove?.action, keys.remove?.label ?? "");
+    for (const w of keys.window ?? []) add(w.action, w.label);
+    if (home && i.source === "saved") {
+      add("pin_up", "Move up");
+      add("pin_down", "Move down");
+    }
+    if (keys.remove?.action !== keys.pin?.action) add(keys.remove?.action, keys.remove?.label ?? "");
     if (!home && ui.show.quick_keys && canKey(i)) entries.push({ label: "Set quick key", run: () => startKey(i) });
     return entries;
   }
@@ -1592,7 +1651,7 @@
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       buttons[(at + (e.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]?.focus();
-    } else if (e.key === "Escape" || e.key === "Tab") {
+    } else if (e.key === "Escape" || e.key === "Tab" || e.key === "ArrowLeft") {
       e.preventDefault();
       closeMenu();
     } else if (e.key !== "Enter" && e.key !== " ") {
@@ -1602,7 +1661,7 @@
   $effect(() => {
     // The menu goes with its list.
     items;
-    recent;
+    homeEntries;
     menu = null;
   });
 
@@ -1696,7 +1755,7 @@
     const rest = typed.replace(/^\S+\s*/, "");
     if (isListCommand(query)) {
       if (/^win/i.test(typed)) return rest ? `No open window matches “${rest}”.` : "No other window is open.";
-      return rest ? `Nothing saved matches “${rest}”.` : "Nothing saved yet. Choose Save in a file's or folder's menu.";
+      return rest ? `Nothing pinned matches “${rest}”.` : "Nothing pinned yet. Press Ctrl+D on a result to pin it.";
     }
     if (section === 2) {
       return rest ? `No clips match “${rest}”. Try fewer words.` : "Nothing copied yet. Copy some text and it appears here.";
@@ -1729,7 +1788,8 @@
     footerHints(view, {
       mode: ui.mode,
       hotkey: openHotkey,
-      enter: defaultAction(cur) ? openLabel(cur) : null,
+      enter: view === "home" ? (homeCur ? openLabel(homeCur) : null) : defaultAction(cur) ? openLabel(cur) : null,
+      picked: !!homeCur,
       path: PATHLIKE.test(query),
       clears: pinned && query !== "",
       paste: !!cur && !!rowKeys(cur).paste && verbOf(defaultAction(cur) ?? "") === "copy_clip",
@@ -1840,6 +1900,7 @@
         oninput={() => {
           skip = [];
           earlier = null;
+          homeId = null;
           trackCaret();
           run(query);
           expandShortcut(query);
@@ -1860,10 +1921,12 @@
         autocomplete="off"
         spellcheck="false"
         role="combobox"
-        aria-expanded={items.length > 0}
-        aria-controls="results"
+        aria-expanded={home ? !compact && homeEntries.length > 0 : items.length > 0}
+        aria-controls={home ? "home" : "results"}
         aria-autocomplete="list"
-        aria-activedescendant={items.length > 0 && items[selected] ? `result-${selected}` : undefined}
+        aria-activedescendant={home
+          ? homeCur ? `home-${homeAt}` : undefined
+          : items.length > 0 && items[selected] ? `result-${selected}` : undefined}
         aria-label="Search"
       />
       </div>
@@ -1895,7 +1958,7 @@
         <button type="button" class="btn small" onclick={() => (problems = problems.filter((x) => x !== p))}>Dismiss</button>
       </div>
     {/each}
-    {#if !panel && !disk && !card && !showHelp && !showSetup}
+    {#if !panel && !disk && !card && !showHelp && !showSetup && !compact}
       <div class="chips" role="tablist" aria-label="Filter results">
         {#each LANES as l, n}
           <button
@@ -1915,7 +1978,7 @@
     {/if}
     </div>
 
-    <div class="stage">
+    <div class="stage" class:none={compact}>
       {#if setup !== null && !panel}
         <!-- Stays while a search is typed, so ticked folders are not lost. -->
         <div class="setupwrap glass" hidden={!showSetup}>
@@ -1978,44 +2041,65 @@
         </section>
       {:else if showHelp}
         <div class="card glass">
-          <Help entries={helpList} bind:selected={helpSelected} onpick={pickAction} ontoggle={() => (helpAdvanced = !helpAdvanced)} />
+          <Help entries={helpList} words={ui.mode === "full"} bind:selected={helpSelected} onpick={pickHelp} ontoggle={() => (helpAdvanced = !helpAdvanced)} />
         </div>
+      {:else if compact}
+        <!-- Nothing until something is typed. -->
       {:else if home}
         <div class="home" out:fade={{ duration: dur(70) }}>
-          <section class="card glass pick" aria-label={earlier === null ? "Recent" : "Recent searches"}>
-            <!-- Recent keeps its place under the searches, so the height never changes. -->
+          <section class="card glass pick" aria-label={earlier === null ? "Home" : "Recent searches"}>
+            <!-- Home keeps its place under the searches, so the height never changes. -->
             <div class="face" class:away={earlier !== null}>
-              <h3 class="label-caps">Recent</h3>
-              {#if recent.length === 0}
+              {#if homeEntries.length === 0}
+                <h3 class="label-caps">Recent</h3>
                 <p class="empty">{noFolders ? "Nothing yet. Choose folders to search." : "Nothing yet. Type to search."}</p>
               {:else}
-                <ul class="recent">
-                  {#each recent as r, n (r.item.id)}
-                    <li>
+                <ul id="home" class="recent" role="listbox" aria-label="Home" bind:this={homeList}>
+                  {#each homeEntries as r, n (r.item.id)}
+                    <li role="presentation">
+                      {#if n === 0 || homeEntries[n - 1].section !== r.section}
+                        <div class="group label-caps">{r.section}</div>
+                      {/if}
                       <Row
                         tag="button"
-                        extra={r.clip ? "draggable" : ""}
-                        data-recent={n}
+                        role="option"
+                        tabindex={-1}
+                        id={`home-${n}`}
+                        selected={n === homeAt}
+                        aria-selected={n === homeAt}
+                        data-home={n}
+                        extra={canDrag(r.item) ? "draggable" : ""}
                         tooltip={refusal?.id === r.item.id ? refusal.text : undefined}
+                        onmousemove={(e) => hoverHome(e, r.item.id)}
                         onpointerenter={() => checkDrag(r.item)}
-                        onpointerdown={(e) => r.clip && pressRow(e, r.item)}
+                        onpointerdown={(e) => pressRow(e, r.item)}
                         ondragstart={(e) => e.preventDefault()}
-                        oncontextmenu={(e) => rightClick(e, rowMenu(r.item))}
+                        oncontextmenu={(e) => {
+                          homeId = r.item.id;
+                          rightClick(e, rowMenu(r.item));
+                        }}
                         onclick={() => {
                           if (!dragged) activate(r.item);
                           dragged = false;
                         }}
                       >
                         {#snippet icon()}
-                          {#if n === 0 && thumbSrc}<img class="thumb" src={thumbSrc} alt="" />{:else}{@render tile(r.item)}{/if}
+                          {#if n === firstRecent && thumbSrc}<img class="thumb" src={thumbSrc} alt="" />{:else}{@render tile(r.item)}{/if}
                         {/snippet}
                         {#snippet title()}<span class:code={isCode(r.item)}>{r.clip ? mask(r.item.title) : r.item.title}</span>{/snippet}
                         {#snippet detail()}
-                          <span class="sub" class:code={!r.clip}
-                            >{r.clip ? (r.fresh ? "Clip · just copied" : "Copied") : (r.item.uri ?? r.item.subtitle ?? "")}</span
-                          >
+                          {#if r.section === "Recent"}
+                            <span class="sub" class:code={!r.clip}
+                              >{r.clip ? (r.fresh ? "Clip · just copied" : "Copied") : (r.item.uri ?? r.item.subtitle ?? "")}</span
+                            >
+                          {:else}
+                            <span class="sub" class:code={r.section === "Pinned" && isPath(r.item)}>{r.item.subtitle ?? ""}</span>
+                          {/if}
                         {/snippet}
-                        {#snippet end()}<span class="when">{ageLabel(r.ts, Math.floor(Date.now() / 1000))}</span>{/snippet}
+                        {#snippet end()}
+                          {#if r.section === "Recent"}<span class="when">{ageLabel(r.ts, Math.floor(Date.now() / 1000))}</span>{/if}
+                          {#if n === homeAt}{@render enterHint(openLabel(r.item))}{/if}
+                        {/snippet}
                       </Row>
                     </li>
                   {/each}
@@ -2259,6 +2343,9 @@
                             }}>Cancel</button
                           >
                         {/if}
+                        {#if pinnedIds.has(item.id) || item.source === "saved"}
+                          <span class="when" role="img" aria-label="Pinned" title="Pinned">★</span>
+                        {/if}
                         {#if i === selected && defaultAction(item)}{@render enterHint(openLabel(item))}{/if}
                       {/snippet}
                     </Row>
@@ -2353,15 +2440,15 @@
       {/if}
     </div>
 
-    <div class="foot">
-    {#if showMoved}
+    <div class="foot" class:none={compact && !notice}>
+    {#if showMoved && !compact}
       <div class="moved glass" role="status" bind:offsetHeight={movedHeight}>
         <span>Disk moved to Full mode in Settings &gt; Features</span>
         <button type="button" class="btn small primary" onclick={() => uiChange(setShow("disk", true))}>Turn Disk on</button>
         <button type="button" class="btn small" onclick={() => uiChange(dismissDiskNotice())}>Dismiss</button>
       </div>
     {/if}
-    {#if !card}
+    {#if !card && !compact}
       <nav class="dock glass" aria-label="Sections">
         {#each dockItems(ui.show) as { name, n } (n)}
           <button
@@ -2649,10 +2736,15 @@
     gap: 2px;
     overflow-y: auto;
     min-height: 0;
+    max-height: min(440px, calc(var(--room, 100vh) - 300px));
   }
   .pick {
     position: relative;
     min-height: 230px;
+  }
+  .stage.none,
+  .foot.none {
+    display: none;
   }
   .face {
     flex: 1;

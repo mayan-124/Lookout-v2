@@ -66,6 +66,7 @@ fn start(data: &Path, root: &Path, o: Opts) -> App {
             synthetic_uses_folders: false,
             start_menu_dirs: vec![],
             store_apps: false,
+            windows: None,
             storage: Storage::with_key(paths.clone(), Key::from_bytes(&[5u8; 32]).unwrap())
                 .unwrap(),
             idle: o.idle,

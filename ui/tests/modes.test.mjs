@@ -88,7 +88,7 @@ test("the footer shows at most three hints for the view", () => {
     const hints = footerHints(view, o);
     assert.ok(hints.length > 0 && hints.length <= MAX_HINTS, view);
   }
-  assert.deepEqual(footerHints("results", o), ["Enter stop", "Tab filter", "Esc hide"]);
+  assert.deepEqual(footerHints("results", o), ["Enter stop", "→ actions", "Esc hide"]);
   assert.deepEqual(footerHints("results", { mode: "simple", hotkey: "", path: true, clears: true }), [
     "↑↓ pick",
     "Tab complete",

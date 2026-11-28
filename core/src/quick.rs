@@ -211,7 +211,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "bluetooth_page",
         title: "Open Bluetooth settings",
         subtitle: "Bluetooth & devices",
-        keywords: &["bluetooth"],
+        keywords: &["bluetooth devices", "pair device", "bluetooth"],
         what: What::Page("ms-settings:bluetooth"),
     },
     Entry {
@@ -245,14 +245,29 @@ pub const ENTRIES: &[Entry] = &[
         id: "sound",
         title: "Open Sound settings",
         subtitle: "System",
-        keywords: &["sound", "audio", "volume"],
+        keywords: &[
+            "speakers",
+            "headphones",
+            "output device",
+            "sound",
+            "audio",
+            "volume",
+        ],
         what: What::Page("ms-settings:sound"),
     },
     Entry {
         id: "display",
         title: "Open Display settings",
         subtitle: "System",
-        keywords: &["display", "brightness", "resolution", "screen resolution"],
+        keywords: &[
+            "monitor",
+            "scale",
+            "scaling",
+            "display",
+            "brightness",
+            "resolution",
+            "screen resolution",
+        ],
         what: What::Page("ms-settings:display"),
     },
     Entry {
@@ -273,14 +288,21 @@ pub const ENTRIES: &[Entry] = &[
         id: "apps",
         title: "Open Installed apps settings",
         subtitle: "Apps",
-        keywords: &["apps", "installed apps", "apps and features", "uninstall"],
+        keywords: &[
+            "add or remove programs",
+            "remove program",
+            "apps",
+            "installed apps",
+            "apps and features",
+            "uninstall",
+        ],
         what: What::Page("ms-settings:appsfeatures"),
     },
     Entry {
         id: "update",
         title: "Open Windows Update",
         subtitle: "Windows Update settings",
-        keywords: &["windows update", "update", "updates"],
+        keywords: &["check for updates", "windows update", "update", "updates"],
         what: What::Page("ms-settings:windowsupdate"),
     },
     Entry {
@@ -399,7 +421,12 @@ pub const ENTRIES: &[Entry] = &[
         id: "date_time",
         title: "Open Date & time settings",
         subtitle: "Time & language",
-        keywords: &["date and time", "time and date", "clock"],
+        keywords: &[
+            "time zone settings",
+            "date and time",
+            "time and date",
+            "clock",
+        ],
         what: What::Page("ms-settings:dateandtime"),
     },
     Entry {
@@ -407,6 +434,8 @@ pub const ENTRIES: &[Entry] = &[
         title: "Open Language & region settings",
         subtitle: "Time & language",
         keywords: &[
+            "keyboard language",
+            "input language",
             "language",
             "region",
             "language and region",
@@ -467,7 +496,14 @@ pub const ENTRIES: &[Entry] = &[
         id: "about",
         title: "Open About this PC settings",
         subtitle: "System > About",
-        keywords: &["about this pc", "pc info", "device name", "system info"],
+        keywords: &[
+            "pc specs",
+            "windows version",
+            "about this pc",
+            "pc info",
+            "device name",
+            "system info",
+        ],
         what: What::Page("ms-settings:about"),
     },
     Entry {
@@ -482,6 +518,8 @@ pub const ENTRIES: &[Entry] = &[
         title: "Open Sign-in options settings",
         subtitle: "Accounts",
         keywords: &[
+            "password",
+            "windows pin",
             "sign-in options",
             "sign in options",
             "windows hello",
@@ -709,6 +747,398 @@ pub const ENTRIES: &[Entry] = &[
         what: What::Control("Microsoft.ActionCenter"),
     },
     Entry {
+        id: "sound_devices",
+        title: "Open Sound devices settings",
+        subtitle: "System > Sound",
+        keywords: &["sound devices", "audio devices"],
+        what: What::Page("ms-settings:sound-devices"),
+    },
+    Entry {
+        id: "volume_mixer",
+        title: "Open Volume mixer",
+        subtitle: "System > Sound",
+        keywords: &["volume mixer", "app volume"],
+        what: What::Page("ms-settings:apps-volume"),
+    },
+    Entry {
+        id: "notifications_page",
+        title: "Open Notifications settings",
+        subtitle: "System",
+        keywords: &["notifications", "notification settings"],
+        what: What::Page("ms-settings:notifications"),
+    },
+    Entry {
+        id: "clipboard_page",
+        title: "Open Windows Clipboard settings",
+        subtitle: "System",
+        keywords: &["windows clipboard", "clipboard sync"],
+        what: What::Page("ms-settings:clipboard"),
+    },
+    Entry {
+        id: "remote_desktop",
+        title: "Open Remote Desktop settings",
+        subtitle: "System",
+        keywords: &["remote desktop"],
+        what: What::Page("ms-settings:remotedesktop"),
+    },
+    Entry {
+        id: "projecting",
+        title: "Open Projecting to this PC settings",
+        subtitle: "System",
+        keywords: &["projecting", "projecting to this pc"],
+        what: What::Page("ms-settings:project"),
+    },
+    Entry {
+        id: "nearby",
+        title: "Open Nearby sharing settings",
+        subtitle: "System",
+        keywords: &["nearby sharing"],
+        what: What::Page("ms-settings:crossdevice"),
+    },
+    Entry {
+        id: "developers",
+        title: "Open For developers settings",
+        subtitle: "System",
+        keywords: &["developer mode", "for developers"],
+        what: What::Page("ms-settings:developers"),
+    },
+    Entry {
+        id: "update_history",
+        title: "Open Update history",
+        subtitle: "Windows Update",
+        keywords: &["update history"],
+        what: What::Page("ms-settings:windowsupdate-history"),
+    },
+    Entry {
+        id: "find_device",
+        title: "Open Find my device settings",
+        subtitle: "Privacy & security",
+        keywords: &["find my device"],
+        what: What::Page("ms-settings:findmydevice"),
+    },
+    Entry {
+        id: "devices",
+        title: "Open Devices settings",
+        subtitle: "Bluetooth & devices",
+        keywords: &["devices", "connected devices", "add device"],
+        what: What::Page("ms-settings:connecteddevices"),
+    },
+    Entry {
+        id: "usb",
+        title: "Open USB settings",
+        subtitle: "Bluetooth & devices",
+        keywords: &["usb"],
+        what: What::Page("ms-settings:usb"),
+    },
+    Entry {
+        id: "autoplay",
+        title: "Open AutoPlay settings",
+        subtitle: "Bluetooth & devices",
+        keywords: &["autoplay"],
+        what: What::Page("ms-settings:autoplay"),
+    },
+    Entry {
+        id: "pen",
+        title: "Open Pen settings",
+        subtitle: "Bluetooth & devices",
+        keywords: &["pen", "windows ink"],
+        what: What::Page("ms-settings:pen"),
+    },
+    Entry {
+        id: "data_usage",
+        title: "Open Data usage settings",
+        subtitle: "Network & internet",
+        keywords: &["data usage"],
+        what: What::Page("ms-settings:datausage"),
+    },
+    Entry {
+        id: "themes_page",
+        title: "Open Windows Themes settings",
+        subtitle: "Personalization",
+        keywords: &["windows themes", "desktop themes"],
+        what: What::Page("ms-settings:themes"),
+    },
+    Entry {
+        id: "start_menu",
+        title: "Open Start menu settings",
+        subtitle: "Personalization",
+        keywords: &["start menu"],
+        what: What::Page("ms-settings:personalization-start"),
+    },
+    Entry {
+        id: "optional_features",
+        title: "Open Optional features settings",
+        subtitle: "Apps",
+        keywords: &["optional features", "windows features"],
+        what: What::Page("ms-settings:optionalfeatures"),
+    },
+    Entry {
+        id: "video",
+        title: "Open Video playback settings",
+        subtitle: "Apps",
+        keywords: &["video playback"],
+        what: What::Page("ms-settings:videoplayback"),
+    },
+    Entry {
+        id: "email_accounts",
+        title: "Open Email & accounts settings",
+        subtitle: "Accounts",
+        keywords: &["email accounts", "email"],
+        what: What::Page("ms-settings:emailandaccounts"),
+    },
+    Entry {
+        id: "other_users",
+        title: "Open Other users settings",
+        subtitle: "Accounts",
+        keywords: &["other users", "add user"],
+        what: What::Page("ms-settings:otherusers"),
+    },
+    Entry {
+        id: "work_account",
+        title: "Open Access work or school settings",
+        subtitle: "Accounts",
+        keywords: &["work or school", "access work or school"],
+        what: What::Page("ms-settings:workplace"),
+    },
+    Entry {
+        id: "speech",
+        title: "Open Speech settings",
+        subtitle: "Time & language",
+        keywords: &["speech", "voice"],
+        what: What::Page("ms-settings:speech"),
+    },
+    Entry {
+        id: "game_bar",
+        title: "Open Game Bar settings",
+        subtitle: "Gaming",
+        keywords: &["game bar", "xbox game bar"],
+        what: What::Page("ms-settings:gaming-gamebar"),
+    },
+    Entry {
+        id: "captures",
+        title: "Open Game captures settings",
+        subtitle: "Gaming",
+        keywords: &["game captures", "captures"],
+        what: What::Page("ms-settings:gaming-gamedvr"),
+    },
+    Entry {
+        id: "game_mode",
+        title: "Open Game Mode settings",
+        subtitle: "Gaming",
+        keywords: &["game mode"],
+        what: What::Page("ms-settings:gaming-gamemode"),
+    },
+    Entry {
+        id: "magnifier",
+        title: "Open Magnifier settings",
+        subtitle: "Accessibility",
+        keywords: &["magnifier", "zoom screen"],
+        what: What::Page("ms-settings:easeofaccess-magnifier"),
+    },
+    Entry {
+        id: "narrator",
+        title: "Open Narrator settings",
+        subtitle: "Accessibility",
+        keywords: &["narrator", "screen reader"],
+        what: What::Page("ms-settings:easeofaccess-narrator"),
+    },
+    Entry {
+        id: "color_filters",
+        title: "Open Color filters settings",
+        subtitle: "Accessibility",
+        keywords: &["color filters", "colour filters"],
+        what: What::Page("ms-settings:easeofaccess-colorfilter"),
+    },
+    Entry {
+        id: "contrast",
+        title: "Open Contrast themes settings",
+        subtitle: "Accessibility",
+        keywords: &["contrast themes", "high contrast"],
+        what: What::Page("ms-settings:easeofaccess-highcontrast"),
+    },
+    Entry {
+        id: "captions",
+        title: "Open Captions settings",
+        subtitle: "Accessibility",
+        keywords: &["captions", "subtitles"],
+        what: What::Page("ms-settings:easeofaccess-closedcaptioning"),
+    },
+    Entry {
+        id: "visual_effects",
+        title: "Open Visual effects settings",
+        subtitle: "Accessibility",
+        keywords: &["visual effects", "transparency", "animations"],
+        what: What::Page("ms-settings:easeofaccess-visualeffects"),
+    },
+    Entry {
+        id: "pointer",
+        title: "Open Mouse pointer settings",
+        subtitle: "Accessibility",
+        keywords: &["mouse pointer", "cursor size", "pointer size"],
+        what: What::Page("ms-settings:easeofaccess-mouse"),
+    },
+    Entry {
+        id: "a11y_keyboard",
+        title: "Open Accessibility keyboard settings",
+        subtitle: "Accessibility",
+        keywords: &["sticky keys", "on screen keyboard"],
+        what: What::Page("ms-settings:easeofaccess-keyboard"),
+    },
+    Entry {
+        id: "mono_audio",
+        title: "Open Accessibility audio settings",
+        subtitle: "Accessibility",
+        keywords: &["mono audio"],
+        what: What::Page("ms-settings:easeofaccess-audio"),
+    },
+    Entry {
+        id: "search_permissions",
+        title: "Open Search permissions settings",
+        subtitle: "Privacy & security",
+        keywords: &["search permissions", "safe search"],
+        what: What::Page("ms-settings:search-permissions"),
+    },
+    Entry {
+        id: "graphics",
+        title: "Open Graphics settings",
+        subtitle: "System > Display",
+        keywords: &["graphics", "gpu"],
+        what: What::Page("ms-settings:display-advancedgraphics"),
+    },
+    Entry {
+        id: "save_locations",
+        title: "Open Save locations settings",
+        subtitle: "System > Storage",
+        keywords: &["save locations", "default save location"],
+        what: What::Page("ms-settings:savelocations"),
+    },
+    Entry {
+        id: "encryption",
+        title: "Open Device encryption settings",
+        subtitle: "Privacy & security",
+        keywords: &["device encryption"],
+        what: What::Page("ms-settings:deviceencryption"),
+    },
+    Entry {
+        id: "cp_backup",
+        title: "Open Backup and Restore",
+        subtitle: "Control Panel",
+        keywords: &["backup and restore"],
+        what: What::Control("Microsoft.BackupAndRestore"),
+    },
+    Entry {
+        id: "cp_bitlocker",
+        title: "Open BitLocker Drive Encryption",
+        subtitle: "Control Panel",
+        keywords: &["bitlocker", "drive encryption"],
+        what: What::Control("Microsoft.BitLockerDriveEncryption"),
+    },
+    Entry {
+        id: "cp_datetime",
+        title: "Open Date and Time",
+        subtitle: "Control Panel",
+        keywords: &["date and time control panel"],
+        what: What::Control("Microsoft.DateAndTime"),
+    },
+    Entry {
+        id: "cp_defaults",
+        title: "Open Default Programs",
+        subtitle: "Control Panel",
+        keywords: &["default programs"],
+        what: What::Control("Microsoft.DefaultPrograms"),
+    },
+    Entry {
+        id: "cp_games",
+        title: "Open Game Controllers",
+        subtitle: "Control Panel",
+        keywords: &["game controllers", "joystick", "gamepad"],
+        what: What::Control("Microsoft.GameControllers"),
+    },
+    Entry {
+        id: "cp_modem",
+        title: "Open Phone and Modem",
+        subtitle: "Control Panel",
+        keywords: &["phone and modem", "modem"],
+        what: What::Control("Microsoft.PhoneAndModem"),
+    },
+    Entry {
+        id: "cp_scanners",
+        title: "Open Scanners and Cameras",
+        subtitle: "Control Panel",
+        keywords: &["scanners and cameras"],
+        what: What::Control("Microsoft.ScannersAndCameras"),
+    },
+    Entry {
+        id: "cp_speech",
+        title: "Open Speech Recognition",
+        subtitle: "Control Panel",
+        keywords: &["speech recognition"],
+        what: What::Control("Microsoft.SpeechRecognition"),
+    },
+    Entry {
+        id: "cp_spaces",
+        title: "Open Storage Spaces",
+        subtitle: "Control Panel",
+        keywords: &["storage spaces"],
+        what: What::Control("Microsoft.StorageSpaces"),
+    },
+    Entry {
+        id: "cp_sync",
+        title: "Open Sync Center",
+        subtitle: "Control Panel",
+        keywords: &["sync center"],
+        what: What::Control("Microsoft.SyncCenter"),
+    },
+    Entry {
+        id: "cp_tts",
+        title: "Open Text to Speech",
+        subtitle: "Control Panel",
+        keywords: &["text to speech"],
+        what: What::Control("Microsoft.TextToSpeech"),
+    },
+    Entry {
+        id: "cp_pen",
+        title: "Open Pen and Touch",
+        subtitle: "Control Panel",
+        keywords: &["pen and touch"],
+        what: What::Control("Microsoft.PenAndTouch"),
+    },
+    Entry {
+        id: "cp_tablet",
+        title: "Open Tablet PC Settings",
+        subtitle: "Control Panel",
+        keywords: &["tablet pc"],
+        what: What::Control("Microsoft.TabletPCSettings"),
+    },
+    Entry {
+        id: "cp_autoplay",
+        title: "Open AutoPlay options",
+        subtitle: "Control Panel",
+        keywords: &["autoplay"],
+        what: What::Control("Microsoft.AutoPlay"),
+    },
+    Entry {
+        id: "cp_troubleshoot",
+        title: "Open Troubleshooting",
+        subtitle: "Control Panel",
+        keywords: &["troubleshooting"],
+        what: What::Control("Microsoft.Troubleshooting"),
+    },
+    Entry {
+        id: "cp_workfolders",
+        title: "Open Work Folders",
+        subtitle: "Control Panel",
+        keywords: &["work folders"],
+        what: What::Control("Microsoft.WorkFolders"),
+    },
+    Entry {
+        id: "cp_remote",
+        title: "Open RemoteApp and Desktop Connections",
+        subtitle: "Control Panel",
+        keywords: &["remoteapp", "desktop connections"],
+        what: What::Control("Microsoft.RemoteAppAndDesktopConnections"),
+    },
+    Entry {
         id: "lock",
         title: "Lock this PC",
         subtitle: "Shows the Windows lock screen",
@@ -761,9 +1191,27 @@ pub fn entry(id: &str) -> Option<&'static Entry> {
 /// of a keyword stay below those weak matches.
 pub const EXACT_PAGE: f32 = 1.35;
 pub const EXACT: f32 = 0.7;
+/// Every typed word is a whole word of a keyword: ahead of a mere beginning.
+pub const WORD: f32 = 0.65;
 pub const PREFIX: f32 = 0.35;
 /// Most system results one query returns, so they never crowd out files and apps.
 pub const MAX_SYSTEM: usize = 3;
+
+/// Words in too many names to find anything by themselves.
+const COMMON: &[&str] = &[
+    "and", "change", "mode", "open", "options", "setting", "settings", "system", "the", "this",
+    "windows", "your",
+];
+
+/// Whether every typed word is a whole word of the keyword, and one of them
+/// says something.
+fn has_words(keyword: &str, typed: &str) -> bool {
+    let words: Vec<&str> = keyword.split(' ').collect();
+    typed.split(' ').all(|t| words.contains(&t))
+        && typed
+            .split(' ')
+            .any(|t| t.len() >= 3 && !COMMON.contains(&t))
+}
 
 const LEADING: &[&str] = &[
     "toggle ",
@@ -824,6 +1272,8 @@ pub fn match_entries(typed: &str) -> Vec<(&'static Entry, f32)> {
                 .map(|k| {
                     if *k == q {
                         exact
+                    } else if has_words(k, &q) {
+                        WORD.min(exact)
                     } else if k.starts_with(q.as_str()) {
                         PREFIX
                     } else {
@@ -978,7 +1428,8 @@ mod tests {
         assert_eq!(ids("display settings"), ["display"]);
         assert_eq!(ids("windows update"), ["update"]);
         assert_eq!(ids("settings"), ["settings"]);
-        assert_eq!(ids("blue"), ["bluetooth_page", "night_light"]);
+        // A whole word ("blue light") ranks before a beginning ("bluetooth").
+        assert_eq!(ids("blue"), ["night_light", "bluetooth_page"]);
     }
 
     #[test]
@@ -1022,8 +1473,18 @@ mod tests {
     fn control_panel_pages_are_found_by_name() {
         assert_eq!(ids("device manager"), ["cp_devices"]);
         assert_eq!(ids("Programs and Features"), ["cp_programs"]);
-        assert_eq!(ids("mouse"), ["mouse_page", "cp_mouse"]);
+        assert_eq!(ids("mouse"), ["mouse_page", "cp_mouse", "pointer"]);
         assert_eq!(ids("lock screen"), ["lockscreen"]);
+    }
+
+    #[test]
+    fn a_word_from_inside_a_name_finds_it() {
+        assert_eq!(ids("saver")[0], "battery");
+        assert_eq!(ids("mixer"), ["volume_mixer"]);
+        assert_eq!(ids("bitlocker"), ["cp_bitlocker"]);
+        assert_eq!(ids("game mode")[0], "game_mode");
+        // Words that are in many names find nothing alone.
+        assert!(ids("mode").iter().all(|id| *id != "game_mode"));
     }
 
     #[test]

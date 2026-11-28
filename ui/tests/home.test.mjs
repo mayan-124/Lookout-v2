@@ -3,7 +3,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { MIN_RECENT, recentRows } from "../src/home.ts";
+import { homeRows, recentRows } from "../src/home.ts";
+import { placeWindows } from "../src/discover.ts";
+import { changesList, changesPins, isQuiet, rowKeys } from "../src/rows.ts";
 import { footerStatus } from "../src/indexstatus.ts";
 import { MAX_HINTS, footerHints } from "../src/modes.ts";
 
@@ -17,13 +19,94 @@ const rule = (selector) => {
   return style.slice(at, style.indexOf("}", at));
 };
 
-test("Recent shows its empty text below three rows, else the newest six", () => {
+test("Recent is the newest six", () => {
   const rows = (n) => Array.from({ length: n }, (_, ts) => ({ ts }));
-  assert.equal(MIN_RECENT, 3);
-  for (const n of [0, 1, 2]) assert.deepEqual(recentRows(rows(n), 10_000), []);
+  assert.equal(recentRows(rows(2), 10_000).length, 2);
   assert.deepEqual(recentRows(rows(8), 10_000).map((r) => r.ts), [7, 6, 5, 4, 3, 2]);
   // The files come from the backend, which drops junk and skipped places.
-  assert.ok(app.includes('invoke<Item[]>("recent_files")') && !app.includes('"past week" })'));
+  assert.ok(app.includes('invoke<HomeLists>("home_lists")') && !app.includes('"past week" })'));
+});
+
+test("Home runs from open windows through pinned and recent to apps, each item once", () => {
+  const item = (id) => ({ id });
+  const lists = {
+    windows: [item("window:1")],
+    pinned: [item("file:a"), item("app:p")],
+    files: ["a", "b", "c", "d", "e", "f", "g"].map((n) => item(`file:${n}`)),
+    apps: [item("app:p"), item("app:q")],
+  };
+  const clips = [1, 2, 3, 4].map((ts) => ({ item: item(`clip:${ts}`), ts }));
+  const rows = homeRows(lists, clips, 10_000);
+  assert.deepEqual([...new Set(rows.map((r) => r.section))], ["Open now", "Pinned", "Recent", "Apps"]);
+  const ids = rows.map((r) => r.item.id);
+  assert.equal(new Set(ids).size, ids.length);
+  // Three clips and three files, whatever their ages.
+  const recent = rows.filter((r) => r.section === "Recent");
+  assert.deepEqual(recent.map((r) => r.item.id).sort(), ["clip:2", "clip:3", "clip:4", "file:b", "file:c", "file:d"]);
+  assert.deepEqual(rows.filter((r) => r.section === "Apps").map((r) => r.item.id), ["app:q"]);
+  assert.deepEqual(homeRows({ windows: [], pinned: [], files: [], apps: [] }, [], 0), []);
+});
+
+test("Down picks a Home row, Enter runs it; compact Home shows only the box", () => {
+  const keys = app.slice(app.indexOf("function onKeydown"));
+  assert.match(keys, /if \(home\) homeMove\(1\);/);
+  assert.match(keys, /if \(!e\.repeat\) activate\(homeCur\);/);
+  assert.match(app, /const compact = \$derived\(home && ui\.compact_home && earlier === null\);/);
+  assert.match(markup, /\{#if !card && !compact\}/);
+});
+
+test("every file, folder, app, Settings page and web address can be pinned", () => {
+  const row = (kind, uri, source = "files") => ({ kind, uri, source });
+  const store = "shell:AppsFolder\\x!y";
+  for (const r of [
+    row("file", "C:\\a.txt"),
+    row("folder", "C:\\a"),
+    row("app", "C:\\a.lnk", "apps"),
+    row("app", store, "apps"),
+    row({ custom: "system" }, "wifi_page", "system"),
+    row({ custom: "url" }, "https://a.com", "link"),
+  ]) {
+    assert.equal(rowKeys(r).pin.action, "saved_add", r.uri);
+    assert.equal(rowKeys(r, true).pin.action, "saved_remove", r.uri);
+    // Delete unpins only on the pinned list's own rows.
+    assert.equal(rowKeys(r, true).remove, undefined);
+    assert.equal(rowKeys({ ...r, source: "saved" }).remove.action, "saved_remove");
+  }
+  for (const r of [
+    row({ custom: "window" }, "1:2:3", "windows"),
+    row("clipboard", null, "plugin:com.lookout.clipboard"),
+    row({ custom: "url" }, "https://a.com/?q=x", "websearch"),
+  ]) {
+    assert.equal(rowKeys(r).pin, undefined, r.source);
+  }
+  assert.equal(rowKeys(row("app", store, "apps")).reveal, undefined);
+  assert.equal(rowKeys(row("app", "C:\\a.lnk", "apps")).openFolder, "open_folder");
+  assert.deepEqual(rowKeys(row({ custom: "window" }, "1:2:3", "windows")).window.map((w) => w.label), ["Minimize", "Close"]);
+  // Unpinning shows its card, with Undo; the rest just change the list.
+  assert.ok(changesPins("saved_remove") && changesList("saved_remove") && !isQuiet("saved_remove"));
+  for (const a of ["saved_add", "pin_up", "pin_down", "window_close"]) assert.ok(isQuiet(a), a);
+});
+
+test("Right arrow opens the actions list and Ctrl+D pins", () => {
+  const keys = app.slice(app.indexOf("function rowKey("), app.indexOf("interface Entry"));
+  assert.match(keys, /e\.key === "ArrowRight" && e\.target === input && caretIsAtEnd\(\)/);
+  assert.match(keys, /letter === "d"/);
+  const menu = app.slice(app.indexOf("function rowMenu"), app.indexOf("const searchMenu"));
+  const order = ["keys.openFolder", "keys.copy?.action", "keys.copyFile", "keys.pin?.action", "keys.reveal"].map((s) => menu.indexOf(s));
+  assert.ok(order.every((at) => at >= 0));
+  assert.deepEqual([...order].sort((a, b) => a - b), order);
+});
+
+test("matched windows sit under the top result and never above an exact name", () => {
+  const r = (id, source, kind, score) => ({ id, source, kind, score, title: id });
+  const win = r("w", "windows", { custom: "window" }, 1.15);
+  const ids = (rows, q = "notes") => placeWindows(rows, q).map((x) => x.id);
+  assert.deepEqual(ids([win, r("a", "files", "file", 1)]), ["a", "w"]);
+  assert.deepEqual(ids([r("a", "apps", "app", 1.1), r("b", "files", "file", 1), win]), ["a", "w", "b"]);
+  assert.deepEqual(ids([r("a", "system", { custom: "system" }, 1.35), r("x", "apps", "app", 3.8), win]), ["a", "x", "w"]);
+  assert.deepEqual(ids([win]), ["w"]);
+  // The "win" list keeps its own order.
+  assert.deepEqual(ids([win, r("a", "files", "file", 1)], "win notes"), ["w", "a"]);
 });
 
 test("clips from the last ten minutes lead Recent, then take their turn by time", () => {

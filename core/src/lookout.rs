@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use crate::actions::disk::{
-    BatchRemoveAction, CopyFileAction, CopyPathAction, ExplorerReveal, RecycleAction, RevealAction,
-    ShellRecycler, WindowsClipboardWriter,
+    BatchRemoveAction, CopyFileAction, CopyPathAction, ExplorerReveal, OpenFolderAction,
+    RecycleAction, RevealAction, ShellRecycler, WindowsClipboardWriter,
 };
 use crate::actions::kill_port::{self, KillPort, PortSource};
 use crate::actions::open::{self, Launcher, OpenAction};
@@ -89,6 +89,9 @@ pub struct StartOptions {
     pub start_menu_dirs: Vec<PathBuf>,
     /// Also list the Store apps Windows knows about. Tests leave this off.
     pub store_apps: bool,
+    /// The open windows search and Home may list; `None` lists none (tests and
+    /// tools, which must not see what is open on this PC).
+    pub windows: Option<Arc<dyn crate::winswitch::Windows>>,
     /// Where the encrypted `meta.db`, name snapshot and content index live.
     pub storage: Storage,
     /// When the user last used the keyboard or mouse; content work waits for idleness.
@@ -240,8 +243,10 @@ pub struct Lookout {
     extensions: Arc<Mutex<Vec<String>>>,
     /// File sizes are still missing from the name index; the crawl brings them.
     sizes_pending: Arc<AtomicBool>,
-    /// The files of the latest Home "Recent" list, which can be opened too.
+    /// The results of the latest Home lists, which can be acted on too.
     home_targets: Mutex<HashMap<String, Target>>,
+    saved: Arc<crate::saved::SavedStore>,
+    open_windows: Arc<dyn crate::winswitch::Windows>,
     safe_mode: bool,
     /// Unix seconds when the last crawl of this run finished (0: none yet).
     last_crawl: Arc<AtomicU64>,
@@ -266,6 +271,24 @@ pub struct RebuildProgress {
 }
 
 const REPAIRED: &str = "The search index was damaged, so Lookout is rebuilding it.";
+
+/// Most rows each of these Home lists shows.
+const HOME_WINDOWS: usize = 5;
+const HOME_FILES: usize = 6;
+const HOME_APPS: usize = 5;
+
+/// What Home shows besides the latest clips.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct Home {
+    /// Open windows other than Lookout's, front first.
+    pub windows: Vec<Item>,
+    /// Every pinned item, in its order.
+    pub pinned: Vec<Item>,
+    /// Recently changed files.
+    pub files: Vec<Item>,
+    /// The apps opened most, from Lookout's own open counts.
+    pub apps: Vec<Item>,
+}
 
 /// Extensions offered while `ext:` is typed.
 const SUGGESTED_EXTENSIONS: usize = 8;
@@ -588,8 +611,10 @@ impl Lookout {
         let web_search = Arc::new(crate::websearch::Choice::default());
         web_search.set(opts.settings.web_search);
         let saved = Arc::new(crate::saved::SavedStore::new(storage.db.clone())?);
-        let open_windows: Arc<dyn crate::winswitch::Windows> =
-            Arc::new(crate::winswitch::SystemWindows);
+        let open_windows = opts
+            .windows
+            .clone()
+            .unwrap_or_else(|| Arc::new(crate::winswitch::NoWindows));
         // Nothing is read or written until a note is asked for.
         let notes = Arc::new(NoteStore::new(storage.db.clone()));
         let sources: Vec<Arc<dyn Source>> = vec![
@@ -713,9 +738,26 @@ impl Lookout {
             Arc::new(SaveNote(notes.clone())),
             Arc::new(CopyNote(notes.clone(), Arc::new(WindowsClipboardWriter))),
             Arc::new(DeleteNote(notes.clone())),
-            Arc::new(crate::saved::SaveAction(saved.clone())),
-            Arc::new(crate::saved::RemoveAction(saved)),
-            Arc::new(crate::winswitch::FocusAction(open_windows)),
+            Arc::new(crate::saved::SaveAction(saved.clone(), app_list.clone())),
+            Arc::new(crate::saved::RemoveAction(saved.clone())),
+            Arc::new(crate::saved::MoveAction {
+                store: saved.clone(),
+                up: true,
+            }),
+            Arc::new(crate::saved::MoveAction {
+                store: saved.clone(),
+                up: false,
+            }),
+            Arc::new(crate::winswitch::FocusAction(open_windows.clone())),
+            Arc::new(crate::winswitch::ShowAction {
+                windows: open_windows.clone(),
+                close: false,
+            }),
+            Arc::new(crate::winswitch::ShowAction {
+                windows: open_windows.clone(),
+                close: true,
+            }),
+            Arc::new(OpenFolderAction(opts.launcher.clone())),
         ];
         let power: Arc<dyn PowerControl> = Arc::new(WindowsPower);
         action_list.extend(PowerAction::all(&power));
@@ -799,6 +841,8 @@ impl Lookout {
             extensions,
             sizes_pending,
             home_targets: Mutex::default(),
+            saved,
+            open_windows,
             safe_mode,
             last_crawl,
             notice: Mutex::new(notice),
@@ -1377,6 +1421,54 @@ impl Lookout {
         items
     }
 
+    /// The Home lists, apart from the clips (an ordinary search finds those).
+    /// Their results can be acted on until the next call.
+    pub fn home(&self) -> Home {
+        let files = self.recent_files(HOME_FILES);
+        let windows: Vec<Item> = self
+            .open_windows
+            .list()
+            .into_iter()
+            .take(HOME_WINDOWS)
+            .map(|w| {
+                let how = if w.minimized { "Minimized" } else { "Open" };
+                crate::winswitch::item(w, how, 0.0)
+            })
+            .collect();
+        let pinned: Vec<Item> = self
+            .saved
+            .list()
+            .unwrap_or_else(|_| {
+                crate::log::warn("the pinned list could not be read");
+                Vec::new()
+            })
+            .iter()
+            .filter_map(crate::saved::Saved::item)
+            .collect();
+        // A pinned app is on the list already.
+        let apps: Vec<Item> = crate::sources::most_used(&self.apps, &self.frecency, usize::MAX)
+            .into_iter()
+            .filter(|a| !pinned.iter().any(|p| p.id == a.id))
+            .take(HOME_APPS)
+            .collect();
+        let targets: Vec<(String, Target)> = windows
+            .iter()
+            .chain(&pinned)
+            .chain(&apps)
+            .filter_map(|i| target_of(i).map(|t| (i.id.clone(), t)))
+            .collect();
+        self.home_targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(targets);
+        Home {
+            windows,
+            pinned,
+            files,
+            apps,
+        }
+    }
+
     /// Logs a command-line request like other actions: its kind and the length
     /// of the query, never the query itself.
     pub fn record_cli(&self, cmd: &str, query_len: usize, ok: bool) {
@@ -1875,6 +1967,7 @@ mod tests {
                 synthetic_uses_folders: false,
                 start_menu_dirs: vec![start_menu],
                 store_apps: false,
+                windows: None,
                 storage: crate::storage::Storage::with_key(
                     crate::storage::DataPaths::new(dir),
                     test_key(),
@@ -2300,6 +2393,7 @@ mod tests {
                 synthetic_uses_folders: false,
                 start_menu_dirs: Vec::new(),
                 store_apps: false,
+                windows: None,
                 storage: Storage::with_key(crate::storage::DataPaths::new(&data), test_key())
                     .unwrap(),
                 idle: Arc::new(crate::content::idle::AlwaysIdle),
@@ -2595,6 +2689,7 @@ mod tests {
                     synthetic_uses_folders: uses_folders,
                     start_menu_dirs: Vec::new(),
                     store_apps: false,
+                    windows: None,
                     storage: Storage::in_memory().unwrap(),
                     idle: Arc::new(crate::content::idle::AlwaysIdle),
                     ocr: Arc::new(crate::content::ocr::NoOcr),
@@ -2636,6 +2731,7 @@ mod tests {
                 synthetic_uses_folders: false,
                 start_menu_dirs: Vec::new(),
                 store_apps: false,
+                windows: None,
                 storage: Storage::in_memory().unwrap(),
                 idle: Arc::new(crate::content::idle::AlwaysIdle),
                 ocr: Arc::new(crate::content::ocr::NoOcr),

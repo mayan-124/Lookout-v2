@@ -154,6 +154,26 @@ export function placeSuggestions<T extends Row>(rows: T[], found: Suggestion[], 
   return [...first, ...others.slice(0, after), ...later, ...others.slice(after)];
 }
 
+/** An exact name of a file or app scores at least this (`TIER_STEP` in core/src/ranking.rs). */
+const EXACT_NAME = 2.5;
+
+/**
+ * Open windows that matched an ordinary search: right under the top result, and
+ * never above a file or app whose whole name was typed.
+ */
+export function placeWindows<T extends Row & { score: number }>(rows: T[], query: string): T[] {
+  if (isListCommand(query)) return rows;
+  const windows = rows.filter((r) => r.source === "windows");
+  if (windows.length === 0) return rows;
+  const others = rows.filter((r) => r.source !== "windows");
+  let at = Math.min(1, others.length);
+  others.forEach((r, n) => {
+    const named = r.kind === "file" || r.kind === "folder" || r.kind === "app";
+    if (named && r.score >= EXACT_NAME) at = Math.max(at, n + 1);
+  });
+  return [...others.slice(0, at), ...windows, ...others.slice(at)];
+}
+
 /** The line under the box when Enter would start an action found by a synonym. */
 export function didYouMean(found: Suggestion[], selected: Row | undefined): string {
   if (selected?.source !== "action") return "";

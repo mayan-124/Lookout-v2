@@ -190,6 +190,30 @@ impl AppsSource {
     }
 }
 
+/// The apps opened most, best first; one never opened is left out.
+pub fn most_used(apps: &SharedApps, frecency: &FrecencyStore, limit: usize) -> Vec<Item> {
+    let now = i64::from(unix_now());
+    let apps = apps.read().unwrap_or_else(PoisonError::into_inner);
+    let mut used: Vec<(f64, &AppEntry)> = apps
+        .iter()
+        .filter_map(|a| {
+            let score = frecency.score(&format!("app:{}", a.path.to_string_lossy()), now);
+            (score > 0.0).then_some((score, a))
+        })
+        .collect();
+    used.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.lower.cmp(&b.1.lower)));
+    used.into_iter()
+        .take(limit)
+        .map(|(_, app)| {
+            let path = app.path.to_string_lossy().into_owned();
+            let mut item = Item::new(format!("app:{path}"), Kind::App, app.name.clone(), "apps");
+            item.subtitle = Some("Application".into());
+            item.uri = Some(path);
+            item
+        })
+        .collect()
+}
+
 /// Whether `token` is the first letters of the first words of `name`:
 /// "vs" and "vsc" both match "visual studio code".
 fn initials_prefix(name: &[u8], token: &[u8]) -> bool {

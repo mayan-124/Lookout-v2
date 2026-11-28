@@ -1,5 +1,6 @@
 // What each kind of result does on each key, in one place: Enter, Shift+Enter,
-// the menu, Ctrl+C, Ctrl+Shift+C, Ctrl+E and Delete. No DOM, so node can test it.
+// the actions list (Right arrow or right-click), Ctrl+C, Ctrl+Shift+C, Ctrl+E,
+// Ctrl+D and Delete. No DOM, so node can test it.
 import { isFileRow } from "./dragout.ts";
 
 export interface RowItem {
@@ -18,10 +19,14 @@ export interface Keys {
   paste?: string;
   /** Ctrl+E */
   reveal?: string;
+  /** The folder it sits in (actions list only). */
+  openFolder?: string;
+  /** Ctrl+D: pins to Home, or takes it off again. */
+  pin?: { action: string; label: string };
+  /** An open window's other actions (actions list only). */
+  window?: { action: string; label: string }[];
   /** Delete. Every one of these can be undone. */
   remove?: { action: string; label: string };
-  /** Adds a file or folder to the saved list (menu only). */
-  save?: string;
 }
 
 const kindOf = (i: RowItem) => (typeof i.kind === "string" ? i.kind : i.kind.custom);
@@ -41,12 +46,35 @@ export function addonAction(i: RowItem, name: string): string | null {
 /** "plugin/<add-on>/paste_clip" and "paste_clip" are the same verb. */
 export const verbOf = (action: string) => action.slice(action.lastIndexOf("/") + 1);
 
-export function rowKeys(i: RowItem): Keys {
+const ON_DISK = /^([a-z]:[\\/]|\\\\)/i;
+/** What can be pinned: never an add-on's result, a web search or a window. */
+const PINNABLE = ["file", "folder", "app", "url", "system"];
+
+export const UNPIN = { action: "saved_remove", label: "★ Unpin" };
+const PIN = { action: "saved_add", label: "☆ Pin to Home" };
+
+/** `pinned`: the result is on the pinned list already. */
+export function rowKeys(i: RowItem, pinned = false): Keys {
   const kind = kindOf(i);
+  // A row of the pinned list itself, where Delete unpins.
+  const listed = i.source === "saved";
+  const pinnable = PINNABLE.includes(kind) && !i.source.startsWith("plugin:") && i.source !== "websearch" && !!i.uri;
+  const pin: Keys = pinnable ? { pin: pinned || listed ? UNPIN : PIN, ...(listed ? { remove: UNPIN } : {}) } : {};
+  const copyPath = { action: "copy_path", label: "Copy path" };
   if (isFileRow(kind, i.source, i.uri)) {
-    const keys: Keys = { copy: { action: "copy_path", label: "Copy path" }, copyFile: "copy_file", reveal: "reveal" };
-    if (i.source === "saved") return { ...keys, remove: { action: "saved_remove", label: "Remove from saved" } };
-    return { ...keys, save: "saved_add" };
+    return { openFolder: "open_folder", copy: copyPath, copyFile: "copy_file", reveal: "reveal", ...pin };
+  }
+  if (kind === "app" && pinnable) {
+    // A Store app has no file to point at.
+    return ON_DISK.test(i.uri!) ? { openFolder: "open_folder", copy: copyPath, reveal: "reveal", ...pin } : pin;
+  }
+  if (kind === "window") {
+    return {
+      window: [
+        { action: "window_minimize", label: "Minimize" },
+        { action: "window_close", label: "Close" },
+      ],
+    };
   }
   if (kind === "note") {
     return { copy: { action: "note_copy", label: "Copy" }, remove: { action: "note_delete", label: "Delete" } };
@@ -61,8 +89,8 @@ export function rowKeys(i: RowItem): Keys {
       remove: remove ? { action: remove, label: "Delete" } : undefined,
     };
   }
-  if (ANSWERS.includes(kind)) return { copy: { action: "answer_copy", label: "Copy" } };
-  return {};
+  if (ANSWERS.includes(kind)) return { copy: { action: "answer_copy", label: "Copy" }, ...pin };
+  return pin;
 }
 
 /** The clipboard add-on's answer when a clip was copied but could not be pasted. */
@@ -84,7 +112,16 @@ export function hidesBar(action: string, message: string, hideAfterCopy: boolean
 
 /** Actions after which the list on screen is out of date. */
 export const changesList = (action: string) =>
-  ["note_save", "note_delete", "timer_cancel", "delete_clip", "saved_remove"].includes(verbOf(action));
+  ["note_save", "note_delete", "timer_cancel", "delete_clip", "saved_remove", "window_minimize", "window_close"].includes(
+    verbOf(action),
+  );
+
+/** Actions that change the pinned list, so Home's lists are asked for again. */
+export const changesPins = (action: string) => ["saved_add", "saved_remove", "pin_up", "pin_down"].includes(action);
+
+/** Actions that say nothing when they work: what changed is on screen. */
+export const isQuiet = (action: string) =>
+  ["saved_add", "pin_up", "pin_down", "window_minimize", "window_close"].includes(action);
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 

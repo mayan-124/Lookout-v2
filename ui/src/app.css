@@ -437,6 +437,8 @@ button.result:hover .when {
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   background: var(--solid-bg);
+  max-height: 100vh;
+  overflow-y: auto;
 }
 .ctxmenu button {
   all: unset;

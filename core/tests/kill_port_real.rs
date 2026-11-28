@@ -138,6 +138,7 @@ fn start(dir: &Path, launcher: Arc<dyn Launcher>) -> App {
             synthetic_uses_folders: false,
             start_menu_dirs: vec![],
             store_apps: false,
+            windows: None,
             storage: lookout_core::storage::Storage::with_key(
                 lookout_core::storage::DataPaths::new(dir),
                 lookout_core::crypto::Key::from_bytes(&[9u8; 32]).unwrap(),
