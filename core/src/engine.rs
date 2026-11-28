@@ -125,7 +125,8 @@ impl Engine {
             .filter(|s| !parsed.is_empty() && only.is_none_or(|id| s.id() == id))
             .collect();
         let runnable = wanted.len();
-        let fallback = wanted.iter().filter_map(|s| s.fallback(&parsed)).collect();
+        let mut fallback: Vec<Item> = wanted.iter().filter_map(|s| s.fallback(&parsed)).collect();
+        fallback.sort_by(|a, b| b.score.total_cmp(&a.score));
         // Sent before any source starts, so the merger always sees `New` first.
         if self
             .tx

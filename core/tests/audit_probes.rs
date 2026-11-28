@@ -33,11 +33,14 @@ impl App {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
-            let u = self
+            let mut u = self
                 .rx
                 .recv_timeout(left)
                 .unwrap_or_else(|_| panic!("query never finished: {:?}", text.chars().take(40)));
             if u.generation == generation && u.done {
+                // What was found: not the offer to save the words as a note.
+                u.items
+                    .retain(|i| !(i.source == "notes" && i.metadata.contains_key("fallback")));
                 return u;
             }
         }

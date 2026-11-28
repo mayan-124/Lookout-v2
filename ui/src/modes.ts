@@ -12,15 +12,14 @@ export interface UiState {
   show: Show;
   hide_tips: boolean;
   advanced_open: boolean;
-  disk_notice: boolean;
   hide_after_copy: boolean;
   compact_home: boolean;
 }
 
 export const MODES: readonly { id: Mode; name: string; what: string }[] = [
   { id: "simple", name: "Simple", what: "Just search and settings." },
-  { id: "standard", name: "Standard", what: "Adds clipboard and capture." },
-  { id: "full", name: "Full", what: "Adds disk and every tip." },
+  { id: "standard", name: "Standard", what: "Adds clipboard, capture and disk." },
+  { id: "full", name: "Full", what: "Adds every tip and command word." },
 ];
 
 export const modeLabel = (ui: Pick<UiState, "mode" | "custom">) =>

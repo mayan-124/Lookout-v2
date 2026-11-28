@@ -22,6 +22,7 @@ use crate::query::ParsedQuery;
 use crate::ranking::{self, RankingWeights};
 use crate::securedb::{DbError, SecureDb};
 use crate::sources::{QueryContext, Source, Tier, ANSWER_SCORE};
+use crate::websearch::{plain_words, Claimed};
 
 pub const MAX_CHARS: usize = 2_000;
 /// Most notes kept: every save rewrites the encrypted database.
@@ -270,14 +271,30 @@ fn item(note: Note) -> Item {
     item
 }
 
+/// First words Lookout answers itself: they are not offered as a note.
+const OWN_WORDS: &[&str] = &[
+    "help", "kill", "timer", "timers", "disk", "settings", "setup",
+];
+
 pub struct NoteSource {
     store: Arc<NoteStore>,
     weights: RankingWeights,
+    claimed: Claimed,
 }
 
 impl NoteSource {
     pub fn new(store: Arc<NoteStore>, weights: RankingWeights) -> Self {
-        Self { store, weights }
+        Self {
+            store,
+            weights,
+            claimed: Box::new(|_| false),
+        }
+    }
+
+    /// Words add-ons answer, so no note is offered for them.
+    pub fn unless_claimed(mut self, claimed: Claimed) -> Self {
+        self.claimed = claimed;
+        self
     }
 
     fn save_row(&self, text: String) -> Item {
@@ -388,6 +405,31 @@ impl Source for NoteSource {
         if !items.is_empty() {
             emit(items);
         }
+    }
+
+    /// "Save as note" for ordinary words that found nothing else.
+    fn fallback(&self, q: &ParsedQuery) -> Option<Item> {
+        let first = q.tokens.first()?;
+        let text = crate::quick::strip_controls(&q.raw);
+        let text = text.trim();
+        if command(text).is_some()
+            || !plain_words(q)
+            || OWN_WORDS.contains(&first.as_str())
+            || (self.claimed)(first)
+            || text.chars().count() > MAX_CHARS
+        {
+            return None;
+        }
+        let mut row = self.save_row(text.to_owned());
+        // The store is full: nothing to offer.
+        if row.kind != Kind::Custom(KIND_NEW.into()) {
+            return None;
+        }
+        row.title = format!("Save as note: {text}");
+        // Under a web search, where one is chosen.
+        row.score = ANSWER_SCORE - 1.0;
+        row.metadata.insert("fallback".into(), true.into());
+        Some(row)
     }
 }
 

@@ -11,7 +11,6 @@ export const ui = $state<UiState>({
   show: { disk: false, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true, notes: true },
   hide_tips: false,
   advanced_open: false,
-  disk_notice: false,
   hide_after_copy: true,
   compact_home: false,
 });
@@ -33,7 +32,6 @@ export const setHideTips = (hide: boolean) => apply("set_hide_tips", { hide });
 export const setHideAfterCopy = (hide: boolean) => apply("set_hide_after_copy", { hide });
 export const setCompactHome = (compact: boolean) => apply("set_compact_home", { compact });
 export const setAdvancedOpen = (open: boolean) => apply("set_advanced_open", { open });
-export const dismissDiskNotice = () => apply("dismiss_disk_notice");
 
 /** Visibility, theme and layout back to recommended. Data is not touched. */
 export async function resetToRecommended(): Promise<string> {

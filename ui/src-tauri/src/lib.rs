@@ -934,6 +934,17 @@ async fn prepare_action(
 }
 
 #[tauri::command]
+async fn prepare_rename(
+    id: String,
+    pattern: String,
+    services: State<'_, Services>,
+) -> Result<Prepared, String> {
+    services_of(&services)?
+        .prepare_rename(&id, &pattern)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn prepare_undo(services: State<'_, Services>) -> Result<Prepared, String> {
     services_of(&services)?
         .prepare_undo()
@@ -1915,11 +1926,6 @@ fn set_hide_after_copy(hide: bool, services: State<Services>) -> Result<UiState,
     change_ui(&services, |ui| ui.keep_open_after_copy = !hide)
 }
 
-#[tauri::command]
-fn dismiss_disk_notice(services: State<Services>) -> Result<UiState, String> {
-    change_ui(&services, |ui| ui.disk_notice = false)
-}
-
 /// "Reset to recommended": visibility and layout. Indexing is not restarted.
 #[tauri::command]
 fn reset_ui(shared: State<Shared>, services: State<Services>) -> Result<UiState, String> {
@@ -2566,10 +2572,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     // An install that already has folders never sees the setup, one set up
     // earlier does not start with Windows unless asked to, and one from before
-    // modes starts in Standard and is told where Disk went.
+    // modes starts in Standard.
     let marked = settings.mark_configured_done();
-    let existing = !settings.needs_first_run();
-    let adopted = settings.ui.adopt(existing);
+    let adopted = settings.ui.adopt();
     if (settings.keep_start_with_windows_off() || marked || adopted)
         && settings.save(&settings_path).is_err()
     {
@@ -2835,6 +2840,7 @@ pub fn run() {
             bar_painted,
             query,
             prepare_action,
+            prepare_rename,
             prepare_undo,
             present_action,
             cancel_action,
@@ -2861,7 +2867,6 @@ pub fn run() {
             set_hide_after_copy,
             set_compact_home,
             set_advanced_open,
-            dismiss_disk_notice,
             reset_ui,
             pick_folder,
             search_history,

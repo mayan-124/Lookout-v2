@@ -8,7 +8,7 @@
     "tipMin": "standard",
     "synonyms": ["find file", "search files", "open file", "open app", "launch", "locate", "serach", "seach"],
     "example": "report",
-    "description": "Find files, folders and apps by name",
+    "description": "Find files and apps; Ctrl+Enter opens a result's folder",
     "run": "fill",
     "stem": ""
   },
@@ -435,7 +435,7 @@
     "category": "This PC",
     "icon": "Disk",
     "feature": "disk",
-    "mode": "full",
+    "mode": "standard",
     "advanced": true,
     "synonyms": ["disk analyser", "disk space", "storage usage", "large files", "big files", "free space", "treesize", "dsik usage", "storage", "drive space", "space", "what is using space", "cleanup", "free up space", "treemap"],
     "commands": ["disk", "disk usage"],

@@ -34,7 +34,7 @@ impl Mode {
     pub const fn preset(self) -> Show {
         let simple = matches!(self, Mode::Simple);
         Show {
-            disk: matches!(self, Mode::Full),
+            disk: !simple,
             clipboard: !simple,
             capture: !simple,
             timers: true,
@@ -63,8 +63,6 @@ pub struct Ui {
     pub hide_tips: bool,
     /// Settings > Advanced is expanded.
     pub advanced_open: bool,
-    /// An existing install still has to be told that Disk left the dock.
-    pub disk_notice: bool,
     /// The bar stays open after a copy or a saved note.
     pub keep_open_after_copy: bool,
     /// Home is only the search box until something is typed.
@@ -80,7 +78,6 @@ pub struct UiState {
     pub show: Show,
     pub hide_tips: bool,
     pub advanced_open: bool,
-    pub disk_notice: bool,
     pub hide_after_copy: bool,
     pub compact_home: bool,
 }
@@ -105,7 +102,6 @@ impl Ui {
             show: self.show(),
             hide_tips: self.hide_tips,
             advanced_open: self.advanced_open,
-            disk_notice: self.disk_notice,
             hide_after_copy: !self.keep_open_after_copy,
             compact_home: self.compact_home,
         }
@@ -115,23 +111,18 @@ impl Ui {
     pub fn set_mode(&mut self, mode: Mode) {
         self.mode = Some(mode);
         self.show = None;
-        self.disk_notice &= !self.show().disk;
     }
 
     pub fn set_show(&mut self, show: Show) {
         self.show = (show != self.mode().preset()).then_some(show);
-        self.disk_notice &= !show.disk;
     }
 
-    /// Called at start. A first start records Standard; an install that was set
-    /// up before had Disk in the dock, so it is told once where Disk went.
-    /// True if something changed.
-    pub fn adopt(&mut self, existing: bool) -> bool {
+    /// Called at start. A first start records Standard. True if something changed.
+    pub fn adopt(&mut self) -> bool {
         if self.mode.is_some() {
             return false;
         }
         self.mode = Some(Mode::Standard);
-        self.disk_notice = existing && !self.show().disk;
         true
     }
 }
@@ -211,10 +202,7 @@ mod tests {
             Mode::Simple.preset(),
             show([false, false, false, true, false, true, false])
         );
-        assert_eq!(
-            Mode::Standard.preset(),
-            show([false, true, true, true, true, true, true])
-        );
+        assert_eq!(Mode::Standard.preset(), show([true; 7]));
         assert_eq!(Mode::Full.preset(), show([true; 7]));
         assert_eq!(Ui::default().mode(), Mode::Standard);
         assert_eq!(Ui::default().show(), Mode::Standard.preset());
@@ -244,56 +232,35 @@ mod tests {
     fn custom_means_the_switches_differ_from_the_mode() {
         let mut ui = Ui::default();
         assert!(!ui.custom());
-        let mut with_disk = ui.show();
-        with_disk.disk = true;
-        ui.set_show(with_disk);
-        assert!(ui.custom() && ui.show().disk);
+        let mut without_disk = ui.show();
+        without_disk.disk = false;
+        ui.set_show(without_disk);
+        assert!(ui.custom() && !ui.show().disk);
         // Switched back by hand: the mode's name again.
         ui.set_show(Mode::Standard.preset());
         assert!(!ui.custom() && ui.show.is_none());
-        ui.set_show(with_disk);
+        ui.set_show(without_disk);
         ui.set_mode(Mode::Simple);
         assert!(!ui.custom());
         assert_eq!(ui.show(), Mode::Simple.preset());
     }
 
     #[test]
-    fn an_existing_install_gets_the_disk_notice_once() {
+    fn a_first_start_records_standard_and_keeps_a_chosen_mode() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        // A settings file from before there were modes.
-        std::fs::write(&path, r#"{"first_run_done": true}"#).unwrap();
+        // A settings file from before there were modes, with the old notice.
+        std::fs::write(
+            &path,
+            r#"{"first_run_done": true, "ui": {"disk_notice": true}}"#,
+        )
+        .unwrap();
         let mut s = Settings::load(&path).unwrap();
-        assert!(s.ui.adopt(!s.needs_first_run()));
-        assert!(s.ui.disk_notice && s.ui.mode() == Mode::Standard);
-        // Still pending after a restart that came before an answer.
-        s.save(&path).unwrap();
-        let mut s = Settings::load(&path).unwrap();
-        assert!(!s.ui.adopt(true) && s.ui.disk_notice);
-        s.update_ui(&path, |u| u.disk_notice = false).unwrap();
-        let mut s = Settings::load(&path).unwrap();
-        assert!(!s.ui.adopt(true) && !s.ui.disk_notice);
-    }
-
-    #[test]
-    fn turning_disk_on_answers_the_notice_and_new_installs_get_none() {
-        let mut ui = Ui::default();
-        ui.adopt(true);
-        let mut on = ui.show();
-        on.disk = true;
-        ui.set_show(on);
-        assert!(!ui.disk_notice);
-        let mut ui = Ui::default();
-        ui.adopt(true);
-        ui.set_mode(Mode::Full);
-        assert!(!ui.disk_notice);
-        let mut fresh = Settings::default();
-        assert!(fresh.ui.adopt(!fresh.needs_first_run()));
-        assert!(!fresh.ui.disk_notice && fresh.ui.mode() == Mode::Standard);
-        // A mode already chosen is kept.
-        fresh.ui.set_mode(Mode::Simple);
-        assert!(!fresh.ui.adopt(true));
-        assert_eq!(fresh.ui.mode(), Mode::Simple);
+        assert!(s.ui.adopt() && s.ui.mode() == Mode::Standard);
+        assert!(s.ui.show().disk);
+        s.ui.set_mode(Mode::Simple);
+        assert!(!s.ui.adopt());
+        assert_eq!(s.ui.mode(), Mode::Simple);
     }
 
     #[test]
@@ -316,14 +283,13 @@ mod tests {
             show: Some(show([false; 7])),
             hide_tips: true,
             advanced_open: true,
-            disk_notice: true,
             keep_open_after_copy: true,
             compact_home: true,
         };
         s.reset_ui(&path).unwrap();
         assert_eq!(s.ui.mode(), Mode::Standard);
         assert!(!s.ui.custom() && !s.ui.hide_tips && !s.ui.advanced_open);
-        assert!(!s.ui.disk_notice && !s.pinned && s.window_positions.is_empty());
+        assert!(!s.pinned && s.window_positions.is_empty());
         assert_eq!(s.chart_colors, "folder");
         let expected = Settings {
             ui: s.ui.clone(),

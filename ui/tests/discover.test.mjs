@@ -9,7 +9,7 @@ import { ACTIONS, ICONS, actionById, homeActions } from "../src/registry.ts";
 // The switches each mode sets (core/src/uimode.rs).
 const SHOW = {
   simple: { disk: false, clipboard: false, capture: false, timers: true, quick_keys: false, filters: true, notes: false },
-  standard: { disk: false, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true, notes: true },
+  standard: { disk: true, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true, notes: true },
   full: { disk: true, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true, notes: true },
 };
 const ids = (q, mode = "full") => suggest(q, ACTIONS, mode, SHOW[mode]).map((s) => s.action.id);
@@ -178,8 +178,8 @@ test("an action that needs more typing fills its stem instead of running", () =>
 test("suggestions follow the mode, but a whole word always finds its action", () => {
   assert.deepEqual(ids("clipb", "simple"), []);
   assert.deepEqual(ids("clipboard", "simple"), ["clipboard"]);
-  assert.deepEqual(ids("disk analy", "standard"), []);
-  assert.ok(ids("disk analy", "full").includes("disk"));
+  assert.deepEqual(ids("disk analy", "simple"), []);
+  assert.ok(ids("disk analy", "standard").includes("disk"));
   assert.ok(ids("screens", "simple").includes("screenshot"));
 });
 
@@ -198,9 +198,9 @@ test("the quick actions follow the mode", () => {
 test("every registry action appears in help", () => {
   const listed = helpEntries(ACTIONS, "full", SHOW.full, false).map((e) => e.row.id);
   assert.deepEqual(listed, ACTIONS.map((a) => a.id));
-  // Outside Full the advanced ones are one click away; Disk waits for its switch,
+  // Outside Full the advanced ones are one click away,
   // and rows that are only a word to type are left out.
-  const open = helpEntries(ACTIONS, "standard", { ...SHOW.standard, disk: true }, true).flatMap((e) => ("row" in e ? [e.row.id] : []));
+  const open = helpEntries(ACTIONS, "standard", SHOW.standard, true).flatMap((e) => ("row" in e ? [e.row.id] : []));
   assert.deepEqual([...open].sort(), ACTIONS.filter((a) => a.word !== "hide").map((a) => a.id).sort());
   // Each category stays together, so it is headed once.
   const groups = ACTIONS.map((a) => a.category).filter((c, i, all) => c !== all[i - 1]);
@@ -238,7 +238,7 @@ test("faint text completes commands only", () => {
     assert.equal(ghost(q), "", q);
   }
   assert.equal(ghost("clipb", "simple"), "");
-  assert.equal(ghost("dis", "standard"), "");
+  assert.equal(ghost("dis", "simple"), "");
 });
 
 test("Tab takes the faint text; Esc dismisses it; neither acts during composition", () => {

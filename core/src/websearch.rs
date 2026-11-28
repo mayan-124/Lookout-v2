@@ -115,6 +115,18 @@ fn row(engine: SearchEngine, words: &str) -> Option<Item> {
     Some(item)
 }
 
+/// Text that is words alone: no filter, search command, path or address.
+pub(crate) fn plain_words(q: &ParsedQuery) -> bool {
+    !(q.kind.is_some()
+        || q.time.is_some()
+        || !q.exts.is_empty()
+        || !q.ops.is_empty()
+        || command(&q.raw).is_some()
+        || crate::pathquery::looks_like_path(&q.raw)
+        || quick::parse_web_url(&q.raw).is_some()
+        || quick::parse_unc(&q.raw).is_some())
+}
+
 /// Whether a first word belongs to an add-on that is in use.
 pub type Claimed = Box<dyn Fn(&str) -> bool + Send + Sync>;
 
@@ -150,13 +162,7 @@ impl Source for WebSearchSource {
     /// The same row for ordinary words that found nothing else.
     fn fallback(&self, q: &ParsedQuery) -> Option<Item> {
         let first = q.tokens.first()?;
-        let filtered =
-            q.kind.is_some() || q.time.is_some() || !q.exts.is_empty() || !q.ops.is_empty();
-        if filtered
-            || command(&q.raw).is_some()
-            || crate::pathquery::looks_like_path(&q.raw)
-            || quick::parse_web_url(&q.raw).is_some()
-            || quick::parse_unc(&q.raw).is_some()
+        if !plain_words(q)
             || OWN_WORDS.contains(&first.trim_end_matches(':'))
             || (self.claimed)(first)
         {

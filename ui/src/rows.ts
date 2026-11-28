@@ -17,8 +17,10 @@ export interface Keys {
   copyFile?: string;
   /** Shift+Enter: paste a clip into the app that was in front. */
   paste?: string;
-  /** Ctrl+E */
+  /** Ctrl+Enter or Ctrl+E */
   reveal?: string;
+  /** "Rename…" on a folder, which asks for a pattern (actions list only). */
+  rename?: boolean;
   /** The folder it sits in (actions list only). */
   openFolder?: string;
   /** Ctrl+D: pins to Home, or takes it off again. */
@@ -62,7 +64,8 @@ export function rowKeys(i: RowItem, pinned = false): Keys {
   const pin: Keys = pinnable ? { pin: pinned || listed ? UNPIN : PIN, ...(listed ? { remove: UNPIN } : {}) } : {};
   const copyPath = { action: "copy_path", label: "Copy path" };
   if (isFileRow(kind, i.source, i.uri)) {
-    return { openFolder: "open_folder", copy: copyPath, copyFile: "copy_file", reveal: "reveal", ...pin };
+    const folder: Keys = kind === "folder" ? { rename: true } : {};
+    return { openFolder: "open_folder", copy: copyPath, copyFile: "copy_file", reveal: "reveal", ...folder, ...pin };
   }
   if (kind === "app" && pinnable) {
     // A Store app has no file to point at.

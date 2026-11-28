@@ -15,7 +15,7 @@ import {
 // The switches each mode sets (core/src/uimode.rs).
 const SHOW = {
   simple: { disk: false, clipboard: false, capture: false, timers: true, quick_keys: false, filters: true, notes: false },
-  standard: { disk: false, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true, notes: true },
+  standard: { disk: true, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true, notes: true },
   full: { disk: true, clipboard: true, capture: true, timers: true, quick_keys: true, filters: true, notes: true },
 };
 
@@ -32,7 +32,7 @@ const ROWS = [
   row("Timers", "timers"),
   row("Quick keys", "quick_keys", true, "standard"),
   row("System", null, true),
-  row("Disk", "disk", true, "full"),
+  row("Disk", "disk", true, "standard"),
   row("Clipboard", "clipboard", false, "standard"),
 ];
 const names = (entries) => entries.map((e) => ("row" in e ? e.row.category : "advanced"));
@@ -40,9 +40,9 @@ const names = (entries) => entries.map((e) => ("row" in e ? e.row.category : "ad
 test("the dock lists what each mode shows and keeps section numbers", () => {
   const dock = (mode) => dockItems(SHOW[mode]).map((d) => d.name);
   assert.deepEqual(dock("simple"), ["Search", "Settings"]);
-  assert.deepEqual(dock("standard"), ["Search", "Clipboard", "Capture", "Settings"]);
+  assert.deepEqual(dock("standard"), ["Search", "Disk", "Clipboard", "Capture", "Settings"]);
   assert.deepEqual(dock("full"), ["Search", "Disk", "Clipboard", "Capture", "Settings"]);
-  assert.deepEqual(dockItems(SHOW.standard).map((d) => d.n), [0, 2, 3, 4]);
+  assert.deepEqual(dockItems({ ...SHOW.standard, disk: false }).map((d) => d.n), [0, 2, 3, 4]);
 });
 
 test("changed switches read as Custom", () => {
@@ -59,6 +59,7 @@ test("help folds advanced groups outside Full", () => {
     "advanced",
     "Quick keys",
     "System",
+    "Disk",
   ]);
   assert.deepEqual(names(helpEntries(ROWS, "simple", SHOW.simple, true)), ["Search", "Timers", "advanced", "System"]);
   assert.deepEqual(names(helpEntries(ROWS, "full", SHOW.full, false)), ROWS.map((r) => r.category));

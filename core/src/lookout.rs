@@ -620,7 +620,10 @@ impl Lookout {
         let sources: Vec<Arc<dyn Source>> = vec![
             Arc::new(CalculatorSource),
             Arc::new(AnswerSource),
-            Arc::new(NoteSource::new(notes.clone(), weights)),
+            Arc::new(
+                NoteSource::new(notes.clone(), weights)
+                    .unless_claimed(claimed_words(plugin_host.clone())),
+            ),
             Arc::new(crate::quickkeys::QuickKeySource::new(quick_keys.clone())),
             Arc::new(crate::timers::TimerSource::new(timer_store)),
             Arc::new(UnitsSource),
@@ -1360,6 +1363,8 @@ impl Lookout {
             .unwrap_or_default()
             .into_iter()
             .filter(|i| !self.in_skipped_folder(i))
+            // "Save as note" is an offer to the bar, not a search result.
+            .filter(|i| !(i.source == "notes" && i.metadata.contains_key("fallback")))
             .filter(|i| kind.is_none_or(|k| matches_kind(i, k)))
             .take(limit)
             .collect()
@@ -1709,6 +1714,37 @@ impl Lookout {
         self.actions.prepare(action_id, target)
     }
 
+    /// "Rename…" on a folder result: the File tools add-on's batch rename with
+    /// a typed pattern. Preview, confirmation and undo are the add-on's own.
+    pub fn prepare_rename(&self, item_id: &str, pattern: &str) -> Result<Prepared, ActionError> {
+        const PLUGIN: &str = "com.lookout.files-tools";
+        const ACTION: &str = "rename_files";
+        let mut target = self.target(item_id).ok_or_else(|| {
+            ActionError::Stale("that result is no longer available; search again".into())
+        })?;
+        if target.kind != Kind::Folder {
+            return Err(ActionError::Refused("only a folder can be chosen".into()));
+        }
+        let pattern = pattern.trim();
+        if pattern.is_empty() {
+            return Err(ActionError::Refused("type a pattern like Trip {n}".into()));
+        }
+        if !self.plugins.as_ref().is_some_and(|h| h.is_usable(PLUGIN)) {
+            return Err(ActionError::Refused(
+                "Rename needs the File tools add-on. Turn it on in Settings > Advanced > Add-ons."
+                    .into(),
+            ));
+        }
+        target.origin = Some(PluginOrigin {
+            plugin_id: PLUGIN.into(),
+            action_id: ACTION.into(),
+            also: vec![],
+            params: serde_json::json!({ "pattern": pattern }),
+        });
+        self.actions
+            .prepare(&format!("plugin/{PLUGIN}/{ACTION}"), target)
+    }
+
     pub fn prepare_undo(&self) -> Result<Prepared, ActionError> {
         self.actions.prepare_undo()
     }
@@ -1860,7 +1896,7 @@ fn target_of(item: &crate::item::Item) -> Option<Target> {
     }
 }
 
-/// First words an add-on in use answers, so no web search is offered for them.
+/// First words an add-on in use answers: no web search or note is offered for them.
 fn claimed_words(host: Option<Arc<PluginHost>>) -> crate::websearch::Claimed {
     Box::new(move |word| {
         host.as_ref().is_some_and(|h| {
@@ -1999,7 +2035,11 @@ mod tests {
                     .iter()
                     .find(|u| u.generation == generation && u.done)
                 {
-                    return u.clone();
+                    let mut u = u.clone();
+                    // What was found: not the offer to save the words as a note.
+                    u.items
+                        .retain(|i| !(i.source == "notes" && i.metadata.contains_key("fallback")));
+                    return u;
                 }
                 assert!(Instant::now() < deadline, "query never completed");
                 std::thread::sleep(Duration::from_millis(5));

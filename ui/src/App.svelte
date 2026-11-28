@@ -24,7 +24,7 @@
   import { didYouMean, ghostFor, isListCommand, isNoteText, opensHistory, placeSuggestions, placeWindows, readLine, suggest, worthRemembering } from "./discover";
   import { homeRows } from "./home";
   import { NO_VALUES, OPERATOR_HINT, completions, operatorGhost, removeOperator, type OperatorValues } from "./operators";
-  import { dismissDiskNotice, loadUi, setHideTips, setShow, ui } from "./uistate.svelte";
+  import { loadUi, setHideTips, setShow, ui } from "./uistate.svelte";
   import { footerStatus, indexLine, type IndexCounts } from "./indexstatus";
   import { EMPTY_DECK, deal, fixedTips, startRotation, turn } from "./tips";
   import { plain as errorText } from "./errors";
@@ -67,6 +67,7 @@
   }
   // What the card shows: a preview waiting for Confirm, or the outcome.
   type Card =
+    | { phase: "rename"; id: string; name: string; pattern: string }
     | { phase: "confirm"; prepared: Prepared; presented: boolean; busy: boolean; error: string }
     // `hides`: Enter closes the card and puts the bar away.
     | { phase: "result"; ok: boolean; message: string; undoable: boolean; hides?: boolean };
@@ -245,6 +246,7 @@
   let status: Status | null = $state(null);
   let notice = $state("");
   let card: Card | null = $state(null);
+  let renameInput: HTMLInputElement | undefined = $state();
   // The settings panel (first-run folder choice, exclusions, pause, delete index).
   let panel = $state(false);
   let privacy: ReturnType<typeof Privacy> | undefined = $state();
@@ -794,6 +796,8 @@
       ...order.flatMap((g) => rest.filter((i) => groupOf(i) === g)),
       ...u.items.filter((i) => i.source === "semantic"),
     ];
+    // With no folders yet, choosing them beats saving the words as a note.
+    if (noFolders) results = results.filter((i) => !(i.metadata?.fallback && kindName(i.kind) === "note_new"));
     done = u.done;
     filters = u.filters && (u.filters.kind || u.filters.date) ? u.filters : null;
     typedOps = u.filters?.operators ?? [];
@@ -879,8 +883,21 @@
       return;
     }
     // The words that found a window come from its title: they are not kept.
-    if (kindName(item.kind) !== "window") remember(query);
+    // Nor are the words of a note kept as a search.
+    if (!["window", "note_new"].includes(kindName(item.kind))) remember(query);
     begin(() => invoke<Prepared>("prepare_action", { action, id: item.id }));
+  }
+
+  async function startRename(i: Item) {
+    card = { phase: "rename", id: i.id, name: i.title, pattern: "" };
+    await tick();
+    renameInput?.focus();
+  }
+  function submitRename(e: Event) {
+    e.preventDefault();
+    if (card?.phase !== "rename" || !card.pattern.trim()) return;
+    const { id, pattern } = card;
+    begin(() => invoke<Prepared>("prepare_rename", { id, pattern }));
   }
 
   function startUndo() {
@@ -1574,7 +1591,7 @@
       const box = e.target === input && input?.selectionStart !== input?.selectionEnd;
       const action = box || String(window.getSelection()) ? undefined : keys.copy?.action;
       if (action) run = () => doAction(action, row.item);
-    } else if (ctrl && !e.shiftKey && letter === "e") {
+    } else if (ctrl && !e.shiftKey && (letter === "e" || e.key === "Enter")) {
       const action = keys.reveal;
       if (action) run = () => doAction(action, row.item);
     } else if (ctrl && !e.shiftKey && letter === "d") {
@@ -1613,6 +1630,7 @@
     add(keys.copyFile, "Copy file");
     add(keys.pin?.action, keys.pin?.label ?? "");
     add(keys.reveal, "Show in folder");
+    if (keys.rename) entries.push({ label: "Rename…", run: () => startRename(i) });
     for (const w of keys.window ?? []) add(w.action, w.label);
     if (home && i.source === "saved") {
       add("pin_up", "Move up");
@@ -1714,7 +1732,7 @@
   }
 
   const view = $derived.by<View>(() => {
-    if (card) return card.phase === "confirm" ? "confirm" : "done";
+    if (card) return card.phase === "result" ? "done" : "confirm";
     if (panel) return "settings";
     if (disk) return "disk";
     if (showSetup) return "setup";
@@ -1774,12 +1792,8 @@
     input?.focus();
   }
   // The tallest the screen allows: fixed-height panels shrink to fit at high Windows scaling.
-  // The notice above the dock takes its own height (and the gap under it) from them.
-  const showMoved = $derived(ui.disk_notice && !card && !showSetup);
-  let movedHeight = $state(0);
   function fitScreen() {
-    const taken = showMoved ? movedHeight + 8 : 0;
-    document.documentElement.style.setProperty("--room", `${window.screen.availHeight - 32 - taken}px`);
+    document.documentElement.style.setProperty("--room", `${window.screen.availHeight - 32}px`);
   }
   $effect(fitScreen);
 
@@ -2026,6 +2040,31 @@
             </button>
           </div>
         </div>
+      {:else if card?.phase === "rename"}
+        <form class="card glass" aria-labelledby="card-title" onsubmit={submitRename}>
+          <div class="card-head">
+            <span class="risk">Rename</span>
+            <h2 id="card-title">Rename the files in {card.name}</h2>
+          </div>
+          <div class="card-body">
+            <input
+              type="text"
+              class="renamebox"
+              bind:this={renameInput}
+              bind:value={card.pattern}
+              maxlength="120"
+              placeholder={"Trip {n}"}
+              aria-label="New name pattern"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <p>{"{n}"} is the number, {"{name}"} the old name. Nothing changes until you confirm.</p>
+          </div>
+          <div class="card-actions">
+            <button type="button" class="btn" onclick={dismissCard}>Cancel <kbd>Esc</kbd></button>
+            <button type="submit" class="btn primary" disabled={!card.pattern.trim()}>Preview <kbd>Enter</kbd></button>
+          </div>
+        </form>
       {:else if card?.phase === "result"}
         <section class="card glass" role="status">
           <div class="card-head">
@@ -2407,7 +2446,7 @@
                   <button class="btn small" onclick={() => doAction(rowKeys(cur).copy?.action ?? "", cur)}>Copy <kbd>Ctrl+C</kbd></button>
                 {/if}
                 {#if isFile(cur)}
-                  <button class="btn small" title="Ctrl+E" onclick={() => doAction("reveal", cur)}>Show in folder</button>
+                  <button class="btn small" title="Ctrl+Enter or Ctrl+E" onclick={() => doAction("reveal", cur)}>Show in folder</button>
                   <button class="btn small" title="Ctrl+C" onclick={() => doAction("copy_path", cur)}>Copy path</button>
                   <button class="btn small" title="Ctrl+Shift+C" onclick={() => doAction("copy_file", cur)}>Copy file</button>
                 {/if}
@@ -2441,13 +2480,6 @@
     </div>
 
     <div class="foot" class:none={compact && !notice}>
-    {#if showMoved && !compact}
-      <div class="moved glass" role="status" bind:offsetHeight={movedHeight}>
-        <span>Disk moved to Full mode in Settings &gt; Features</span>
-        <button type="button" class="btn small primary" onclick={() => uiChange(setShow("disk", true))}>Turn Disk on</button>
-        <button type="button" class="btn small" onclick={() => uiChange(dismissDiskNotice())}>Dismiss</button>
-      </div>
-    {/if}
     {#if !card && !compact}
       <nav class="dock glass" aria-label="Sections">
         {#each dockItems(ui.show) as { name, n } (n)}
@@ -2688,18 +2720,6 @@
   .stage > :global(*) {
     grid-area: 1 / 1;
     min-height: 0;
-  }
-
-  .moved {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 10px;
-    align-self: center;
-    padding: 8px 16px;
-    border-radius: var(--r-pill);
-    font-size: var(--fs-sm);
   }
 
   /* ---- home ---- */
@@ -3092,6 +3112,10 @@
   .risk.danger {
     border-color: var(--danger);
     color: var(--danger);
+  }
+  .renamebox {
+    width: 100%;
+    box-sizing: border-box;
   }
   .card-body {
     flex: 1;
