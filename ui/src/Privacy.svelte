@@ -32,6 +32,7 @@
     remember_searches: boolean;
     remember_last_search: boolean;
     web_search: "off" | "duckduckgo" | "google" | "bing";
+    ignore_hotkey_in_fullscreen: boolean;
   }
 
   // Manual update check: nothing runs until the user clicks; nothing downloads until the second click.
@@ -391,6 +392,18 @@
     }
   }
 
+  let fullscreenMessage = $state("");
+  async function setIgnoreInFullscreen(el: HTMLInputElement) {
+    fullscreenMessage = "";
+    try {
+      const s = await invoke<PrivacyState>("set_ignore_hotkey_in_fullscreen", { on: el.checked });
+      if (info) info.ignore_hotkey_in_fullscreen = s.ignore_hotkey_in_fullscreen;
+    } catch (e) {
+      el.checked = info?.ignore_hotkey_in_fullscreen ?? false;
+      fullscreenMessage = errorText(e);
+    }
+  }
+
   let historyMessage = $state("");
   // "Keep copied images" is a setting of the Clipboard add-on.
   type Addon = { id: string; config: Record<string, unknown> };
@@ -642,6 +655,14 @@
             />
           </div>
           {#if openMessage}<p class="note" role="status">{openMessage}</p>{/if}
+          {@render toggle(
+            "Do not open the bar in fullscreen apps",
+            "The shortcut does nothing over a fullscreen game or presentation. Windows may still take the key, so that app may not get it. The tray icon still opens the bar.",
+            info?.ignore_hotkey_in_fullscreen ?? false,
+            setIgnoreInFullscreen,
+            !info,
+          )}
+          {#if fullscreenMessage}<p class="hint" role="alert">{fullscreenMessage}</p>{/if}
           <div class="field">
             {@render field("Text from screen", "Select the box, then press the new keys.")}
             <input
@@ -784,7 +805,7 @@
       {:else if section === "privacy"}
         <h2 id="priv-title">Privacy</h2>
         <h3 class="label-caps">What is stored</h3>
-        <p class="hint">File names, file text, usage and search history, your notes and the undo log. Nothing leaves this PC.</p>
+        <p class="hint">File names, file text, usage and search history, your notes, your saved list and the undo log. Nothing leaves this PC.</p>
         <h3 class="label-caps">How it is protected</h3>
         <p class="hint">
           Encrypted with a key only your Windows account can unlock. API keys, private keys and card numbers are

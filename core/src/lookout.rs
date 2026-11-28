@@ -14,8 +14,8 @@ use crate::actions::disk::{
 use crate::actions::kill_port::{self, KillPort, PortSource};
 use crate::actions::open::{self, Launcher, OpenAction};
 use crate::actions::quick::{
-    self as quick_actions, EmptyBinAction, LockAction, OpenUrlAction, PageAction, QuickSource,
-    ThemeAction, WindowsLock, WindowsTheme,
+    self as quick_actions, EmptyBinAction, LockAction, OpenUrlAction, PageAction, PowerAction,
+    PowerControl, QuickSource, ThemeAction, WindowsLock, WindowsPower, WindowsTheme,
 };
 use crate::actions::system::ProcessBackend;
 use crate::actions::undo_log::{Entry, UndoLog};
@@ -587,6 +587,9 @@ impl Lookout {
         let files_source = Arc::new(FilesSource::new(index.clone(), weights));
         let web_search = Arc::new(crate::websearch::Choice::default());
         web_search.set(opts.settings.web_search);
+        let saved = Arc::new(crate::saved::SavedStore::new(storage.db.clone())?);
+        let open_windows: Arc<dyn crate::winswitch::Windows> =
+            Arc::new(crate::winswitch::SystemWindows);
         // Nothing is read or written until a note is asked for.
         let notes = Arc::new(NoteStore::new(storage.db.clone()));
         let sources: Vec<Arc<dyn Source>> = vec![
@@ -603,6 +606,8 @@ impl Lookout {
                 claimed_words(plugin_host.clone()),
             )),
             Arc::new(PortSource::new(system.clone())),
+            Arc::new(crate::saved::SavedSource(saved.clone())),
+            Arc::new(crate::winswitch::WindowSource(open_windows.clone())),
             apps_source,
             files_source.clone(),
         ];
@@ -679,7 +684,7 @@ impl Lookout {
             excludes: excludes.clone(),
             roots: roots.clone(),
         });
-        let action_list: Vec<Arc<dyn Action>> = vec![
+        let mut action_list: Vec<Arc<dyn Action>> = vec![
             Arc::new(OpenAction::new(opts.launcher.clone())),
             Arc::new(KillPort::new(system)),
             Arc::new(OpenUrlAction::new(opts.launcher.clone())),
@@ -708,7 +713,12 @@ impl Lookout {
             Arc::new(SaveNote(notes.clone())),
             Arc::new(CopyNote(notes.clone(), Arc::new(WindowsClipboardWriter))),
             Arc::new(DeleteNote(notes.clone())),
+            Arc::new(crate::saved::SaveAction(saved.clone())),
+            Arc::new(crate::saved::RemoveAction(saved)),
+            Arc::new(crate::winswitch::FocusAction(open_windows)),
         ];
+        let power: Arc<dyn PowerControl> = Arc::new(WindowsPower);
+        action_list.extend(PowerAction::all(&power));
         let mut actions = ActionEngine::new(action_list, log, opts.gate);
         if let Some(host) = &plugin_host {
             actions = actions.with_provider(Arc::new(PluginActions(host.clone())));
@@ -735,10 +745,12 @@ impl Lookout {
             *map.lock().unwrap_or_else(PoisonError::into_inner) = known;
             inner(update);
         });
-        // Notes are never handed to the command line, and it opens no web pages.
+        // Notes and window titles are never handed to the command line, and it
+        // opens no web pages.
+        let hidden = ["notes", crate::websearch::SOURCE, crate::winswitch::SOURCE];
         let cli_sources = sources
             .iter()
-            .filter(|s| !["notes", crate::websearch::SOURCE].contains(&s.id()))
+            .filter(|s| !hidden.contains(&s.id()))
             .cloned()
             .collect();
         let home_roots = roots.clone();
@@ -1741,7 +1753,8 @@ fn target_of(item: &crate::item::Item) -> Option<Target> {
                 || name == crate::answers::KIND_CALC
                 || name == crate::answers::KIND_CONVERSION
                 || name == crate::notes::KIND_NEW
-                || name == crate::notes::KIND_NOTE =>
+                || name == crate::notes::KIND_NOTE
+                || name == crate::winswitch::KIND =>
         {
             Some(Target {
                 item_id: item.id.clone(),

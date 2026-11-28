@@ -1,5 +1,5 @@
 //! Lookout daemon shell (Phase 0): pre-created hidden bar window, global
-//! hotkey, tray icon (Pause / Quit) and hotkey-to-visible latency measurement.
+//! hotkey, tray icon (Open / Pause / Quit) and hotkey-to-visible latency measurement.
 
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -768,6 +768,25 @@ fn toggle_bar(app: &AppHandle) {
     }
 }
 
+/// The open shortcut stays quiet while the user asked for that and a
+/// fullscreen game or presentation is in front. A bar already on screen can
+/// still be closed with it.
+fn hotkey_ignored(app: &AppHandle) -> bool {
+    let wanted = app
+        .try_state::<Services>()
+        .is_some_and(|s| lock(&s.settings).ignore_hotkey_in_fullscreen);
+    wanted
+        && !bar_window(app).is_ok_and(|w| w.is_visible().unwrap_or(false))
+        && lookout_core::winfocus::fullscreen_in_front()
+}
+
+/// "Open Lookout" in the tray menu: works over fullscreen programs too.
+fn open_from_tray(app: &AppHandle) {
+    if app.state::<Shared>().frontend_ready.load(Ordering::Acquire) && show_bar(app).is_err() {
+        log::error("could not show the bar from the tray");
+    }
+}
+
 #[tauri::command]
 fn hide_bar(app: AppHandle) {
     hide_bar_window(&app);
@@ -940,7 +959,18 @@ async fn run_action(
     services: State<'_, Services>,
 ) -> Result<Done, String> {
     let l = services_of(&services)?;
-    with_action(&app, || l.run_action(&ticket).map_err(|e| e.to_string()))
+    with_action(&app, || {
+        let done = l.run_action(&ticket).map_err(|e| e.to_string());
+        // Another window has the focus now: hiding first keeps the bar from
+        // taking it back.
+        if done
+            .as_ref()
+            .is_ok_and(|d| d.action_id == lookout_core::winswitch::FOCUS)
+        {
+            hide_bar_window(&app);
+        }
+        done
+    })
 }
 
 #[tauri::command]
@@ -1102,6 +1132,17 @@ fn set_remember_searches(
     shared: State<Shared>,
 ) -> Result<PrivacyState, String> {
     lock(&services.settings).set_remember_searches(on, &services.paths.settings())?;
+    Ok(privacy_of(&services, &shared))
+}
+
+/// "Do not open the bar in fullscreen apps"; read at each press of the shortcut.
+#[tauri::command]
+fn set_ignore_hotkey_in_fullscreen(
+    on: bool,
+    services: State<Services>,
+    shared: State<Shared>,
+) -> Result<PrivacyState, String> {
+    lock(&services.settings).set_ignore_hotkey_in_fullscreen(on, &services.paths.settings())?;
     Ok(privacy_of(&services, &shared))
 }
 
@@ -1772,6 +1813,7 @@ struct PrivacyState {
     remember_last_search: bool,
     start_with_windows: bool,
     web_search: lookout_core::websearch::SearchEngine,
+    ignore_hotkey_in_fullscreen: bool,
     /// What the setup shows that switch as.
     setup_start_with_windows: bool,
 }
@@ -1802,6 +1844,7 @@ fn privacy_of(services: &Services, shared: &Shared) -> PrivacyState {
         remember_last_search: s.remember_last_search,
         start_with_windows: s.starts_with_windows(),
         web_search: s.web_search,
+        ignore_hotkey_in_fullscreen: s.ignore_hotkey_in_fullscreen,
         setup_start_with_windows: s.setup_offers_start_with_windows(),
     }
 }
@@ -2606,7 +2649,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
-    // Tray: Pause / Quit.
+    // Tray: Open / Pause / Quit.
+    let open_item = MenuItem::with_id(app, "open", "Open Lookout", true, None::<&str>)?;
     let pause_item = CheckMenuItem::with_id(
         app,
         "pause",
@@ -2616,7 +2660,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         None::<&str>,
     )?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit Lookout", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&pause_item, &quit_item])?;
+    let menu = Menu::with_items(app, &[&open_item, &pause_item, &quit_item])?;
     let pause_for_menu = pause_item.clone();
     let mut tray = TrayIconBuilder::with_id("lookout")
         .tooltip(&tooltip)
@@ -2626,6 +2670,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 // The check item flips its own state before this fires.
                 let paused = pause_for_menu.is_checked().unwrap_or(false);
                 apply_pause(app, paused);
+            }
+            "open" => {
+                contain("opening from the tray failed", || open_from_tray(app));
             }
             "quit" => app.exit(0),
             _ => {}
@@ -2755,7 +2802,7 @@ pub fn run() {
                             apply_pause(app, !paused);
                         } else if is_grab {
                             start_grab(app);
-                        } else {
+                        } else if !hotkey_ignored(app) {
                             toggle_bar(app);
                         }
                     });
@@ -2813,6 +2860,7 @@ pub fn run() {
             clear_notes,
             set_remember_searches,
             set_web_search,
+            set_ignore_hotkey_in_fullscreen,
             setup_folders,
             setup_start,
             setup_finish,

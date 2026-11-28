@@ -149,6 +149,17 @@ impl ParsedQuery {
     }
 }
 
+/// The one source that answers text which begins with its command.
+pub fn only_source(input: &str) -> Option<&'static str> {
+    if crate::winswitch::command(input).is_some() {
+        Some(crate::winswitch::SOURCE)
+    } else if crate::saved::command(input).is_some() {
+        Some(crate::saved::SOURCE)
+    } else {
+        None
+    }
+}
+
 /// The words as typed, with nothing read into them.
 fn plain(input: &str) -> ParsedQuery {
     let words: Vec<String> = input.split_whitespace().map(str::to_lowercase).collect();
@@ -209,9 +220,11 @@ pub fn parse_opts<Tz: chrono::TimeZone>(
     now: &chrono::DateTime<Tz>,
     skip: Skip,
 ) -> ParsedQuery {
-    // A note, a web search or an answered date or time question is not made of filters.
+    // A note, a web search, a list asked for by name or an answered date or time
+    // question is not made of filters.
     if crate::notes::is_private(input)
         || crate::websearch::command(input).is_some()
+        || only_source(input).is_some()
         || crate::answers::is_question(input, now)
     {
         return plain(input);

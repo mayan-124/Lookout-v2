@@ -16,7 +16,7 @@ const cards = Object.fromEntries(
 
 const WANTED = {
   Folders: ['add("roots")'],
-  Shortcuts: ['"set_open_hotkey"', '"set_grab_hotkey"', "info.pause_hotkey}<"],
+  Shortcuts: ['"set_open_hotkey"', "setIgnoreInFullscreen,", '"set_grab_hotkey"', "info.pause_hotkey}<"],
   "Web search": ["setWebSearch("],
   Appearance: ['<ThemePicker part="theme"', '<ThemePicker part="accent"', "setGlass(", "setReduceMotion(", "setHideTips("],
   Mode: ["<ModePicker"],

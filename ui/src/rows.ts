@@ -20,6 +20,8 @@ export interface Keys {
   reveal?: string;
   /** Delete. Every one of these can be undone. */
   remove?: { action: string; label: string };
+  /** Adds a file or folder to the saved list (menu only). */
+  save?: string;
 }
 
 const kindOf = (i: RowItem) => (typeof i.kind === "string" ? i.kind : i.kind.custom);
@@ -42,7 +44,9 @@ export const verbOf = (action: string) => action.slice(action.lastIndexOf("/") +
 export function rowKeys(i: RowItem): Keys {
   const kind = kindOf(i);
   if (isFileRow(kind, i.source, i.uri)) {
-    return { copy: { action: "copy_path", label: "Copy path" }, copyFile: "copy_file", reveal: "reveal" };
+    const keys: Keys = { copy: { action: "copy_path", label: "Copy path" }, copyFile: "copy_file", reveal: "reveal" };
+    if (i.source === "saved") return { ...keys, remove: { action: "saved_remove", label: "Remove from saved" } };
+    return { ...keys, save: "saved_add" };
   }
   if (kind === "note") {
     return { copy: { action: "note_copy", label: "Copy" }, remove: { action: "note_delete", label: "Delete" } };
@@ -71,15 +75,16 @@ export const PASTE_FAILED = "Copied. Press Ctrl+V";
 export function hidesBar(action: string, message: string, hideAfterCopy: boolean): boolean {
   const verb = verbOf(action);
   if (verb === "paste_clip" || verb === "paste_plain") return message !== PASTE_FAILED;
-  // Locked: the next show starts clean.
-  if (verb === "system_lock") return true;
+  // Locked, asleep, leaving or in another window: the next show starts clean.
+  const leaves = ["system_lock", "system_sleep", "system_restart", "system_sign_out", "window_focus"];
+  if (leaves.includes(verb)) return true;
   const done = ["copy_path", "copy_file", "copy_clip", "copy_pretty", "answer_copy", "note_copy", "note_save"];
   return hideAfterCopy && done.includes(verb);
 }
 
 /** Actions after which the list on screen is out of date. */
 export const changesList = (action: string) =>
-  ["note_save", "note_delete", "timer_cancel", "delete_clip"].includes(verbOf(action));
+  ["note_save", "note_delete", "timer_cancel", "delete_clip", "saved_remove"].includes(verbOf(action));
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 

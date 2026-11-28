@@ -57,7 +57,7 @@ pub enum KeyError {
 /// their keywords, and the built-in commands.
 fn is_reserved(alias: &str) -> bool {
     const FIXED: &[&str] = &[
-        "timer", "timers", "settings", "setting", "help", "kill", "port", "night",
+        "timer", "timers", "settings", "setting", "help", "kill", "port", "night", "fav", "win",
     ];
     // Whole keywords only: a word out of a longer one ("a", "pc") stays free.
     FIXED.contains(&alias)

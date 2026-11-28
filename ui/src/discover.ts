@@ -72,8 +72,8 @@ export interface Suggestion {
  */
 export function suggest(query: string, actions: Action[], mode: Mode, show: Show): Suggestion[] {
   const q = fold(query);
-  // A note's own words are not commands.
-  if (q.length < MIN_QUERY || isNoteText(query)) return [];
+  // A note's own words, and words that filter a list, are not commands.
+  if (q.length < MIN_QUERY || isNoteText(query) || isListCommand(query)) return [];
   const words = q.split(" ");
   const found: (Suggestion & { tier: number; rank: number })[] = [];
   for (const action of actions) {
@@ -165,6 +165,7 @@ export function didYouMean(found: Suggestion[], selected: Row | undefined): stri
 export function ghostFor(query: string, actions: Action[], mode: Mode, show: Show): string {
   const typed = query.toLowerCase();
   if (typed.length < MIN_QUERY || typed.length !== query.length || isNoteText(query)) return "";
+  if (isListCommand(query)) return "";
   for (const a of actions) {
     if (typed.length < (a.ghostMin ?? MIN_QUERY) || !a.ghost || !advertised(a, mode, show)) continue;
     const full = a.ghost.find((g) => g.length > typed.length && g.startsWith(typed));
@@ -208,8 +209,13 @@ export function readLine(rows: Row[], query: string): string {
 /** Typed text worth keeping in the history: not help and not a section button's. */
 export const worthRemembering = (query: string) => {
   const q = fold(query);
+  // A window search is not kept: its words come from a window's title.
+  if (/^\s*win\s/i.test(query)) return false;
   return q !== "" && !isNoteText(q) && !["help", "?", "clip", "shot"].includes(q);
 };
+
+/** "win " and words, "fav" and words: one list answers, filtered as typed. */
+export const isListCommand = (query: string) => /^\s*(win\s|fav(\s|$))/i.test(query);
 
 /** Text that starts "note:" belongs to the notes: no filters, no history. */
 export const isNoteText = (query: string) => /^\s*note:/i.test(query);

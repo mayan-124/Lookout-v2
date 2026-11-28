@@ -164,6 +164,15 @@ pub enum What {
     Lock,
     /// Empty the Recycle Bin, behind a confirmation.
     EmptyBin,
+    /// Sleep, restart or sign out, behind a confirmation.
+    Power(Power),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Power {
+    Sleep,
+    Restart,
+    SignOut,
 }
 
 pub struct Entry {
@@ -718,6 +727,27 @@ pub const ENTRIES: &[Entry] = &[
         ],
         what: What::EmptyBin,
     },
+    Entry {
+        id: "sleep",
+        title: "Sleep this PC\u{2026}",
+        subtitle: "Asks first",
+        keywords: &["sleep", "sleep pc", "sleep computer"],
+        what: What::Power(Power::Sleep),
+    },
+    Entry {
+        id: "restart",
+        title: "Restart this PC\u{2026}",
+        subtitle: "Asks first; unsaved work will be lost",
+        keywords: &["restart", "restart pc", "restart computer", "reboot"],
+        what: What::Power(Power::Restart),
+    },
+    Entry {
+        id: "sign_out",
+        title: "Sign out\u{2026}",
+        subtitle: "Asks first; unsaved work will be lost",
+        keywords: &["sign out", "signout", "log out", "logout", "log off"],
+        what: What::Power(Power::SignOut),
+    },
 ];
 
 pub fn entry(id: &str) -> Option<&'static Entry> {
@@ -776,11 +806,13 @@ pub fn match_entries(typed: &str) -> Vec<(&'static Entry, f32)> {
         .filter_map(|e| {
             // A command needs its whole words exactly as typed: "lock" runs on
             // Enter, so neither a beginning nor "turn off lock" may offer it.
-            if matches!(e.what, What::Lock | What::EmptyBin) {
-                return e
-                    .keywords
-                    .contains(&whole.as_str())
-                    .then_some((e, EXACT_PAGE));
+            if matches!(e.what, What::Lock | What::EmptyBin | What::Power(_)) {
+                // Ahead of a Settings page that shares the word ("sleep").
+                let score = match e.what {
+                    What::Power(_) => EXACT_PAGE + 0.01,
+                    _ => EXACT_PAGE,
+                };
+                return e.keywords.contains(&whole.as_str()).then_some((e, score));
             }
             let exact = match e.what {
                 What::Theme => EXACT,

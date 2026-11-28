@@ -21,7 +21,7 @@
   import { FOLDER_STEP, chooseFoldersTarget, isHelpQuery, stepOnShow } from "./setupflow";
   import { dockItems, footerHints, helpEntries, isDiskCommand, tipsFor, typedSection, type Action, type View } from "./modes";
   import { ACTIONS, ICONS, actionById, homeActions } from "./registry";
-  import { didYouMean, ghostFor, isNoteText, opensHistory, placeSuggestions, readLine, suggest, worthRemembering } from "./discover";
+  import { didYouMean, ghostFor, isListCommand, isNoteText, opensHistory, placeSuggestions, readLine, suggest, worthRemembering } from "./discover";
   import { isFreshClip, recentRows } from "./home";
   import { NO_VALUES, OPERATOR_HINT, completions, operatorGhost, removeOperator, type OperatorValues } from "./operators";
   import { dismissDiskNotice, loadUi, setHideTips, setShow, ui } from "./uistate.svelte";
@@ -384,6 +384,8 @@
     dates: "Answer",
     zones: "Answer",
     notes: "Notes",
+    saved: "Saved",
+    windows: "Open windows",
   };
   // Plugin results carry messages (a rename preview, an error): wrap, never cut off.
   const isPlugin = (i: Item) => !(i.source in GROUPS);
@@ -399,7 +401,8 @@
   const BACKSLASH = String.fromCharCode(92);
   const escapeRe = (t: string) => t.replace(/\W/g, (c) => BACKSLASH + c);
   function highlight(text: string): { text: string; hit: boolean }[] {
-    const terms = query
+    // "win" and "fav" ask for a list; only the words after them match.
+    const terms = (isListCommand(query) ? query.trim().replace(/^\S+/, "") : query)
       .trim()
       .split(/\s+/)
       .map((t) => (/^name:/i.test(t) ? t.slice(5).replaceAll('"', "") : t))
@@ -1119,6 +1122,8 @@
       return;
     }
     if (card) {
+      // A key held down never presses a button: Confirm needs its own press.
+      if (e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault();
       // With a card open, Escape closes the card and nothing else is handled
       // here: Enter and Space work only through the focused button, so Confirm
       // happens only by pressing the visible Confirm button.
@@ -1268,7 +1273,7 @@
     if (k === "url") return "globe";
     if (k === "system") return /dark mode/i.test(i.title) ? "moon" : /light mode/i.test(i.title) ? "sun" : "gear";
     if ((k === "folder" || k === "file") && i.uri?.startsWith("\\\\")) return "network";
-    if (k === "app") return "app";
+    if (k === "app" || k === "window") return "app";
     if (k === "folder") return "folder";
     if (k === "clipboard") return "clipboard";
     if (k === "screenshot" || IMAGE_EXT.test(i.title)) return "image";
@@ -1414,6 +1419,12 @@
     system_theme: "Switch",
     system_lock: "Lock",
     system_empty_bin: "Empty…",
+    system_sleep: "Sleep…",
+    system_restart: "Restart…",
+    system_sign_out: "Sign out…",
+    window_focus: "Switch",
+    saved_add: "Save",
+    saved_remove: "Remove",
     system_radio: "Turn…",
     timer_start: "Start",
     timer_cancel: "Cancel timer",
@@ -1547,6 +1558,7 @@
     add(keys.paste, "Paste");
     add(keys.copyFile, "Copy file");
     add(keys.reveal, "Show in folder");
+    add(keys.save, "Save");
     add(keys.remove?.action, keys.remove?.label ?? "");
     if (!home && ui.show.quick_keys && canKey(i)) entries.push({ label: "Set quick key", run: () => startKey(i) });
     return entries;
@@ -1682,6 +1694,10 @@
     if (addonOff) return addonOff;
     const section = typedSection(query);
     const rest = typed.replace(/^\S+\s*/, "");
+    if (isListCommand(query)) {
+      if (/^win/i.test(typed)) return rest ? `No open window matches “${rest}”.` : "No other window is open.";
+      return rest ? `Nothing saved matches “${rest}”.` : "Nothing saved yet. Choose Save in a file's or folder's menu.";
+    }
     if (section === 2) {
       return rest ? `No clips match “${rest}”. Try fewer words.` : "Nothing copied yet. Copy some text and it appears here.";
     }
@@ -1690,7 +1706,7 @@
     return `No results for “${typed}”. Check the spelling or try fewer words.`;
   });
   /** "Choose folders" is offered for file searches only. */
-  const offersFolders = $derived(noFolders && typedSection(query) === 0);
+  const offersFolders = $derived(noFolders && typedSection(query) === 0 && !isListCommand(query));
   /** Pause holds the clipboard history with all other background work. */
   function togglePause() {
     invoke("set_paused", { paused: !status?.paused })

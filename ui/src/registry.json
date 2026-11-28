@@ -67,6 +67,19 @@
     "tip": false
   },
   {
+    "id": "saved",
+    "name": "Saved files and folders",
+    "category": "Find",
+    "icon": "Search",
+    "mode": "simple",
+    "synonyms": ["saved", "saved files", "saved folders", "favorites", "favourites", "bookmarks", "pinned folders"],
+    "example": "fav ",
+    "description": "Choose Save in a row's menu, then type fav",
+    "run": "fill",
+    "stem": "fav ",
+    "tip": false
+  },
+  {
     "id": "op_ext",
     "name": "Search by extension",
     "category": "Find",
@@ -462,6 +475,51 @@
     "tip": false
   },
   {
+    "id": "sleep",
+    "name": "Sleep",
+    "category": "This PC",
+    "icon": "System",
+    "mode": "simple",
+    "synonyms": ["sleep pc", "sleep computer", "put to sleep", "suspend", "standby"],
+    "commands": ["sleep"],
+    "example": "sleep",
+    "description": "Asks first",
+    "run": "show",
+    "stem": "sleep",
+    "covered": "system:sleep",
+    "tip": false
+  },
+  {
+    "id": "restart",
+    "name": "Restart this PC",
+    "category": "This PC",
+    "icon": "System",
+    "mode": "simple",
+    "synonyms": ["restart pc", "restart computer", "reboot", "restart windows", "reboot pc"],
+    "commands": ["restart"],
+    "example": "restart",
+    "description": "Asks first; unsaved work will be lost",
+    "run": "show",
+    "stem": "restart",
+    "covered": "system:restart",
+    "tip": false
+  },
+  {
+    "id": "signout",
+    "name": "Sign out",
+    "category": "This PC",
+    "icon": "System",
+    "mode": "simple",
+    "synonyms": ["signout", "log out", "logout", "log off", "logoff"],
+    "commands": ["sign out"],
+    "example": "sign out",
+    "description": "Asks first; unsaved work will be lost",
+    "run": "show",
+    "stem": "sign out",
+    "covered": "system:sign_out",
+    "tip": false
+  },
+  {
     "id": "emptybin",
     "name": "Empty Recycle Bin",
     "category": "This PC",
@@ -474,6 +532,20 @@
     "run": "show",
     "stem": "empty recycle bin",
     "covered": "system:empty_bin",
+    "tip": false
+  },
+  {
+    "id": "windowswitch",
+    "name": "Switch window",
+    "category": "This PC",
+    "icon": "System",
+    "mode": "simple",
+    "synonyms": ["switch window", "open windows", "window switcher", "find window", "alt tab", "running windows"],
+    "example": "win notepad",
+    "description": "Type win and part of a window's title",
+    "run": "fill",
+    "stem": "win ",
+    "covered": "windows",
     "tip": false
   },
   {
@@ -521,6 +593,18 @@
     "description": "Open Lookout's settings",
     "run": "settings",
     "ghost": ["settings"]
+  },
+  {
+    "id": "fullscreen",
+    "name": "Fullscreen apps",
+    "category": "Lookout",
+    "icon": "Settings",
+    "mode": "simple",
+    "synonyms": ["fullscreen", "full screen", "game mode", "gaming", "presentation mode", "disable shortcut in games"],
+    "example": "fullscreen",
+    "description": "Keep the bar closed in fullscreen, in Settings",
+    "run": "settings",
+    "tip": false
   },
   {
     "id": "appearance",

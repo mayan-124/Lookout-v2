@@ -46,11 +46,11 @@ Settings > Features.
 
 | Family | Features |
 |---|---|
-| Find | files and apps, Text in pictures, operators, date filters, By meaning, web and network paths, quick keys |
+| Find | files and apps, Text in pictures, operators, date filters, By meaning, web and network paths, quick keys, saved files and folders |
 | Capture | screenshot, scrolling capture, screen recording, Text from screen, Clipboard |
 | Everyday | calculator, units, dates, time zones, timers, notes |
-| This PC | Disk analyzer, ports, Windows settings, dark mode, command line |
-| Lookout | settings, theme, privacy, setup, help |
+| This PC | Disk analyzer, ports, Windows settings, window switcher, lock, sleep, restart, sign out, dark mode, command line |
+| Lookout | settings, fullscreen apps, theme, privacy, setup, help |
 
 ## Feature names
 

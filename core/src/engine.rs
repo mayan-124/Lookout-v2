@@ -112,12 +112,17 @@ impl Engine {
             return false;
         }
         let parsed = Arc::new(query::parse_with(text, skip));
-        // What follows "note:" is shown to the notes alone.
-        let private = crate::notes::is_private(text);
+        // What follows "note:" is shown to the notes alone, whether or not they
+        // are here; "win " and "fav" go to their own source where it is.
+        let only = if crate::notes::is_private(text) {
+            Some("notes")
+        } else {
+            query::only_source(text).filter(|id| self.sources.iter().any(|s| s.id() == *id))
+        };
         let wanted: Vec<&Arc<dyn Source>> = self
             .sources
             .iter()
-            .filter(|s| !parsed.is_empty() && (!private || s.id() == "notes"))
+            .filter(|s| !parsed.is_empty() && only.is_none_or(|id| s.id() == id))
             .collect();
         let runnable = wanted.len();
         let fallback = wanted.iter().filter_map(|s| s.fallback(&parsed)).collect();

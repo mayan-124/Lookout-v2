@@ -108,6 +108,9 @@ pub struct Settings {
     pub excluded_folders: Vec<PathBuf>,
     /// Global hotkey that pauses and resumes all indexing.
     pub pause_hotkey: String,
+    /// The open shortcut does nothing while a fullscreen game or presentation
+    /// is in front.
+    pub ignore_hotkey_in_fullscreen: bool,
     /// Global hotkey for "grab text from screen". Empty switches it off.
     pub grab_hotkey: String,
     /// Set by the app after repeated crashes: no plugins and no background
@@ -232,6 +235,7 @@ impl Default for Settings {
             window_positions: std::collections::BTreeMap::new(),
             ui: Ui::default(),
             web_search: SearchEngine::Off,
+            ignore_hotkey_in_fullscreen: false,
         }
     }
 }
@@ -251,6 +255,17 @@ impl Settings {
     pub fn set_web_search(&mut self, engine: SearchEngine, path: &Path) -> Result<(), String> {
         let mut next = self.clone();
         next.web_search = engine;
+        next.save(path)
+            .map_err(|e| format!("Could not save settings: {e}"))?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Saves the "Do not open the bar in fullscreen apps" switch; on any error
+    /// nothing changes.
+    pub fn set_ignore_hotkey_in_fullscreen(&mut self, on: bool, path: &Path) -> Result<(), String> {
+        let mut next = self.clone();
+        next.ignore_hotkey_in_fullscreen = on;
         next.save(path)
             .map_err(|e| format!("Could not save settings: {e}"))?;
         *self = next;
@@ -856,6 +871,7 @@ mod tests {
                 ..Ui::default()
             },
             web_search: SearchEngine::Bing,
+            ignore_hotkey_in_fullscreen: true,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);

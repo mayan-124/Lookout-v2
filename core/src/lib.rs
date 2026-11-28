@@ -55,6 +55,7 @@ pub mod quick;
 pub mod quickkeys;
 pub mod ranking;
 pub mod recent;
+pub mod saved;
 #[cfg(windows)]
 pub mod screengrab;
 pub mod securedb;
@@ -72,4 +73,5 @@ pub mod uimode;
 pub mod units;
 pub mod websearch;
 pub mod winfocus;
+pub mod winswitch;
 pub mod zones;

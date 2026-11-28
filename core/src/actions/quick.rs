@@ -16,7 +16,7 @@ use super::{Action, ActionError, Authorized, Executed, Plan, Preview, Risk, Targ
 use crate::cleanup::{Batch, BatchStore};
 use crate::item::{Item, Kind};
 use crate::query::ParsedQuery;
-use crate::quick::{self, What};
+use crate::quick::{self, Power, What};
 use crate::sources::{QueryContext, Source, Tier, ANSWER_SCORE};
 
 pub const OPEN_URL: &str = "open_url";
@@ -24,6 +24,17 @@ pub const SYSTEM_PAGE: &str = "system_page";
 pub const SYSTEM_THEME: &str = "system_theme";
 pub const SYSTEM_LOCK: &str = "system_lock";
 pub const SYSTEM_EMPTY_BIN: &str = "system_empty_bin";
+pub const SYSTEM_SLEEP: &str = "system_sleep";
+pub const SYSTEM_RESTART: &str = "system_restart";
+pub const SYSTEM_SIGN_OUT: &str = "system_sign_out";
+
+fn power_action(what: Power) -> &'static str {
+    match what {
+        Power::Sleep => SYSTEM_SLEEP,
+        Power::Restart => SYSTEM_RESTART,
+        Power::SignOut => SYSTEM_SIGN_OUT,
+    }
+}
 
 /// `Kind::Custom` names used by the results of this module.
 pub const KIND_URL: &str = "url";
@@ -306,6 +317,96 @@ impl Action for LockAction {
     }
 }
 
+/// Puts the PC to sleep, restarts it or signs out. Tests supply one that only
+/// records.
+pub trait PowerControl: Send + Sync {
+    /// Never closes a program by force.
+    fn run(&self, what: Power) -> Result<(), String>;
+}
+
+/// Sleep asks to confirm; restart and sign out are dangerous. Each takes only
+/// the built-in entry, so no typed text reaches Windows.
+pub struct PowerAction {
+    what: Power,
+    control: Arc<dyn PowerControl>,
+}
+
+impl PowerAction {
+    pub fn all(control: &Arc<dyn PowerControl>) -> Vec<Arc<dyn Action>> {
+        [Power::Sleep, Power::Restart, Power::SignOut]
+            .into_iter()
+            .map(|what| {
+                Arc::new(Self {
+                    what,
+                    control: control.clone(),
+                }) as Arc<dyn Action>
+            })
+            .collect()
+    }
+
+    fn entry_id(&self) -> &'static str {
+        match self.what {
+            Power::Sleep => "sleep",
+            Power::Restart => "restart",
+            Power::SignOut => "sign_out",
+        }
+    }
+}
+
+impl Action for PowerAction {
+    fn id(&self) -> &str {
+        power_action(self.what)
+    }
+
+    fn label(&self) -> &str {
+        match self.what {
+            Power::Sleep => "Sleep this PC",
+            Power::Restart => "Restart this PC",
+            Power::SignOut => "Sign out",
+        }
+    }
+
+    fn applies_to(&self, kind: &Kind) -> bool {
+        is_custom(kind, KIND_SYSTEM)
+    }
+
+    fn plan(&self, target: &Target) -> Result<Plan, ActionError> {
+        expect_entry(target, self.entry_id(), self.id())?;
+        const HOLD: &str = "A program may stop this to ask you to save; none is forced to close.";
+        let (risk, line) = match self.what {
+            Power::Sleep => (Risk::Confirm, "Programs stay open. Wake the PC to return."),
+            Power::Restart | Power::SignOut => (Risk::Dangerous, HOLD),
+        };
+        let warnings = if risk == Risk::Dangerous {
+            vec!["Unsaved work will be lost.".into()]
+        } else {
+            Vec::new()
+        };
+        Ok(simple_plan(
+            risk,
+            self.label().into(),
+            vec![line.into()],
+            warnings,
+            false,
+            serde_json::json!({}),
+            self.entry_id().into(),
+        ))
+    }
+
+    fn execute(&self, _plan: &Plan, _proof: &Authorized) -> Result<Executed, ActionError> {
+        self.control.run(self.what).map_err(ActionError::Failed)?;
+        Ok(Executed {
+            message: match self.what {
+                Power::Sleep => "Going to sleep",
+                Power::Restart => "Restarting",
+                Power::SignOut => "Signing out",
+            }
+            .into(),
+            undo_token: None,
+        })
+    }
+}
+
 /// What is in the Recycle Bin now, as a removal list; `None` when it is empty.
 pub type BinContents = Box<dyn Fn() -> Option<Batch> + Send + Sync>;
 
@@ -524,6 +625,7 @@ impl Source for QuickSource {
                 What::Page(_) | What::Control(_) => (entry.title.to_owned(), SYSTEM_PAGE),
                 What::Lock => (entry.title.to_owned(), SYSTEM_LOCK),
                 What::EmptyBin => (entry.title.to_owned(), SYSTEM_EMPTY_BIN),
+                What::Power(p) => (entry.title.to_owned(), power_action(p)),
             };
             let mut item = Item::new(
                 format!("system:{}", entry.id),
@@ -547,20 +649,31 @@ impl Source for QuickSource {
 // ------------------------------------------------------ real Windows parts
 
 #[cfg(windows)]
-pub use real::{WindowsLock, WindowsTheme};
+pub use real::{WindowsLock, WindowsPower, WindowsTheme};
 
 #[cfg(windows)]
 mod real {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_NOT_ALL_ASSIGNED, HANDLE, LUID,
+    };
+    use windows_sys::Win32::Security::{
+        AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
+        SE_SHUTDOWN_NAME, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Power::SetSuspendState;
     use windows_sys::Win32::System::Registry::{
         RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
         HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_DWORD,
     };
-    use windows_sys::Win32::System::Shutdown::LockWorkStation;
+    use windows_sys::Win32::System::Shutdown::{
+        ExitWindowsEx, LockWorkStation, EWX_LOGOFF, EWX_REBOOT, SHTDN_REASON_FLAG_PLANNED,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
     };
 
-    use super::{SessionLock, ThemeBackend, ThemeValues};
+    use super::{Power, PowerControl, SessionLock, ThemeBackend, ThemeValues};
 
     const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
     const APPS: &str = "AppsUseLightTheme";
@@ -581,6 +694,125 @@ mod real {
                 return Err("Windows could not lock this PC".to_owned());
             }
             Ok(())
+        }
+    }
+
+    /// The Windows right to sleep or restart, held only while this lives. It is
+    /// already granted to ordinary users, but switched off until asked for.
+    pub(super) struct ShutdownRight {
+        token: HANDLE,
+        before: TOKEN_PRIVILEGES,
+    }
+
+    impl ShutdownRight {
+        pub(super) fn enable() -> Result<Self, String> {
+            let refused = || "Windows did not allow this account to do that".to_owned();
+            let none = TOKEN_PRIVILEGES {
+                PrivilegeCount: 0,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: LUID {
+                        LowPart: 0,
+                        HighPart: 0,
+                    },
+                    Attributes: 0,
+                }],
+            };
+            // SAFETY: every pointer is to a local of the size passed; the token
+            // is closed by `Drop`.
+            unsafe {
+                let mut token: HANDLE = std::ptr::null_mut();
+                let access = TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY;
+                if OpenProcessToken(GetCurrentProcess(), access, &mut token) == 0 {
+                    return Err(refused());
+                }
+                let mut right = Self {
+                    token,
+                    before: none,
+                };
+                let mut wanted = none;
+                wanted.PrivilegeCount = 1;
+                wanted.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+                if LookupPrivilegeValueW(
+                    std::ptr::null(),
+                    SE_SHUTDOWN_NAME,
+                    &mut wanted.Privileges[0].Luid,
+                ) == 0
+                {
+                    return Err(refused());
+                }
+                let mut size = 0u32;
+                let ok = AdjustTokenPrivileges(
+                    token,
+                    0,
+                    &wanted,
+                    std::mem::size_of::<TOKEN_PRIVILEGES>() as u32,
+                    &mut right.before,
+                    &mut size,
+                );
+                // Success with this error means the account lacks the right.
+                if ok == 0 || GetLastError() == ERROR_NOT_ALL_ASSIGNED {
+                    return Err(refused());
+                }
+                Ok(right)
+            }
+        }
+    }
+
+    impl Drop for ShutdownRight {
+        fn drop(&mut self) {
+            // SAFETY: the token is open until here; `before` came from Windows
+            // (empty if nothing changed).
+            unsafe {
+                if self.before.PrivilegeCount > 0 {
+                    AdjustTokenPrivileges(
+                        self.token,
+                        0,
+                        &self.before,
+                        0,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                    );
+                }
+                CloseHandle(self.token);
+            }
+        }
+    }
+
+    /// What `ExitWindowsEx` is asked for. No force flag is ever included, so a
+    /// program with unsaved work can hold it up.
+    pub(super) fn exit_flags(what: Power) -> Option<u32> {
+        match what {
+            Power::Sleep => None,
+            Power::Restart => Some(EWX_REBOOT),
+            Power::SignOut => Some(EWX_LOGOFF),
+        }
+    }
+
+    pub struct WindowsPower;
+
+    impl PowerControl for WindowsPower {
+        fn run(&self, what: Power) -> Result<(), String> {
+            // Signing out needs no extra right.
+            let _right = match what {
+                Power::SignOut => None,
+                Power::Sleep | Power::Restart => Some(ShutdownRight::enable()?),
+            };
+            let ok = match exit_flags(what) {
+                // SAFETY: no pointers. Sleep, not hibernate; not forced; wake
+                // timers keep working. Returns after the PC wakes.
+                None => unsafe { SetSuspendState(0, 0, 0) != 0 },
+                // SAFETY: no pointers.
+                Some(flags) => unsafe { ExitWindowsEx(flags, SHTDN_REASON_FLAG_PLANNED) != 0 },
+            };
+            if ok {
+                return Ok(());
+            }
+            Err(match what {
+                Power::Sleep => "Windows could not put this PC to sleep",
+                Power::Restart => "Windows could not restart this PC",
+                Power::SignOut => "Windows could not sign you out",
+            }
+            .to_owned())
         }
     }
 
@@ -880,6 +1112,99 @@ mod tests {
         assert_ne!(act.plan(&t).unwrap().fingerprint, first.fingerprint);
         *items.lock().unwrap() = 0;
         assert!(act.plan(&t).is_err());
+    }
+
+    #[derive(Default)]
+    struct Powered(Mutex<Vec<Power>>);
+
+    impl PowerControl for Powered {
+        fn run(&self, what: Power) -> Result<(), String> {
+            self.0.lock().unwrap().push(what);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn power_commands_never_run_without_a_confirmation() {
+        let done = Arc::new(Powered::default());
+        let control: Arc<dyn PowerControl> = done.clone();
+        let db = Arc::new(crate::securedb::SecureDb::in_memory().unwrap());
+        let engine = crate::actions::ActionEngine::new(
+            PowerAction::all(&control),
+            crate::actions::undo_log::UndoLog::new(db.clone()).unwrap(),
+            crate::actions::GateConfig {
+                min_dwell: std::time::Duration::ZERO,
+                ..Default::default()
+            },
+        );
+        // Typed, and through a quick key: the same entry, action and risk.
+        let keys = crate::quickkeys::QuickKeys::new(db).unwrap();
+        let src = QuickSource::new(FakeTheme::new(None, None));
+        for (typed, alias, id, risk) in [
+            ("sleep", "zs", SYSTEM_SLEEP, Risk::Confirm),
+            ("restart", "zr", SYSTEM_RESTART, Risk::Dangerous),
+            ("sign out", "zo", SYSTEM_SIGN_OUT, Risk::Dangerous),
+        ] {
+            let q = crate::query::parse(typed);
+            let ctx = QueryContext::new(1, Arc::new(std::sync::atomic::AtomicU64::new(1)));
+            let mut found = Vec::new();
+            src.query(&q, &ctx, &mut |i| found.extend(i));
+            found.sort_by(|a, b| b.score.total_cmp(&a.score));
+            let item = &found[0];
+            assert_eq!(item.metadata["default_action"], id, "{typed} comes first");
+            keys.add(alias, item).unwrap();
+            let resolved = keys.resolve(alias).unwrap();
+            assert_eq!(resolved.metadata["default_action"], id);
+            let t = target(KIND_SYSTEM, resolved.uri.as_deref().unwrap());
+            let p = engine.prepare(id, t).unwrap();
+            assert_eq!(p.risk, risk, "{typed}");
+            let warned = p
+                .preview
+                .warnings
+                .iter()
+                .any(|w| w.contains("Unsaved work will be lost"));
+            assert_eq!(warned, risk == Risk::Dangerous, "{typed}");
+            assert!(matches!(
+                engine.run(&p.ticket),
+                Err(ActionError::ConfirmationRequired)
+            ));
+            assert!(matches!(
+                engine.confirm(&p.ticket),
+                Err(ActionError::NotPresented)
+            ));
+        }
+        assert!(done.0.lock().unwrap().is_empty());
+        let p = engine
+            .prepare(SYSTEM_RESTART, target(KIND_SYSTEM, "restart"))
+            .unwrap();
+        engine.present(&p.ticket).unwrap();
+        engine.confirm(&p.ticket).unwrap();
+        assert_eq!(done.0.lock().unwrap().as_slice(), [Power::Restart]);
+        // One entry's action refuses another's.
+        assert!(engine
+            .prepare(SYSTEM_SLEEP, target(KIND_SYSTEM, "restart"))
+            .is_err());
+        for no in ["restar", "restart now", "turn off sleep", "sign"] {
+            assert!(
+                !quick::match_entries(no)
+                    .iter()
+                    .any(|(e, _)| matches!(e.what, What::Power(_))),
+                "{no}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_is_never_asked_to_force_programs_closed() {
+        use windows_sys::Win32::System::Shutdown::{EWX_FORCE, EWX_FORCEIFHUNG};
+        assert_eq!(real::exit_flags(Power::Sleep), None);
+        for what in [Power::Restart, Power::SignOut] {
+            let flags = real::exit_flags(what).unwrap();
+            assert_eq!(flags & (EWX_FORCE | EWX_FORCEIFHUNG), 0);
+        }
+        // Switching the right on and off again does nothing else.
+        drop(real::ShutdownRight::enable().unwrap());
     }
 
     #[test]
