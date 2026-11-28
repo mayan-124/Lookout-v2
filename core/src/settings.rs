@@ -129,7 +129,8 @@ pub struct Settings {
     /// A persisted name snapshot with more entries than this is not loaded:
     /// loading it and building the fresh startup index would hold two big
     /// indexes at once. Search then starts empty and fills as the startup crawl
-    /// runs. 0 never loads a snapshot.
+    /// runs. 0 never loads a snapshot. Counts files and folders.
+    #[serde(deserialize_with = "snapshot_limit")]
     pub snapshot_max_entries: usize,
     /// Size limit of the content index (file text and OCR), in MB. When it is
     /// reached, no new content is added; nothing already indexed is removed.
@@ -201,6 +202,20 @@ fn in_range(v: i64, lo: u64, hi: u64) -> bool {
     u64::try_from(v).is_ok_and(|v| (lo..=hi).contains(&v))
 }
 
+/// Room for a PC with about a million files and their folders.
+pub const DEFAULT_SNAPSHOT_MAX_ENTRIES: usize = 1_500_000;
+/// The earlier default, which was written into every saved settings file.
+const OLD_SNAPSHOT_MAX_ENTRIES: usize = 300_000;
+
+fn snapshot_limit<'de, D: serde::Deserializer<'de>>(d: D) -> Result<usize, D::Error> {
+    let saved = usize::deserialize(d)?;
+    Ok(if saved == OLD_SNAPSHOT_MAX_ENTRIES {
+        DEFAULT_SNAPSHOT_MAX_ENTRIES
+    } else {
+        saved
+    })
+}
+
 pub const DEFAULT_LAST_SEARCH_SECS: u32 = 30;
 pub const MAX_LAST_SEARCH_SECS: u32 = 3600;
 
@@ -228,7 +243,7 @@ impl Default for Settings {
             ocr: true,
             idle_secs: 10,
             index_speed: IndexSpeed::default(),
-            snapshot_max_entries: 300_000,
+            snapshot_max_entries: DEFAULT_SNAPSHOT_MAX_ENTRIES,
             content_index_max_mb: DEFAULT_CONTENT_INDEX_MB,
             appearance: None,
             chart_colors: CHART_COLORS[0].to_owned(),
@@ -891,6 +906,23 @@ mod tests {
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);
+    }
+
+    #[test]
+    fn a_saved_old_snapshot_limit_is_raised_and_a_chosen_one_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let loaded = |text: &str| {
+            std::fs::write(&path, text).unwrap();
+            Settings::load(&path).unwrap().snapshot_max_entries
+        };
+        assert_eq!(
+            loaded(r#"{"snapshot_max_entries":300000}"#),
+            DEFAULT_SNAPSHOT_MAX_ENTRIES
+        );
+        assert_eq!(loaded("{}"), DEFAULT_SNAPSHOT_MAX_ENTRIES);
+        assert_eq!(loaded(r#"{"snapshot_max_entries":0}"#), 0);
+        assert_eq!(loaded(r#"{"snapshot_max_entries":1234}"#), 1234);
     }
 
     #[test]
